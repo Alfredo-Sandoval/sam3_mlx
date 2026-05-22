@@ -10,7 +10,7 @@ dependencies = [
     "iopath>=0.1.10",
     "mlx>=0.30.0",
     "numpy>=2.3.5",
-    "pillow>=12.0.0",
+    "pillow>=12.2.0",
     "regex>=2025.11.3",
 ]
 
@@ -23,7 +23,7 @@ notebooks = [
     "ipympl>=0.9.3",
     "ipywidgets>=8.1.8",
     "matplotlib>=3.10.8",
-    "requests>=2.32.5",
+    "requests>=2.33.0",
 ]
 viz = [
     "matplotlib>=3.10.8",
