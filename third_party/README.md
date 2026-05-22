@@ -1,7 +1,7 @@
 # Third-party Reference Checkouts
 
 This directory is for local, ignored reference checkouts used while auditing
-the SAM 3.1 MLX port against upstream implementations.
+the sam3_mlx port against upstream implementations.
 
 ## Facebook SAM 3
 

@@ -8,9 +8,9 @@ from PIL import Image
 
 
 _PROCESSOR_MODULES = (
-    "mlx_sam3p1.model.sam3_image_processor",
-    "mlx_sam3p1.model.box_ops",
-    "mlx_sam3p1.model.data_misc",
+    "sam3_mlx.model.sam3_image_processor",
+    "sam3_mlx.model.box_ops",
+    "sam3_mlx.model.data_misc",
 )
 _MISSING = object()
 
@@ -64,7 +64,7 @@ def processor_module(monkeypatch):
         sys.modules.pop(name, None)
 
     _install_fake_mlx(monkeypatch)
-    module = importlib.import_module("mlx_sam3p1.model.sam3_image_processor")
+    module = importlib.import_module("sam3_mlx.model.sam3_image_processor")
     yield module
 
     for name, original in originals.items():

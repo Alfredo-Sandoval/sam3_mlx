@@ -6,8 +6,8 @@ from PIL import Image
 import numpy as np
 import mlx.core as mx
 
-from mlx_sam3p1.model import box_ops
-from mlx_sam3p1.model.data_misc import FindStage, interpolate
+from sam3_mlx.model import box_ops
+from sam3_mlx.model.data_misc import FindStage, interpolate
 
 
 def transform(image_path_or_pil, resolution):

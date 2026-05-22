@@ -3,7 +3,7 @@ from typing import Dict, List, Optional, Tuple
 import mlx.core as mx
 import mlx.nn as nn
 
-from mlx_sam3p1.model.model_misc import get_activation_fn, get_clones, get_valid_ratio
+from sam3_mlx.model.model_misc import get_activation_fn, get_clones, get_valid_ratio
 
 class TransformerEncoderLayer(nn.Module):
     def __init__(

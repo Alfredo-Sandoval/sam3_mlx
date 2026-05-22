@@ -11,7 +11,7 @@
 
 - Removed the web demo app and demo-only entrypoint so the fork focuses on the
   reusable MLX package.
-- Renamed the import package to `mlx_sam3p1` and moved runtime assets into the
+- Renamed the import package to `sam3_mlx` and moved runtime assets into the
   package.
 - Removed broad PyTorch and visualization dependencies from the core install;
   conversion and notebooks now live behind extras.
@@ -45,8 +45,13 @@
 ## Current Static Gates
 
 ```bash
-conda run -n openop ruff check .
-python -m compileall -q mlx_sam3p1 examples
+ruff check .
+python -m compileall -q sam3_mlx examples tests
+python -c "import json, pathlib, tomllib; tomllib.load(open('pyproject.toml', 'rb')); [json.load(open(p)) for p in pathlib.Path('examples').glob('*.ipynb')]"
+uv lock --check
+uv run --with pytest python -m pytest -q
 ```
 
-Both gates passed after this audit pass.
+These gates passed after the package identity cutover. On this Linux host, the
+MLX runtime-backed geometry tests are skipped because `mlx.core` cannot load
+`libmlx.so`; static package/import contract tests still run.

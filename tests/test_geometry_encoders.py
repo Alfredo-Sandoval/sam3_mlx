@@ -3,9 +3,10 @@ import pytest
 mx = pytest.importorskip(
     "mlx.core",
     reason="MLX is required for geometry prompt parity tests.",
+    exc_type=ImportError,
 )
 
-from mlx_sam3p1.model.geometry_encoders import (
+from sam3_mlx.model.geometry_encoders import (  # noqa: E402
     MaskEncoder,
     Prompt,
     SequenceGeometryEncoder,

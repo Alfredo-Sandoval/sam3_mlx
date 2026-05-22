@@ -2,7 +2,7 @@ from copy import copy
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx_sam3p1.model.necks import Sam3DualViTDetNeck
+from sam3_mlx.model.necks import Sam3DualViTDetNeck
 
 class SAM3VLBackbone(nn.Module):
     def __init__(

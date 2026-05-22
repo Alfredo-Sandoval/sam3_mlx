@@ -1,11 +1,11 @@
-# SAM 3.1 MLX
+# sam3_mlx
 
 Maintained MLX fork of the community SAM3 image port, with a tooling-safe
 Python identity:
 
-- distribution: `mlx-sam3p1`
-- import package: `mlx_sam3p1`
-- display name: `SAM 3.1 MLX`
+- distribution: `sam3_mlx`
+- import package: `sam3_mlx`
+- display name: `sam3_mlx`
 
 This repository starts from `Deekshith-Dade/mlx_sam3` and is being prepared for
 SAM 3.1-oriented image segmentation work on Apple Silicon. It deliberately does
@@ -45,15 +45,15 @@ static checks and packaging review, but inference is not expected to run there.
 ## Smoke Checks
 
 ```bash
-python -m compileall -q mlx_sam3p1 examples
+python -m compileall -q sam3_mlx examples
 python -c "import tomllib; tomllib.load(open('pyproject.toml', 'rb'))"
 ```
 
 ## Package Use
 
 ```python
-from mlx_sam3p1 import build_sam3_image_model
-from mlx_sam3p1.model.sam3_image_processor import Sam3Processor
+from sam3_mlx import build_sam3_image_model
+from sam3_mlx.model.sam3_image_processor import Sam3Processor
 
 model = build_sam3_image_model()
 processor = Sam3Processor(model)

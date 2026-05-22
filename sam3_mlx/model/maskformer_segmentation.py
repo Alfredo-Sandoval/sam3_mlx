@@ -5,7 +5,7 @@ import math
 import mlx.core as mx
 import mlx.nn as nn
 
-from mlx_sam3p1.model.model_misc import MLP
+from sam3_mlx.model.model_misc import MLP
 
 
 class LinearPresenceHead(nn.Sequential):

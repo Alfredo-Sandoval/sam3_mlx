@@ -5,7 +5,7 @@ from typing import Callable, List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 
-from mlx_sam3p1.model.model_misc import Mlp, LayerScale, DropPath
+from sam3_mlx.model.model_misc import Mlp, LayerScale, DropPath
 
 def polar(a, b):
     return (a * mx.exp(1j * b)).astype(mx.complex64)

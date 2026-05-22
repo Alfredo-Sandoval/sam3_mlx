@@ -4,11 +4,11 @@ import mlx.core as mx
 import mlx.nn as nn
 
  
-from mlx_sam3p1.model.grid_sample_mlx import grid_sample
+from sam3_mlx.model.grid_sample_mlx import grid_sample
 
-from mlx_sam3p1.model.box_ops import box_cxcywh_to_xyxy
-from mlx_sam3p1.model.model_misc import get_clones
-from mlx_sam3p1.model.roi_align import roi_align
+from sam3_mlx.model.box_ops import box_cxcywh_to_xyxy
+from sam3_mlx.model.model_misc import get_clones
+from sam3_mlx.model.roi_align import roi_align
 
 def is_right_padded(mask):
     """Given a padding mask (following pytorch convention, 1s for padded values),

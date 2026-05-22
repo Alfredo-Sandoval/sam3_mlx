@@ -3,7 +3,7 @@ from typing import Callable, List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 
-from mlx_sam3p1.model.model_misc import LayerScale
+from sam3_mlx.model.model_misc import LayerScale
 
 class MLP(nn.Module):
     def __init__(

@@ -779,7 +779,7 @@ wheels = [
 ]
 
 [[package]]
-name = "mlx-sam3p1"
+name = "sam3_mlx"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

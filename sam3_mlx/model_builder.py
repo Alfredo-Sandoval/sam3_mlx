@@ -3,22 +3,22 @@ import os
 import mlx.core as mx
 import mlx.nn as nn
 
-from mlx_sam3p1.convert import load_from_hub, download_and_convert, MLX_COMMUNITY_REPO
-from mlx_sam3p1.model.sam3_image import Sam3Image
-from mlx_sam3p1.model.text_encoder_ve import VETextEncoder
-from mlx_sam3p1.model.tokenizer_ve import SimpleTokenizer
-from mlx_sam3p1.model.vitdet import ViT
-from mlx_sam3p1.model.position_encoding import PositionEmbeddingSine
-from mlx_sam3p1.model.necks import Sam3DualViTDetNeck
-from mlx_sam3p1.model.vl_combiner import SAM3VLBackbone
-from mlx_sam3p1.model.geometry_encoders import SequenceGeometryEncoder
-from mlx_sam3p1.model.maskformer_segmentation import PixelDecoder, UniversalSegmentationHead
-from mlx_sam3p1.model.encoder import TransformerEncoderFusion, TransformerEncoderLayer
-from mlx_sam3p1.model.decoder import (
+from sam3_mlx.convert import load_from_hub, download_and_convert, MLX_COMMUNITY_REPO
+from sam3_mlx.model.sam3_image import Sam3Image
+from sam3_mlx.model.text_encoder_ve import VETextEncoder
+from sam3_mlx.model.tokenizer_ve import SimpleTokenizer
+from sam3_mlx.model.vitdet import ViT
+from sam3_mlx.model.position_encoding import PositionEmbeddingSine
+from sam3_mlx.model.necks import Sam3DualViTDetNeck
+from sam3_mlx.model.vl_combiner import SAM3VLBackbone
+from sam3_mlx.model.geometry_encoders import SequenceGeometryEncoder
+from sam3_mlx.model.maskformer_segmentation import PixelDecoder, UniversalSegmentationHead
+from sam3_mlx.model.encoder import TransformerEncoderFusion, TransformerEncoderLayer
+from sam3_mlx.model.decoder import (
     TransformerDecoder,
     TransformerDecoderLayer
 )
-from mlx_sam3p1.model.model_misc import (
+from sam3_mlx.model.model_misc import (
     DotProductScoring,
     MLP,
     MultiheadAttentionWrapper as MultiheadAttention,

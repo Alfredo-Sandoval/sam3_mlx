@@ -3,9 +3,9 @@ import numpy as np
 import mlx.core as mx
 import mlx.nn as nn
 
-from mlx_sam3p1.model.box_ops import box_cxcywh_to_xyxy
+from sam3_mlx.model.box_ops import box_cxcywh_to_xyxy
 
-from mlx_sam3p1.model.model_misc import (
+from sam3_mlx.model.model_misc import (
     MLP, 
     get_activation_fn, 
     get_clones, 

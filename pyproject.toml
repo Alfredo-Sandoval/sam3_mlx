@@ -1,5 +1,5 @@
 [project]
-name = "mlx-sam3p1"
+name = "sam3_mlx"
 version = "0.1.0"
 description = "Maintained MLX port of SAM 3.1-oriented image segmentation components."
 readme = "README.md"
@@ -34,7 +34,15 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["mlx_sam3p1", "mlx_sam3p1.model"]
+packages = ["sam3_mlx", "sam3_mlx.model"]
 
 [tool.setuptools.package-data]
-mlx_sam3p1 = ["assets/*.txt.gz"]
+sam3_mlx = ["assets/*.txt.gz"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+    ".git",
+    ".venv",
+    "third_party",
+]

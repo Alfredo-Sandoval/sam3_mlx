@@ -2,10 +2,10 @@ from typing import Dict, Optional
 import mlx.core as mx
 import mlx.nn as nn
 
-from mlx_sam3p1.model.box_ops import box_cxcywh_to_xyxy
-from mlx_sam3p1.model.vl_combiner import SAM3VLBackbone
-from mlx_sam3p1.model.geometry_encoders import Prompt
-from mlx_sam3p1.model.model_misc import MLP, DotProductScoring, inverse_sigmoid
+from sam3_mlx.model.box_ops import box_cxcywh_to_xyxy
+from sam3_mlx.model.vl_combiner import SAM3VLBackbone
+from sam3_mlx.model.geometry_encoders import Prompt
+from sam3_mlx.model.model_misc import MLP, DotProductScoring, inverse_sigmoid
 
 def _update_out(out, out_name, out_value, auxiliary=True, update_aux=True):
     out[out_name] = out_value[-1] if auxiliary else out_value

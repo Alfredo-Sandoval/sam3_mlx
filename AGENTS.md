@@ -5,16 +5,16 @@ priority is: (1) explicit user request, (2) this file, (3) other docs.
 
 ## Repository
 
-- Name / slug: `mlx-sam3p1` / local-only until a GitHub remote exists
-- Display name: SAM 3.1 MLX
-- Import package: `mlx_sam3p1`
+- Name / slug: `sam3_mlx` / `Alfredo-Sandoval/sam3_mlx`
+- Display name: sam3_mlx
+- Import package: `sam3_mlx`
 - Preset: `science`
 - Primary platform: macOS Apple Silicon
 - Secondary platform: Linux for static analysis and packaging checks
 
-The display name intentionally includes `SAM 3.1`; the package and repository
-names use `sam3p1` to avoid dotted-name packaging friction and to avoid
-shadowing Meta's official `sam3` package.
+The repository, display, distribution, and import package all use `sam3_mlx`.
+That name avoids dotted-name packaging friction and avoids shadowing Meta's
+official `sam3` package.
 
 ## Project Scope
 
@@ -46,7 +46,7 @@ user instruction. Preserve upstream attribution and keep `LICENSE`, `NOTICE.md`,
 
 ```bash
 uv sync
-python -m compileall -q mlx_sam3p1 examples
+python -m compileall -q sam3_mlx examples
 ```
 
 Run inference only on hosts with MLX support. Do not add CPU fallbacks or
