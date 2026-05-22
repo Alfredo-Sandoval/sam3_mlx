@@ -1,6 +1,7 @@
 # Python-generated files
 __pycache__/
 *.py[oc]
+.ruff_cache/
 build/
 dist/
 wheels/
@@ -9,7 +10,14 @@ wheels/
 # Virtual environments
 .venv
 
+# Local upstream reference checkouts
+third_party/facebook-sam3/
+
 # Ignore Modified Weights
 sam3-mod-weights/
 vit_block/
+*.pt
+*.safetensors
+semantic_mask.png
+semantic_overlay.png
 *.jpg
