@@ -16,9 +16,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-convert = [
-    "torch>=2.9.1",
-]
 viz = [
     "matplotlib>=3.10.8",
 ]

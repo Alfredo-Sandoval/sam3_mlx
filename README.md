@@ -42,7 +42,19 @@ framework.
 
 ## Installation
 
-Install with [uv](https://docs.astral.sh/uv/):
+Install from PyPI:
+
+```bash
+pip install sam3-mlx
+```
+
+Or add it to a project with [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv add sam3-mlx
+```
+
+For local development from a checkout:
 
 ```bash
 uv sync
@@ -51,14 +63,29 @@ uv sync
 Plotting dependencies are optional:
 
 ```bash
+pip install "sam3-mlx[viz]"
+```
+
+Or, from a local checkout:
+
+```bash
 uv sync --extra viz
 ```
+
+Checkpoint conversion helpers are included for advanced use, but PyTorch is not
+installed by a `sam3-mlx` extra in this release. Use a separate compatible
+PyTorch environment before running `sam3_mlx.convert`.
 
 Verify the install:
 
 ```bash
+python -c "import sam3_mlx; print(sam3_mlx.__version__)"
+```
+
+From a local checkout, you can also run:
+
+```bash
 python -m compileall -q sam3_mlx tests
-python -c "import tomllib; tomllib.load(open('pyproject.toml', 'rb'))"
 ```
 
 ## Quickstart
