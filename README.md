@@ -117,9 +117,12 @@ predictor = build_sam3_predictor(version="sam3")
 ```
 
 `build_sam3_predictor()` defaults to `version="sam3.1"` to match the official
-SAM3 API shape, but that path routes to the unported multiplex predictor and
-raises `Sam3MlxUnsupportedError(reason="video-multiplex")`. Use `version="sam3"`
-for the current MLX selected-frame video slice.
+SAM3 API shape. That path routes to the SAM 3.1 multiplex predictor, which runs
+on MLX with a locally converted checkpoint
+(`checkpoint_path=..., load_from_HF=False`); automatic checkpoint download and
+conversion are not wired up yet, so the default `load_from_HF=True` raises
+`Sam3MlxUnsupportedError(reason="video-multiplex")`. Use `version="sam3"` for
+the selected-frame video slice with automatic weights.
 
 The video slice accepts image paths, image folders, PIL image sequences, and
 OpenCV-decodable video files.
@@ -132,7 +135,8 @@ Unsupported paths raise `Sam3MlxUnsupportedError`:
   supported, and neither is `torch.compile`.
 - **Single-prompt image API.** Batch geometric prompts and multiple masks per
   prompt are not supported; single text or geometric prompts work.
-- **Selected-frame video only.** SAM 3.1 multiplex prediction, tracker memory,
+- **SAM 3.1 multiplex needs local weights.** The multiplex video predictor runs
+  only from a locally converted checkpoint; automatic download/conversion,
   multi-GPU video, and TorchCodec decoding are unavailable.
 - **Training is currently not supported.** Training loops, autograd, distributed
   execution, and the official eval toolkit are not available yet.

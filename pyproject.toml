@@ -6,6 +6,27 @@ readme = "README.md"
 license = "LicenseRef-SAM"
 license-files = ["LICENSE"]
 requires-python = ">=3.13"
+authors = [
+    { name = "Alfredo Sandoval" },
+]
+keywords = [
+    "sam3",
+    "segment-anything",
+    "segmentation",
+    "mlx",
+    "apple-silicon",
+    "computer-vision",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+]
 dependencies = [
     "ftfy>=6.3.1",
     "huggingface-hub>=1.1.6",
@@ -19,6 +40,11 @@ dependencies = [
 viz = [
     "matplotlib>=3.10.8",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Alfredo-Sandoval/sam3_mlx"
+Repository = "https://github.com/Alfredo-Sandoval/sam3_mlx"
+Issues = "https://github.com/Alfredo-Sandoval/sam3_mlx/issues"
 
 [build-system]
 requires = ["setuptools>=77", "wheel"]
