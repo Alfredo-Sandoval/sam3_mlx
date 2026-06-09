@@ -1,0 +1,35 @@
+{
+  "atol": 0.002,
+  "results": {
+    "encoder.layers.0.cross_attn_image.freqs_cis": {
+      "max_abs": 4.76837158203125e-07,
+      "mean_abs": 8.464255074613902e-09,
+      "shape": [
+        64,
+        128,
+        2
+      ]
+    },
+    "encoder.layers.0.self_attn.freqs_cis": {
+      "max_abs": 4.76837158203125e-07,
+      "mean_abs": 8.464255074613902e-09,
+      "shape": [
+        64,
+        128,
+        2
+      ]
+    },
+    "memory_conditioned_features": {
+      "max_abs": 2.205371856689453e-06,
+      "mean_abs": 4.2492891338952177e-07,
+      "shape": [
+        1,
+        256,
+        8,
+        8
+      ]
+    }
+  },
+  "seed": 0,
+  "worst_max_abs": 2.205371856689453e-06
+}

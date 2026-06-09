@@ -1,0 +1,2556 @@
+{
+  "atol": 0.0,
+  "case": "memory_encoder_slicing_and_dynamic_sorting",
+  "cases": {
+    "dynamic_object_id_sorting": {
+      "dynamic": true,
+      "metrics": {
+        "encoder_calls.0.local_high_res_masks": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            1,
+            4,
+            4
+          ]
+        },
+        "encoder_calls.0.local_object_score_logits": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            1
+          ]
+        },
+        "encoder_calls.1.local_high_res_masks": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            1,
+            1,
+            4,
+            4
+          ]
+        },
+        "encoder_calls.1.local_object_score_logits": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            1,
+            1
+          ]
+        },
+        "states.0.cond.image_features": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            3
+          ]
+        },
+        "states.0.cond.image_pos_enc": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            4
+          ]
+        },
+        "states.0.cond.maskmem_features": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            2
+          ]
+        },
+        "states.0.cond.maskmem_pos_enc_0": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            1
+          ]
+        },
+        "states.0.non_cond.image_features": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            3
+          ]
+        },
+        "states.0.non_cond.image_pos_enc": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            4
+          ]
+        },
+        "states.0.non_cond.maskmem_features": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            2
+          ]
+        },
+        "states.0.non_cond.maskmem_pos_enc_0": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            1
+          ]
+        },
+        "states.1.cond.image_features": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            1,
+            3
+          ]
+        },
+        "states.1.cond.image_pos_enc": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            1,
+            4
+          ]
+        },
+        "states.1.cond.maskmem_features": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            1,
+            2
+          ]
+        },
+        "states.1.cond.maskmem_pos_enc_0": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            1,
+            1
+          ]
+        },
+        "states.1.non_cond.image_features": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            1,
+            3
+          ]
+        },
+        "states.1.non_cond.image_pos_enc": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            1,
+            4
+          ]
+        },
+        "states.1.non_cond.maskmem_features": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            1,
+            2
+          ]
+        },
+        "states.1.non_cond.maskmem_pos_enc_0": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            1,
+            1
+          ]
+        },
+        "suppress_calls.0.high_res_masks": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            3,
+            1,
+            4,
+            4
+          ]
+        }
+      },
+      "mlx": {
+        "add_output_calls": [
+          {
+            "frame_idx": 4,
+            "state": "state-a",
+            "storage_key": "cond_frame_outputs"
+          },
+          {
+            "frame_idx": 4,
+            "state": "state-a",
+            "storage_key": "non_cond_frame_outputs"
+          },
+          {
+            "frame_idx": 4,
+            "state": "state-b",
+            "storage_key": "cond_frame_outputs"
+          },
+          {
+            "frame_idx": 4,
+            "state": "state-b",
+            "storage_key": "non_cond_frame_outputs"
+          }
+        ],
+        "encoder_calls": [
+          {
+            "frame_idx": 4,
+            "is_mask_from_pts": false,
+            "local_batch_size": 2,
+            "local_high_res_masks": {
+              "dtype": "float32",
+              "shape": [
+                2,
+                1,
+                4,
+                4
+              ],
+              "values": [
+                [
+                  [
+                    [
+                      10.0,
+                      10.0,
+                      10.0,
+                      10.0
+                    ],
+                    [
+                      10.0,
+                      10.0,
+                      10.0,
+                      10.0
+                    ],
+                    [
+                      10.0,
+                      10.0,
+                      10.0,
+                      10.0
+                    ],
+                    [
+                      10.0,
+                      10.0,
+                      10.0,
+                      10.0
+                    ]
+                  ]
+                ],
+                [
+                  [
+                    [
+                      30.0,
+                      30.0,
+                      30.0,
+                      30.0
+                    ],
+                    [
+                      30.0,
+                      30.0,
+                      30.0,
+                      30.0
+                    ],
+                    [
+                      30.0,
+                      30.0,
+                      30.0,
+                      30.0
+                    ],
+                    [
+                      30.0,
+                      30.0,
+                      30.0,
+                      30.0
+                    ]
+                  ]
+                ]
+              ]
+            },
+            "local_object_score_logits": {
+              "dtype": "float32",
+              "shape": [
+                2,
+                1
+              ],
+              "values": [
+                [
+                  10.0
+                ],
+                [
+                  10.0
+                ]
+              ]
+            },
+            "state": "state-a"
+          },
+          {
+            "frame_idx": 4,
+            "is_mask_from_pts": false,
+            "local_batch_size": 1,
+            "local_high_res_masks": {
+              "dtype": "float32",
+              "shape": [
+                1,
+                1,
+                4,
+                4
+              ],
+              "values": [
+                [
+                  [
+                    [
+                      20.0,
+                      20.0,
+                      20.0,
+                      20.0
+                    ],
+                    [
+                      20.0,
+                      20.0,
+                      20.0,
+                      20.0
+                    ],
+                    [
+                      20.0,
+                      20.0,
+                      20.0,
+                      20.0
+                    ],
+                    [
+                      20.0,
+                      20.0,
+                      20.0,
+                      20.0
+                    ]
+                  ]
+                ]
+              ]
+            },
+            "local_object_score_logits": {
+              "dtype": "float32",
+              "shape": [
+                1,
+                1
+              ],
+              "values": [
+                [
+                  10.0
+                ]
+              ]
+            },
+            "state": "state-b"
+          }
+        ],
+        "states": [
+          {
+            "cond": {
+              "image_features": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  [
+                    21.0,
+                    21.0,
+                    21.0
+                  ],
+                  [
+                    21.0,
+                    21.0,
+                    21.0
+                  ]
+                ]
+              },
+              "image_pos_enc": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  4
+                ],
+                "values": [
+                  [
+                    31.0,
+                    31.0,
+                    31.0,
+                    31.0
+                  ],
+                  [
+                    31.0,
+                    31.0,
+                    31.0,
+                    31.0
+                  ]
+                ]
+              },
+              "maskmem_features": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  2
+                ],
+                "values": [
+                  [
+                    1.0,
+                    1.0
+                  ],
+                  [
+                    1.0,
+                    1.0
+                  ]
+                ]
+              },
+              "maskmem_pos_enc_0": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  1
+                ],
+                "values": [
+                  [
+                    11.0
+                  ],
+                  [
+                    11.0
+                  ]
+                ]
+              }
+            },
+            "name": "state-a",
+            "non_cond": {
+              "image_features": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  [
+                    21.0,
+                    21.0,
+                    21.0
+                  ],
+                  [
+                    21.0,
+                    21.0,
+                    21.0
+                  ]
+                ]
+              },
+              "image_pos_enc": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  4
+                ],
+                "values": [
+                  [
+                    31.0,
+                    31.0,
+                    31.0,
+                    31.0
+                  ],
+                  [
+                    31.0,
+                    31.0,
+                    31.0,
+                    31.0
+                  ]
+                ]
+              },
+              "maskmem_features": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  2
+                ],
+                "values": [
+                  [
+                    1.0,
+                    1.0
+                  ],
+                  [
+                    1.0,
+                    1.0
+                  ]
+                ]
+              },
+              "maskmem_pos_enc_0": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  1
+                ],
+                "values": [
+                  [
+                    11.0
+                  ],
+                  [
+                    11.0
+                  ]
+                ]
+              }
+            },
+            "obj_ids": [
+              30,
+              10
+            ]
+          },
+          {
+            "cond": {
+              "image_features": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  3
+                ],
+                "values": [
+                  [
+                    22.0,
+                    22.0,
+                    22.0
+                  ]
+                ]
+              },
+              "image_pos_enc": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  4
+                ],
+                "values": [
+                  [
+                    32.0,
+                    32.0,
+                    32.0,
+                    32.0
+                  ]
+                ]
+              },
+              "maskmem_features": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  2
+                ],
+                "values": [
+                  [
+                    2.0,
+                    2.0
+                  ]
+                ]
+              },
+              "maskmem_pos_enc_0": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  1
+                ],
+                "values": [
+                  [
+                    12.0
+                  ]
+                ]
+              }
+            },
+            "name": "state-b",
+            "non_cond": {
+              "image_features": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  3
+                ],
+                "values": [
+                  [
+                    22.0,
+                    22.0,
+                    22.0
+                  ]
+                ]
+              },
+              "image_pos_enc": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  4
+                ],
+                "values": [
+                  [
+                    32.0,
+                    32.0,
+                    32.0,
+                    32.0
+                  ]
+                ]
+              },
+              "maskmem_features": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  2
+                ],
+                "values": [
+                  [
+                    2.0,
+                    2.0
+                  ]
+                ]
+              },
+              "maskmem_pos_enc_0": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  1
+                ],
+                "values": [
+                  [
+                    12.0
+                  ]
+                ]
+              }
+            },
+            "obj_ids": [
+              20
+            ]
+          }
+        ],
+        "suppress_calls": [
+          {
+            "high_res_masks": {
+              "dtype": "float32",
+              "shape": [
+                3,
+                1,
+                4,
+                4
+              ],
+              "values": [
+                [
+                  [
+                    [
+                      10.0,
+                      10.0,
+                      10.0,
+                      10.0
+                    ],
+                    [
+                      10.0,
+                      10.0,
+                      10.0,
+                      10.0
+                    ],
+                    [
+                      10.0,
+                      10.0,
+                      10.0,
+                      10.0
+                    ],
+                    [
+                      10.0,
+                      10.0,
+                      10.0,
+                      10.0
+                    ]
+                  ]
+                ],
+                [
+                  [
+                    [
+                      20.0,
+                      20.0,
+                      20.0,
+                      20.0
+                    ],
+                    [
+                      20.0,
+                      20.0,
+                      20.0,
+                      20.0
+                    ],
+                    [
+                      20.0,
+                      20.0,
+                      20.0,
+                      20.0
+                    ],
+                    [
+                      20.0,
+                      20.0,
+                      20.0,
+                      20.0
+                    ]
+                  ]
+                ],
+                [
+                  [
+                    [
+                      30.0,
+                      30.0,
+                      30.0,
+                      30.0
+                    ],
+                    [
+                      30.0,
+                      30.0,
+                      30.0,
+                      30.0
+                    ],
+                    [
+                      30.0,
+                      30.0,
+                      30.0,
+                      30.0
+                    ],
+                    [
+                      30.0,
+                      30.0,
+                      30.0,
+                      30.0
+                    ]
+                  ]
+                ]
+              ]
+            }
+          }
+        ]
+      },
+      "official": {
+        "add_output_calls": [
+          {
+            "frame_idx": 4,
+            "state": "state-a",
+            "storage_key": "cond_frame_outputs"
+          },
+          {
+            "frame_idx": 4,
+            "state": "state-a",
+            "storage_key": "non_cond_frame_outputs"
+          },
+          {
+            "frame_idx": 4,
+            "state": "state-b",
+            "storage_key": "cond_frame_outputs"
+          },
+          {
+            "frame_idx": 4,
+            "state": "state-b",
+            "storage_key": "non_cond_frame_outputs"
+          }
+        ],
+        "encoder_calls": [
+          {
+            "frame_idx": 4,
+            "is_mask_from_pts": false,
+            "local_batch_size": 2,
+            "local_high_res_masks": {
+              "dtype": "float32",
+              "shape": [
+                2,
+                1,
+                4,
+                4
+              ],
+              "values": [
+                [
+                  [
+                    [
+                      10.0,
+                      10.0,
+                      10.0,
+                      10.0
+                    ],
+                    [
+                      10.0,
+                      10.0,
+                      10.0,
+                      10.0
+                    ],
+                    [
+                      10.0,
+                      10.0,
+                      10.0,
+                      10.0
+                    ],
+                    [
+                      10.0,
+                      10.0,
+                      10.0,
+                      10.0
+                    ]
+                  ]
+                ],
+                [
+                  [
+                    [
+                      30.0,
+                      30.0,
+                      30.0,
+                      30.0
+                    ],
+                    [
+                      30.0,
+                      30.0,
+                      30.0,
+                      30.0
+                    ],
+                    [
+                      30.0,
+                      30.0,
+                      30.0,
+                      30.0
+                    ],
+                    [
+                      30.0,
+                      30.0,
+                      30.0,
+                      30.0
+                    ]
+                  ]
+                ]
+              ]
+            },
+            "local_object_score_logits": {
+              "dtype": "float32",
+              "shape": [
+                2,
+                1
+              ],
+              "values": [
+                [
+                  10.0
+                ],
+                [
+                  10.0
+                ]
+              ]
+            },
+            "state": "state-a"
+          },
+          {
+            "frame_idx": 4,
+            "is_mask_from_pts": false,
+            "local_batch_size": 1,
+            "local_high_res_masks": {
+              "dtype": "float32",
+              "shape": [
+                1,
+                1,
+                4,
+                4
+              ],
+              "values": [
+                [
+                  [
+                    [
+                      20.0,
+                      20.0,
+                      20.0,
+                      20.0
+                    ],
+                    [
+                      20.0,
+                      20.0,
+                      20.0,
+                      20.0
+                    ],
+                    [
+                      20.0,
+                      20.0,
+                      20.0,
+                      20.0
+                    ],
+                    [
+                      20.0,
+                      20.0,
+                      20.0,
+                      20.0
+                    ]
+                  ]
+                ]
+              ]
+            },
+            "local_object_score_logits": {
+              "dtype": "float32",
+              "shape": [
+                1,
+                1
+              ],
+              "values": [
+                [
+                  10.0
+                ]
+              ]
+            },
+            "state": "state-b"
+          }
+        ],
+        "states": [
+          {
+            "cond": {
+              "image_features": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  [
+                    21.0,
+                    21.0,
+                    21.0
+                  ],
+                  [
+                    21.0,
+                    21.0,
+                    21.0
+                  ]
+                ]
+              },
+              "image_pos_enc": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  4
+                ],
+                "values": [
+                  [
+                    31.0,
+                    31.0,
+                    31.0,
+                    31.0
+                  ],
+                  [
+                    31.0,
+                    31.0,
+                    31.0,
+                    31.0
+                  ]
+                ]
+              },
+              "maskmem_features": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  2
+                ],
+                "values": [
+                  [
+                    1.0,
+                    1.0
+                  ],
+                  [
+                    1.0,
+                    1.0
+                  ]
+                ]
+              },
+              "maskmem_pos_enc_0": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  1
+                ],
+                "values": [
+                  [
+                    11.0
+                  ],
+                  [
+                    11.0
+                  ]
+                ]
+              }
+            },
+            "name": "state-a",
+            "non_cond": {
+              "image_features": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  [
+                    21.0,
+                    21.0,
+                    21.0
+                  ],
+                  [
+                    21.0,
+                    21.0,
+                    21.0
+                  ]
+                ]
+              },
+              "image_pos_enc": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  4
+                ],
+                "values": [
+                  [
+                    31.0,
+                    31.0,
+                    31.0,
+                    31.0
+                  ],
+                  [
+                    31.0,
+                    31.0,
+                    31.0,
+                    31.0
+                  ]
+                ]
+              },
+              "maskmem_features": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  2
+                ],
+                "values": [
+                  [
+                    1.0,
+                    1.0
+                  ],
+                  [
+                    1.0,
+                    1.0
+                  ]
+                ]
+              },
+              "maskmem_pos_enc_0": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  1
+                ],
+                "values": [
+                  [
+                    11.0
+                  ],
+                  [
+                    11.0
+                  ]
+                ]
+              }
+            },
+            "obj_ids": [
+              30,
+              10
+            ]
+          },
+          {
+            "cond": {
+              "image_features": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  3
+                ],
+                "values": [
+                  [
+                    22.0,
+                    22.0,
+                    22.0
+                  ]
+                ]
+              },
+              "image_pos_enc": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  4
+                ],
+                "values": [
+                  [
+                    32.0,
+                    32.0,
+                    32.0,
+                    32.0
+                  ]
+                ]
+              },
+              "maskmem_features": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  2
+                ],
+                "values": [
+                  [
+                    2.0,
+                    2.0
+                  ]
+                ]
+              },
+              "maskmem_pos_enc_0": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  1
+                ],
+                "values": [
+                  [
+                    12.0
+                  ]
+                ]
+              }
+            },
+            "name": "state-b",
+            "non_cond": {
+              "image_features": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  3
+                ],
+                "values": [
+                  [
+                    22.0,
+                    22.0,
+                    22.0
+                  ]
+                ]
+              },
+              "image_pos_enc": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  4
+                ],
+                "values": [
+                  [
+                    32.0,
+                    32.0,
+                    32.0,
+                    32.0
+                  ]
+                ]
+              },
+              "maskmem_features": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  2
+                ],
+                "values": [
+                  [
+                    2.0,
+                    2.0
+                  ]
+                ]
+              },
+              "maskmem_pos_enc_0": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  1
+                ],
+                "values": [
+                  [
+                    12.0
+                  ]
+                ]
+              }
+            },
+            "obj_ids": [
+              20
+            ]
+          }
+        ],
+        "suppress_calls": [
+          {
+            "high_res_masks": {
+              "dtype": "float32",
+              "shape": [
+                3,
+                1,
+                4,
+                4
+              ],
+              "values": [
+                [
+                  [
+                    [
+                      10.0,
+                      10.0,
+                      10.0,
+                      10.0
+                    ],
+                    [
+                      10.0,
+                      10.0,
+                      10.0,
+                      10.0
+                    ],
+                    [
+                      10.0,
+                      10.0,
+                      10.0,
+                      10.0
+                    ],
+                    [
+                      10.0,
+                      10.0,
+                      10.0,
+                      10.0
+                    ]
+                  ]
+                ],
+                [
+                  [
+                    [
+                      20.0,
+                      20.0,
+                      20.0,
+                      20.0
+                    ],
+                    [
+                      20.0,
+                      20.0,
+                      20.0,
+                      20.0
+                    ],
+                    [
+                      20.0,
+                      20.0,
+                      20.0,
+                      20.0
+                    ],
+                    [
+                      20.0,
+                      20.0,
+                      20.0,
+                      20.0
+                    ]
+                  ]
+                ],
+                [
+                  [
+                    [
+                      30.0,
+                      30.0,
+                      30.0,
+                      30.0
+                    ],
+                    [
+                      30.0,
+                      30.0,
+                      30.0,
+                      30.0
+                    ],
+                    [
+                      30.0,
+                      30.0,
+                      30.0,
+                      30.0
+                    ],
+                    [
+                      30.0,
+                      30.0,
+                      30.0,
+                      30.0
+                    ]
+                  ]
+                ]
+              ]
+            }
+          }
+        ]
+      },
+      "scalar_matches": {
+        "add_output_calls": true,
+        "encoder_call_metadata": true,
+        "state_names_and_ids": true
+      }
+    },
+    "static_state_slicing": {
+      "dynamic": false,
+      "metrics": {
+        "encoder_calls.0.local_high_res_masks": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            1,
+            4,
+            4
+          ]
+        },
+        "encoder_calls.0.local_object_score_logits": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            1
+          ]
+        },
+        "encoder_calls.1.local_high_res_masks": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            1,
+            1,
+            4,
+            4
+          ]
+        },
+        "encoder_calls.1.local_object_score_logits": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            1,
+            1
+          ]
+        },
+        "states.0.cond.image_features": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            3
+          ]
+        },
+        "states.0.cond.image_pos_enc": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            4
+          ]
+        },
+        "states.0.cond.maskmem_features": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            2
+          ]
+        },
+        "states.0.cond.maskmem_pos_enc_0": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            1
+          ]
+        },
+        "states.0.non_cond.image_features": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            3
+          ]
+        },
+        "states.0.non_cond.image_pos_enc": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            4
+          ]
+        },
+        "states.0.non_cond.maskmem_features": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            2
+          ]
+        },
+        "states.0.non_cond.maskmem_pos_enc_0": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            1
+          ]
+        },
+        "states.1.cond.image_features": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            1,
+            3
+          ]
+        },
+        "states.1.cond.image_pos_enc": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            1,
+            4
+          ]
+        },
+        "states.1.cond.maskmem_features": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            1,
+            2
+          ]
+        },
+        "states.1.cond.maskmem_pos_enc_0": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            1,
+            1
+          ]
+        },
+        "states.1.non_cond.image_features": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            1,
+            3
+          ]
+        },
+        "states.1.non_cond.image_pos_enc": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            1,
+            4
+          ]
+        },
+        "states.1.non_cond.maskmem_features": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            1,
+            2
+          ]
+        },
+        "states.1.non_cond.maskmem_pos_enc_0": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            1,
+            1
+          ]
+        },
+        "suppress_calls.0.high_res_masks": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            3,
+            1,
+            4,
+            4
+          ]
+        }
+      },
+      "mlx": {
+        "add_output_calls": [
+          {
+            "frame_idx": 4,
+            "state": "state-a",
+            "storage_key": "cond_frame_outputs"
+          },
+          {
+            "frame_idx": 4,
+            "state": "state-a",
+            "storage_key": "non_cond_frame_outputs"
+          },
+          {
+            "frame_idx": 4,
+            "state": "state-b",
+            "storage_key": "cond_frame_outputs"
+          },
+          {
+            "frame_idx": 4,
+            "state": "state-b",
+            "storage_key": "non_cond_frame_outputs"
+          }
+        ],
+        "encoder_calls": [
+          {
+            "frame_idx": 4,
+            "is_mask_from_pts": false,
+            "local_batch_size": 2,
+            "local_high_res_masks": {
+              "dtype": "float32",
+              "shape": [
+                2,
+                1,
+                4,
+                4
+              ],
+              "values": [
+                [
+                  [
+                    [
+                      1.0,
+                      1.0,
+                      1.0,
+                      1.0
+                    ],
+                    [
+                      1.0,
+                      1.0,
+                      1.0,
+                      1.0
+                    ],
+                    [
+                      1.0,
+                      1.0,
+                      1.0,
+                      1.0
+                    ],
+                    [
+                      1.0,
+                      1.0,
+                      1.0,
+                      1.0
+                    ]
+                  ]
+                ],
+                [
+                  [
+                    [
+                      2.0,
+                      2.0,
+                      2.0,
+                      2.0
+                    ],
+                    [
+                      2.0,
+                      2.0,
+                      2.0,
+                      2.0
+                    ],
+                    [
+                      2.0,
+                      2.0,
+                      2.0,
+                      2.0
+                    ],
+                    [
+                      2.0,
+                      2.0,
+                      2.0,
+                      2.0
+                    ]
+                  ]
+                ]
+              ]
+            },
+            "local_object_score_logits": {
+              "dtype": "float32",
+              "shape": [
+                2,
+                1
+              ],
+              "values": [
+                [
+                  10.0
+                ],
+                [
+                  10.0
+                ]
+              ]
+            },
+            "state": "state-a"
+          },
+          {
+            "frame_idx": 4,
+            "is_mask_from_pts": false,
+            "local_batch_size": 1,
+            "local_high_res_masks": {
+              "dtype": "float32",
+              "shape": [
+                1,
+                1,
+                4,
+                4
+              ],
+              "values": [
+                [
+                  [
+                    [
+                      -1.0,
+                      -1.0,
+                      -1.0,
+                      -1.0
+                    ],
+                    [
+                      -1.0,
+                      -1.0,
+                      -1.0,
+                      -1.0
+                    ],
+                    [
+                      -1.0,
+                      -1.0,
+                      -1.0,
+                      -1.0
+                    ],
+                    [
+                      -1.0,
+                      -1.0,
+                      -1.0,
+                      -1.0
+                    ]
+                  ]
+                ]
+              ]
+            },
+            "local_object_score_logits": {
+              "dtype": "float32",
+              "shape": [
+                1,
+                1
+              ],
+              "values": [
+                [
+                  -10.0
+                ]
+              ]
+            },
+            "state": "state-b"
+          }
+        ],
+        "states": [
+          {
+            "cond": {
+              "image_features": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  [
+                    21.0,
+                    21.0,
+                    21.0
+                  ],
+                  [
+                    21.0,
+                    21.0,
+                    21.0
+                  ]
+                ]
+              },
+              "image_pos_enc": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  4
+                ],
+                "values": [
+                  [
+                    31.0,
+                    31.0,
+                    31.0,
+                    31.0
+                  ],
+                  [
+                    31.0,
+                    31.0,
+                    31.0,
+                    31.0
+                  ]
+                ]
+              },
+              "maskmem_features": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  2
+                ],
+                "values": [
+                  [
+                    1.0,
+                    1.0
+                  ],
+                  [
+                    1.0,
+                    1.0
+                  ]
+                ]
+              },
+              "maskmem_pos_enc_0": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  1
+                ],
+                "values": [
+                  [
+                    11.0
+                  ],
+                  [
+                    11.0
+                  ]
+                ]
+              }
+            },
+            "name": "state-a",
+            "non_cond": {
+              "image_features": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  [
+                    21.0,
+                    21.0,
+                    21.0
+                  ],
+                  [
+                    21.0,
+                    21.0,
+                    21.0
+                  ]
+                ]
+              },
+              "image_pos_enc": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  4
+                ],
+                "values": [
+                  [
+                    31.0,
+                    31.0,
+                    31.0,
+                    31.0
+                  ],
+                  [
+                    31.0,
+                    31.0,
+                    31.0,
+                    31.0
+                  ]
+                ]
+              },
+              "maskmem_features": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  2
+                ],
+                "values": [
+                  [
+                    1.0,
+                    1.0
+                  ],
+                  [
+                    1.0,
+                    1.0
+                  ]
+                ]
+              },
+              "maskmem_pos_enc_0": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  1
+                ],
+                "values": [
+                  [
+                    11.0
+                  ],
+                  [
+                    11.0
+                  ]
+                ]
+              }
+            },
+            "obj_ids": [
+              10,
+              11
+            ]
+          },
+          {
+            "cond": {
+              "image_features": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  3
+                ],
+                "values": [
+                  [
+                    22.0,
+                    22.0,
+                    22.0
+                  ]
+                ]
+              },
+              "image_pos_enc": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  4
+                ],
+                "values": [
+                  [
+                    32.0,
+                    32.0,
+                    32.0,
+                    32.0
+                  ]
+                ]
+              },
+              "maskmem_features": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  2
+                ],
+                "values": [
+                  [
+                    2.0,
+                    2.0
+                  ]
+                ]
+              },
+              "maskmem_pos_enc_0": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  1
+                ],
+                "values": [
+                  [
+                    12.0
+                  ]
+                ]
+              }
+            },
+            "name": "state-b",
+            "non_cond": {
+              "image_features": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  3
+                ],
+                "values": [
+                  [
+                    22.0,
+                    22.0,
+                    22.0
+                  ]
+                ]
+              },
+              "image_pos_enc": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  4
+                ],
+                "values": [
+                  [
+                    32.0,
+                    32.0,
+                    32.0,
+                    32.0
+                  ]
+                ]
+              },
+              "maskmem_features": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  2
+                ],
+                "values": [
+                  [
+                    2.0,
+                    2.0
+                  ]
+                ]
+              },
+              "maskmem_pos_enc_0": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  1
+                ],
+                "values": [
+                  [
+                    12.0
+                  ]
+                ]
+              }
+            },
+            "obj_ids": [
+              12
+            ]
+          }
+        ],
+        "suppress_calls": [
+          {
+            "high_res_masks": {
+              "dtype": "float32",
+              "shape": [
+                3,
+                1,
+                4,
+                4
+              ],
+              "values": [
+                [
+                  [
+                    [
+                      1.0,
+                      1.0,
+                      1.0,
+                      1.0
+                    ],
+                    [
+                      1.0,
+                      1.0,
+                      1.0,
+                      1.0
+                    ],
+                    [
+                      1.0,
+                      1.0,
+                      1.0,
+                      1.0
+                    ],
+                    [
+                      1.0,
+                      1.0,
+                      1.0,
+                      1.0
+                    ]
+                  ]
+                ],
+                [
+                  [
+                    [
+                      2.0,
+                      2.0,
+                      2.0,
+                      2.0
+                    ],
+                    [
+                      2.0,
+                      2.0,
+                      2.0,
+                      2.0
+                    ],
+                    [
+                      2.0,
+                      2.0,
+                      2.0,
+                      2.0
+                    ],
+                    [
+                      2.0,
+                      2.0,
+                      2.0,
+                      2.0
+                    ]
+                  ]
+                ],
+                [
+                  [
+                    [
+                      -1.0,
+                      -1.0,
+                      -1.0,
+                      -1.0
+                    ],
+                    [
+                      -1.0,
+                      -1.0,
+                      -1.0,
+                      -1.0
+                    ],
+                    [
+                      -1.0,
+                      -1.0,
+                      -1.0,
+                      -1.0
+                    ],
+                    [
+                      -1.0,
+                      -1.0,
+                      -1.0,
+                      -1.0
+                    ]
+                  ]
+                ]
+              ]
+            }
+          }
+        ]
+      },
+      "official": {
+        "add_output_calls": [
+          {
+            "frame_idx": 4,
+            "state": "state-a",
+            "storage_key": "cond_frame_outputs"
+          },
+          {
+            "frame_idx": 4,
+            "state": "state-a",
+            "storage_key": "non_cond_frame_outputs"
+          },
+          {
+            "frame_idx": 4,
+            "state": "state-b",
+            "storage_key": "cond_frame_outputs"
+          },
+          {
+            "frame_idx": 4,
+            "state": "state-b",
+            "storage_key": "non_cond_frame_outputs"
+          }
+        ],
+        "encoder_calls": [
+          {
+            "frame_idx": 4,
+            "is_mask_from_pts": false,
+            "local_batch_size": 2,
+            "local_high_res_masks": {
+              "dtype": "float32",
+              "shape": [
+                2,
+                1,
+                4,
+                4
+              ],
+              "values": [
+                [
+                  [
+                    [
+                      1.0,
+                      1.0,
+                      1.0,
+                      1.0
+                    ],
+                    [
+                      1.0,
+                      1.0,
+                      1.0,
+                      1.0
+                    ],
+                    [
+                      1.0,
+                      1.0,
+                      1.0,
+                      1.0
+                    ],
+                    [
+                      1.0,
+                      1.0,
+                      1.0,
+                      1.0
+                    ]
+                  ]
+                ],
+                [
+                  [
+                    [
+                      2.0,
+                      2.0,
+                      2.0,
+                      2.0
+                    ],
+                    [
+                      2.0,
+                      2.0,
+                      2.0,
+                      2.0
+                    ],
+                    [
+                      2.0,
+                      2.0,
+                      2.0,
+                      2.0
+                    ],
+                    [
+                      2.0,
+                      2.0,
+                      2.0,
+                      2.0
+                    ]
+                  ]
+                ]
+              ]
+            },
+            "local_object_score_logits": {
+              "dtype": "float32",
+              "shape": [
+                2,
+                1
+              ],
+              "values": [
+                [
+                  10.0
+                ],
+                [
+                  10.0
+                ]
+              ]
+            },
+            "state": "state-a"
+          },
+          {
+            "frame_idx": 4,
+            "is_mask_from_pts": false,
+            "local_batch_size": 1,
+            "local_high_res_masks": {
+              "dtype": "float32",
+              "shape": [
+                1,
+                1,
+                4,
+                4
+              ],
+              "values": [
+                [
+                  [
+                    [
+                      -1.0,
+                      -1.0,
+                      -1.0,
+                      -1.0
+                    ],
+                    [
+                      -1.0,
+                      -1.0,
+                      -1.0,
+                      -1.0
+                    ],
+                    [
+                      -1.0,
+                      -1.0,
+                      -1.0,
+                      -1.0
+                    ],
+                    [
+                      -1.0,
+                      -1.0,
+                      -1.0,
+                      -1.0
+                    ]
+                  ]
+                ]
+              ]
+            },
+            "local_object_score_logits": {
+              "dtype": "float32",
+              "shape": [
+                1,
+                1
+              ],
+              "values": [
+                [
+                  -10.0
+                ]
+              ]
+            },
+            "state": "state-b"
+          }
+        ],
+        "states": [
+          {
+            "cond": {
+              "image_features": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  [
+                    21.0,
+                    21.0,
+                    21.0
+                  ],
+                  [
+                    21.0,
+                    21.0,
+                    21.0
+                  ]
+                ]
+              },
+              "image_pos_enc": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  4
+                ],
+                "values": [
+                  [
+                    31.0,
+                    31.0,
+                    31.0,
+                    31.0
+                  ],
+                  [
+                    31.0,
+                    31.0,
+                    31.0,
+                    31.0
+                  ]
+                ]
+              },
+              "maskmem_features": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  2
+                ],
+                "values": [
+                  [
+                    1.0,
+                    1.0
+                  ],
+                  [
+                    1.0,
+                    1.0
+                  ]
+                ]
+              },
+              "maskmem_pos_enc_0": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  1
+                ],
+                "values": [
+                  [
+                    11.0
+                  ],
+                  [
+                    11.0
+                  ]
+                ]
+              }
+            },
+            "name": "state-a",
+            "non_cond": {
+              "image_features": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  3
+                ],
+                "values": [
+                  [
+                    21.0,
+                    21.0,
+                    21.0
+                  ],
+                  [
+                    21.0,
+                    21.0,
+                    21.0
+                  ]
+                ]
+              },
+              "image_pos_enc": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  4
+                ],
+                "values": [
+                  [
+                    31.0,
+                    31.0,
+                    31.0,
+                    31.0
+                  ],
+                  [
+                    31.0,
+                    31.0,
+                    31.0,
+                    31.0
+                  ]
+                ]
+              },
+              "maskmem_features": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  2
+                ],
+                "values": [
+                  [
+                    1.0,
+                    1.0
+                  ],
+                  [
+                    1.0,
+                    1.0
+                  ]
+                ]
+              },
+              "maskmem_pos_enc_0": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  1
+                ],
+                "values": [
+                  [
+                    11.0
+                  ],
+                  [
+                    11.0
+                  ]
+                ]
+              }
+            },
+            "obj_ids": [
+              10,
+              11
+            ]
+          },
+          {
+            "cond": {
+              "image_features": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  3
+                ],
+                "values": [
+                  [
+                    22.0,
+                    22.0,
+                    22.0
+                  ]
+                ]
+              },
+              "image_pos_enc": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  4
+                ],
+                "values": [
+                  [
+                    32.0,
+                    32.0,
+                    32.0,
+                    32.0
+                  ]
+                ]
+              },
+              "maskmem_features": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  2
+                ],
+                "values": [
+                  [
+                    2.0,
+                    2.0
+                  ]
+                ]
+              },
+              "maskmem_pos_enc_0": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  1
+                ],
+                "values": [
+                  [
+                    12.0
+                  ]
+                ]
+              }
+            },
+            "name": "state-b",
+            "non_cond": {
+              "image_features": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  3
+                ],
+                "values": [
+                  [
+                    22.0,
+                    22.0,
+                    22.0
+                  ]
+                ]
+              },
+              "image_pos_enc": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  4
+                ],
+                "values": [
+                  [
+                    32.0,
+                    32.0,
+                    32.0,
+                    32.0
+                  ]
+                ]
+              },
+              "maskmem_features": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  2
+                ],
+                "values": [
+                  [
+                    2.0,
+                    2.0
+                  ]
+                ]
+              },
+              "maskmem_pos_enc_0": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  1
+                ],
+                "values": [
+                  [
+                    12.0
+                  ]
+                ]
+              }
+            },
+            "obj_ids": [
+              12
+            ]
+          }
+        ],
+        "suppress_calls": [
+          {
+            "high_res_masks": {
+              "dtype": "float32",
+              "shape": [
+                3,
+                1,
+                4,
+                4
+              ],
+              "values": [
+                [
+                  [
+                    [
+                      1.0,
+                      1.0,
+                      1.0,
+                      1.0
+                    ],
+                    [
+                      1.0,
+                      1.0,
+                      1.0,
+                      1.0
+                    ],
+                    [
+                      1.0,
+                      1.0,
+                      1.0,
+                      1.0
+                    ],
+                    [
+                      1.0,
+                      1.0,
+                      1.0,
+                      1.0
+                    ]
+                  ]
+                ],
+                [
+                  [
+                    [
+                      2.0,
+                      2.0,
+                      2.0,
+                      2.0
+                    ],
+                    [
+                      2.0,
+                      2.0,
+                      2.0,
+                      2.0
+                    ],
+                    [
+                      2.0,
+                      2.0,
+                      2.0,
+                      2.0
+                    ],
+                    [
+                      2.0,
+                      2.0,
+                      2.0,
+                      2.0
+                    ]
+                  ]
+                ],
+                [
+                  [
+                    [
+                      -1.0,
+                      -1.0,
+                      -1.0,
+                      -1.0
+                    ],
+                    [
+                      -1.0,
+                      -1.0,
+                      -1.0,
+                      -1.0
+                    ],
+                    [
+                      -1.0,
+                      -1.0,
+                      -1.0,
+                      -1.0
+                    ],
+                    [
+                      -1.0,
+                      -1.0,
+                      -1.0,
+                      -1.0
+                    ]
+                  ]
+                ]
+              ]
+            }
+          }
+        ]
+      },
+      "scalar_matches": {
+        "add_output_calls": true,
+        "encoder_call_metadata": true,
+        "state_names_and_ids": true
+      }
+    }
+  },
+  "component": "Sam3MultiplexBase._tracker_update_memories",
+  "official_commit": "2814fa619404a722d03e9a012e083e4f293a4e53"
+}

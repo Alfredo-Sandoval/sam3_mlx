@@ -1,0 +1,74 @@
+{
+  "atol": 0.002,
+  "proof_artifact": "tests/fixtures/port/tracker/predictor_loop_parity_frame1.png",
+  "results": {
+    "add.video_res_masks": {
+      "max_abs": 8.940696716308594e-07,
+      "mean_abs": 1.5355072946476866e-07,
+      "shape": [
+        1,
+        1,
+        64,
+        64
+      ]
+    },
+    "prop[0].low_res_masks": {
+      "max_abs": 1.6093254089355469e-06,
+      "mean_abs": 2.451014609050617e-07,
+      "shape": [
+        1,
+        1,
+        288,
+        288
+      ]
+    },
+    "prop[0].object_scores": {
+      "max_abs": 2.2351741790771484e-08,
+      "mean_abs": 2.2351741790771484e-08,
+      "shape": [
+        1,
+        1
+      ]
+    },
+    "prop[0].video_res_masks": {
+      "max_abs": 8.940696716308594e-07,
+      "mean_abs": 1.5355072946476866e-07,
+      "shape": [
+        1,
+        1,
+        64,
+        64
+      ]
+    },
+    "prop[1].low_res_masks": {
+      "max_abs": 0.0,
+      "mean_abs": 0.0,
+      "shape": [
+        1,
+        1,
+        288,
+        288
+      ]
+    },
+    "prop[1].object_scores": {
+      "max_abs": 0.0002834498882293701,
+      "mean_abs": 0.0002834498882293701,
+      "shape": [
+        1,
+        1
+      ]
+    },
+    "prop[1].video_res_masks": {
+      "max_abs": 0.0,
+      "mean_abs": 0.0,
+      "shape": [
+        1,
+        1,
+        64,
+        64
+      ]
+    }
+  },
+  "seed": 0,
+  "worst_max_abs": 0.0002834498882293701
+}

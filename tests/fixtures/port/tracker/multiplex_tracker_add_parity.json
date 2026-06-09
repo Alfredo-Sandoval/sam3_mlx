@@ -1,0 +1,546 @@
+{
+  "atol": 0.0,
+  "case": "dynamic_state_selection_and_mask_preprocess",
+  "cases": {
+    "create_dynamic_state_when_full": {
+      "metrics": {
+        "add_calls.0.masks": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            4,
+            4
+          ]
+        }
+      },
+      "mlx": {
+        "add_calls": [
+          {
+            "add_mask_to_memory": true,
+            "frame_idx": 4,
+            "masks": {
+              "dtype": "bool",
+              "shape": [
+                2,
+                4,
+                4
+              ],
+              "values": [
+                [
+                  [
+                    1,
+                    1,
+                    0,
+                    0
+                  ],
+                  [
+                    1,
+                    1,
+                    0,
+                    0
+                  ],
+                  [
+                    0,
+                    0,
+                    1,
+                    1
+                  ],
+                  [
+                    0,
+                    0,
+                    1,
+                    1
+                  ]
+                ],
+                [
+                  [
+                    0,
+                    0,
+                    1,
+                    1
+                  ],
+                  [
+                    0,
+                    0,
+                    1,
+                    1
+                  ],
+                  [
+                    0,
+                    0,
+                    0,
+                    0
+                  ],
+                  [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                ]
+              ]
+            },
+            "obj_ids": [
+              300,
+              301
+            ],
+            "state_name": "init-1"
+          }
+        ],
+        "init_calls": [
+          {
+            "num_frames": 8,
+            "state_name": "init-1",
+            "video_height": 6,
+            "video_width": 7
+          }
+        ],
+        "preflight_calls": [
+          {
+            "run_mem_encoder": true,
+            "state_name": "init-1"
+          }
+        ],
+        "returned_state_names": [
+          "full",
+          "init-1"
+        ],
+        "states": [
+          {
+            "available_slots": 0,
+            "backbone_out": "cached-backbone",
+            "empty_output_seeded": false,
+            "has_cached_features": false,
+            "name": "full",
+            "obj_ids": [
+              100
+            ],
+            "object_ids": [
+              100
+            ],
+            "tracking_has_started": false
+          },
+          {
+            "available_slots": 1,
+            "backbone_out": "cached-backbone",
+            "empty_output_seeded": true,
+            "has_cached_features": true,
+            "name": "init-1",
+            "obj_ids": [
+              300,
+              301
+            ],
+            "object_ids": [
+              300,
+              301
+            ],
+            "tracking_has_started": true
+          }
+        ]
+      },
+      "official": {
+        "add_calls": [
+          {
+            "add_mask_to_memory": true,
+            "frame_idx": 4,
+            "masks": {
+              "dtype": "bool",
+              "shape": [
+                2,
+                4,
+                4
+              ],
+              "values": [
+                [
+                  [
+                    1,
+                    1,
+                    0,
+                    0
+                  ],
+                  [
+                    1,
+                    1,
+                    0,
+                    0
+                  ],
+                  [
+                    0,
+                    0,
+                    1,
+                    1
+                  ],
+                  [
+                    0,
+                    0,
+                    1,
+                    1
+                  ]
+                ],
+                [
+                  [
+                    0,
+                    0,
+                    1,
+                    1
+                  ],
+                  [
+                    0,
+                    0,
+                    1,
+                    1
+                  ],
+                  [
+                    0,
+                    0,
+                    0,
+                    0
+                  ],
+                  [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                ]
+              ]
+            },
+            "obj_ids": [
+              300,
+              301
+            ],
+            "state_name": "init-1"
+          }
+        ],
+        "init_calls": [
+          {
+            "num_frames": 8,
+            "state_name": "init-1",
+            "video_height": 6,
+            "video_width": 7
+          }
+        ],
+        "preflight_calls": [
+          {
+            "run_mem_encoder": true,
+            "state_name": "init-1"
+          }
+        ],
+        "returned_state_names": [
+          "full",
+          "init-1"
+        ],
+        "states": [
+          {
+            "available_slots": 0,
+            "backbone_out": "cached-backbone",
+            "empty_output_seeded": false,
+            "has_cached_features": false,
+            "name": "full",
+            "obj_ids": [
+              100
+            ],
+            "object_ids": [
+              100
+            ],
+            "tracking_has_started": false
+          },
+          {
+            "available_slots": 1,
+            "backbone_out": "cached-backbone",
+            "empty_output_seeded": false,
+            "has_cached_features": false,
+            "name": "init-1",
+            "obj_ids": [
+              300,
+              301
+            ],
+            "object_ids": [
+              300,
+              301
+            ],
+            "tracking_has_started": true
+          }
+        ]
+      },
+      "scalar_matches": {
+        "add_calls_without_masks": true,
+        "init_calls": true,
+        "preflight_calls": true,
+        "returned_state_names": true,
+        "state_contract": true
+      }
+    },
+    "reuse_tightest_dynamic_state": {
+      "metrics": {
+        "add_calls.0.masks": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            4,
+            4
+          ]
+        }
+      },
+      "mlx": {
+        "add_calls": [
+          {
+            "add_mask_to_memory": true,
+            "frame_idx": 4,
+            "masks": {
+              "dtype": "bool",
+              "shape": [
+                2,
+                4,
+                4
+              ],
+              "values": [
+                [
+                  [
+                    1,
+                    1,
+                    0,
+                    0
+                  ],
+                  [
+                    1,
+                    1,
+                    0,
+                    0
+                  ],
+                  [
+                    0,
+                    0,
+                    1,
+                    1
+                  ],
+                  [
+                    0,
+                    0,
+                    1,
+                    1
+                  ]
+                ],
+                [
+                  [
+                    0,
+                    0,
+                    1,
+                    1
+                  ],
+                  [
+                    0,
+                    0,
+                    1,
+                    1
+                  ],
+                  [
+                    0,
+                    0,
+                    0,
+                    0
+                  ],
+                  [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                ]
+              ]
+            },
+            "obj_ids": [
+              300,
+              301
+            ],
+            "state_name": "tight"
+          }
+        ],
+        "init_calls": [],
+        "preflight_calls": [
+          {
+            "run_mem_encoder": true,
+            "state_name": "tight"
+          }
+        ],
+        "returned_state_names": [
+          "loose",
+          "tight"
+        ],
+        "states": [
+          {
+            "available_slots": 4,
+            "backbone_out": null,
+            "empty_output_seeded": false,
+            "has_cached_features": false,
+            "name": "loose",
+            "obj_ids": [
+              100,
+              101
+            ],
+            "object_ids": [
+              100,
+              101
+            ],
+            "tracking_has_started": false
+          },
+          {
+            "available_slots": 0,
+            "backbone_out": null,
+            "empty_output_seeded": false,
+            "has_cached_features": true,
+            "name": "tight",
+            "obj_ids": [
+              200,
+              300,
+              301
+            ],
+            "object_ids": [
+              200,
+              300,
+              301
+            ],
+            "tracking_has_started": true
+          }
+        ]
+      },
+      "official": {
+        "add_calls": [
+          {
+            "add_mask_to_memory": true,
+            "frame_idx": 4,
+            "masks": {
+              "dtype": "bool",
+              "shape": [
+                2,
+                4,
+                4
+              ],
+              "values": [
+                [
+                  [
+                    1,
+                    1,
+                    0,
+                    0
+                  ],
+                  [
+                    1,
+                    1,
+                    0,
+                    0
+                  ],
+                  [
+                    0,
+                    0,
+                    1,
+                    1
+                  ],
+                  [
+                    0,
+                    0,
+                    1,
+                    1
+                  ]
+                ],
+                [
+                  [
+                    0,
+                    0,
+                    1,
+                    1
+                  ],
+                  [
+                    0,
+                    0,
+                    1,
+                    1
+                  ],
+                  [
+                    0,
+                    0,
+                    0,
+                    0
+                  ],
+                  [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                ]
+              ]
+            },
+            "obj_ids": [
+              300,
+              301
+            ],
+            "state_name": "tight"
+          }
+        ],
+        "init_calls": [],
+        "preflight_calls": [
+          {
+            "run_mem_encoder": true,
+            "state_name": "tight"
+          }
+        ],
+        "returned_state_names": [
+          "loose",
+          "tight"
+        ],
+        "states": [
+          {
+            "available_slots": 4,
+            "backbone_out": null,
+            "empty_output_seeded": false,
+            "has_cached_features": false,
+            "name": "loose",
+            "obj_ids": [
+              100,
+              101
+            ],
+            "object_ids": [
+              100,
+              101
+            ],
+            "tracking_has_started": false
+          },
+          {
+            "available_slots": 0,
+            "backbone_out": null,
+            "empty_output_seeded": false,
+            "has_cached_features": false,
+            "name": "tight",
+            "obj_ids": [
+              200,
+              300,
+              301
+            ],
+            "object_ids": [
+              200,
+              300,
+              301
+            ],
+            "tracking_has_started": true
+          }
+        ]
+      },
+      "scalar_matches": {
+        "add_calls_without_masks": true,
+        "init_calls": true,
+        "preflight_calls": true,
+        "returned_state_names": true,
+        "state_contract": true
+      }
+    }
+  },
+  "component": "Sam3MultiplexBase._tracker_add_new_objects",
+  "mlx_runtime_guardrails": {
+    "cached_features_attached_to_selected_state": true,
+    "empty_current_output_seeded_for_new_packed_state": true
+  },
+  "official_commit": "2814fa619404a722d03e9a012e083e4f293a4e53"
+}

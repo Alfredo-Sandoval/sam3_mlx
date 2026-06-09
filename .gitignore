@@ -1,0 +1,61 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# macOS Finder metadata
+.DS_Store
+
+# Local AI agent instructions
+AGENTS.md
+AGENTS.local.md
+CLAUDE.md
+CLAUDE.local.md
+GEMINI.md
+GEMINI.local.md
+CODEX.md
+CODEX.local.md
+QWEN.md
+QWEN.local.md
+.claude/
+.codex/
+.cursor/
+.cursorrules
+.windsurfrules
+.clinerules
+.roomodes
+.github/copilot-instructions.md
+
+# Local upstream reference checkouts
+third_party/
+
+# Local-only provenance doc (not shipped in the public tree)
+/UPSTREAM.md
+
+# Local developer parity/benchmark scripts
+scripts/
+
+# Local scratch examples/notebooks
+examples/
+
+# Internal developer artifacts
+/dev_docs/
+dev_docs/**/*.json
+
+# Ignore Modified Weights
+checkpoints/
+sam3-mod-weights/
+vit_block/
+*.pt
+*.safetensors
+semantic_mask.png
+semantic_overlay.png
+*.jpg

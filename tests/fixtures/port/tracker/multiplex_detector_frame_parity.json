@@ -1,0 +1,3677 @@
+{
+  "atol": 1e-05,
+  "case": "detector_frame_startup_and_existing_state",
+  "cases": {
+    "startup_frame": {
+      "metrics": {
+        "startup_frame.add_calls.0.masks": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            4,
+            4
+          ]
+        },
+        "startup_frame.frame0.obj_id_to_mask.0": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            1,
+            2,
+            2
+          ]
+        },
+        "startup_frame.frame0.obj_id_to_mask.1": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            1,
+            2,
+            2
+          ]
+        },
+        "startup_frame.frame0.obj_id_to_score": {
+          "max_abs": 5.960464477539063e-08,
+          "mean_abs": 2.9802322387695312e-08,
+          "shape": [
+            2
+          ]
+        },
+        "startup_frame.frame0.states.0.cond_frame_outputs.0.object_score_logits": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            1
+          ]
+        },
+        "startup_frame.frame0.states.0.cond_frame_outputs.0.pred_masks": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            1,
+            2,
+            2
+          ]
+        },
+        "startup_frame.frame0.states.0.cond_frame_outputs.0.pred_masks_high_res": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            1,
+            4,
+            4
+          ]
+        },
+        "startup_frame.frame0.tracker_obj_scores_global": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            0
+          ]
+        }
+      },
+      "mlx": {
+        "calls": {
+          "add_calls": [
+            {
+              "add_mask_to_memory": true,
+              "extra_keys": [],
+              "frame_idx": 0,
+              "masks": {
+                "dtype": "bool",
+                "shape": [
+                  2,
+                  4,
+                  4
+                ],
+                "values": [
+                  [
+                    [
+                      1,
+                      1,
+                      0,
+                      0
+                    ],
+                    [
+                      1,
+                      1,
+                      0,
+                      0
+                    ],
+                    [
+                      0,
+                      0,
+                      0,
+                      0
+                    ],
+                    [
+                      0,
+                      0,
+                      0,
+                      0
+                    ]
+                  ],
+                  [
+                    [
+                      0,
+                      0,
+                      0,
+                      0
+                    ],
+                    [
+                      0,
+                      0,
+                      0,
+                      0
+                    ],
+                    [
+                      0,
+                      0,
+                      1,
+                      1
+                    ],
+                    [
+                      0,
+                      0,
+                      1,
+                      1
+                    ]
+                  ]
+                ]
+              },
+              "obj_ids": [
+                0,
+                1
+              ],
+              "state": "state-1"
+            }
+          ],
+          "add_output_calls": [],
+          "init_calls": [
+            {
+              "cached_feature_keys": [
+                "0",
+                "multigpu_buffer",
+                "text"
+              ],
+              "num_frames": 3,
+              "state": "state-1",
+              "video_height": 2,
+              "video_width": 2
+            }
+          ],
+          "memory_calls": [],
+          "preflight_calls": [
+            {
+              "run_mem_encoder": true,
+              "state": "state-1"
+            }
+          ],
+          "propagate_calls": [],
+          "suppress_calls": []
+        },
+        "event_log": [
+          {
+            "device": "mlx",
+            "event": "forward_text",
+            "find_text_batch": [
+              "shoe"
+            ]
+          },
+          {
+            "event": "detector",
+            "frame_idx": 0,
+            "has_multigpu_buffer": true,
+            "nms_iou_thresh": 0.0,
+            "nms_prob_thresh": 0.5,
+            "nms_use_iom": false,
+            "num_frames": 3,
+            "run_nms": false,
+            "track_in_reverse": false
+          },
+          {
+            "event": "init_state",
+            "state": "state-1"
+          },
+          {
+            "event": "add_new_masks",
+            "frame_idx": 0,
+            "obj_ids": [
+              0,
+              1
+            ],
+            "state": "state-1"
+          },
+          {
+            "event": "preflight",
+            "run_mem_encoder": true,
+            "state": "state-1"
+          }
+        ],
+        "frames": [
+          {
+            "feature_cache": {
+              "frame_keys": [
+                0
+              ],
+              "has_multigpu_buffer": true,
+              "keys": [
+                "0",
+                "multigpu_buffer",
+                "text"
+              ],
+              "text_keys": [
+                [
+                  "shoe"
+                ]
+              ]
+            },
+            "frame_idx": 0,
+            "frame_stats": {
+              "num_obj_dropped": 0,
+              "num_obj_tracked": 2
+            },
+            "obj_id_to_mask": {
+              "0": {
+                "area": 1,
+                "array": {
+                  "dtype": "bool",
+                  "shape": [
+                    1,
+                    2,
+                    2
+                  ],
+                  "values": [
+                    [
+                      [
+                        1,
+                        0
+                      ],
+                      [
+                        0,
+                        0
+                      ]
+                    ]
+                  ]
+                }
+              },
+              "1": {
+                "area": 1,
+                "array": {
+                  "dtype": "bool",
+                  "shape": [
+                    1,
+                    2,
+                    2
+                  ],
+                  "values": [
+                    [
+                      [
+                        0,
+                        0
+                      ],
+                      [
+                        0,
+                        1
+                      ]
+                    ]
+                  ]
+                }
+              }
+            },
+            "obj_id_to_score": {
+              "0": 0.8807970881462097,
+              "1": 0.9241418242454529
+            },
+            "states": [
+              {
+                "assignments": [
+                  [
+                    0,
+                    1
+                  ]
+                ],
+                "available_slots": 0,
+                "has_backbone_out": true,
+                "has_cached_features": true,
+                "name": "state-1",
+                "num_buckets": 1,
+                "obj_ids": [
+                  0,
+                  1
+                ],
+                "object_ids": [
+                  0,
+                  1
+                ],
+                "outputs": {
+                  "cond_frame_outputs": {
+                    "0": {
+                      "conditioning_objects": [
+                        0,
+                        1
+                      ],
+                      "object_score_logits": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          1
+                        ],
+                        "values": [
+                          [
+                            101.0
+                          ],
+                          [
+                            101.0
+                          ]
+                        ]
+                      },
+                      "pred_masks": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          1,
+                          2,
+                          2
+                        ],
+                        "values": [
+                          [
+                            [
+                              [
+                                2.0,
+                                -2.0
+                              ],
+                              [
+                                -2.0,
+                                -2.0
+                              ]
+                            ]
+                          ],
+                          [
+                            [
+                              [
+                                -2.0,
+                                -2.0
+                              ],
+                              [
+                                -2.0,
+                                2.0
+                              ]
+                            ]
+                          ]
+                        ]
+                      },
+                      "pred_masks_high_res": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          1,
+                          4,
+                          4
+                        ],
+                        "values": [
+                          [
+                            [
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ]
+                            ]
+                          ],
+                          [
+                            [
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ]
+                            ]
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  "non_cond_frame_outputs": {}
+                },
+                "total_valid_entries": 2,
+                "tracking_has_started": true
+              }
+            ],
+            "tracker_metadata": {
+              "gpu_metadata": {
+                "N_obj": 2
+              },
+              "max_obj_id": 1,
+              "num_buc_per_gpu": [
+                1
+              ],
+              "num_obj_per_gpu": [
+                2
+              ],
+              "obj_id_to_sam2_score_frame_wise": {
+                "0": {
+                  "0": 0.8807970881462097,
+                  "1": 0.9241418242454529
+                }
+              },
+              "obj_id_to_score": {
+                "0": 0.8807970881462097,
+                "1": 0.9241418242454529
+              },
+              "obj_ids_all_gpu": [
+                0,
+                1
+              ],
+              "obj_ids_per_gpu": [
+                [
+                  0,
+                  1
+                ]
+              ],
+              "rank0_metadata": {
+                "obj_first_frame_idx": {
+                  "0": 0,
+                  "1": 0
+                },
+                "removed_obj_ids": [],
+                "trk_keep_alive": {}
+              }
+            },
+            "tracker_obj_scores_global": {
+              "dtype": "float32",
+              "shape": [
+                0
+              ],
+              "values": []
+            }
+          }
+        ]
+      },
+      "official": {
+        "calls": {
+          "add_calls": [
+            {
+              "add_mask_to_memory": true,
+              "extra_keys": [],
+              "frame_idx": 0,
+              "masks": {
+                "dtype": "bool",
+                "shape": [
+                  2,
+                  4,
+                  4
+                ],
+                "values": [
+                  [
+                    [
+                      1,
+                      1,
+                      0,
+                      0
+                    ],
+                    [
+                      1,
+                      1,
+                      0,
+                      0
+                    ],
+                    [
+                      0,
+                      0,
+                      0,
+                      0
+                    ],
+                    [
+                      0,
+                      0,
+                      0,
+                      0
+                    ]
+                  ],
+                  [
+                    [
+                      0,
+                      0,
+                      0,
+                      0
+                    ],
+                    [
+                      0,
+                      0,
+                      0,
+                      0
+                    ],
+                    [
+                      0,
+                      0,
+                      1,
+                      1
+                    ],
+                    [
+                      0,
+                      0,
+                      1,
+                      1
+                    ]
+                  ]
+                ]
+              },
+              "obj_ids": [
+                0,
+                1
+              ],
+              "state": "state-1"
+            }
+          ],
+          "add_output_calls": [],
+          "init_calls": [
+            {
+              "cached_feature_keys": [
+                "0",
+                "multigpu_buffer",
+                "text"
+              ],
+              "num_frames": 3,
+              "state": "state-1",
+              "video_height": 2,
+              "video_width": 2
+            }
+          ],
+          "memory_calls": [],
+          "preflight_calls": [
+            {
+              "run_mem_encoder": true,
+              "state": "state-1"
+            }
+          ],
+          "propagate_calls": [],
+          "suppress_calls": []
+        },
+        "event_log": [
+          {
+            "device": "cpu",
+            "event": "forward_text",
+            "find_text_batch": [
+              "shoe"
+            ]
+          },
+          {
+            "event": "detector",
+            "frame_idx": 0,
+            "has_multigpu_buffer": true,
+            "nms_iou_thresh": 0.0,
+            "nms_prob_thresh": 0.5,
+            "nms_use_iom": false,
+            "num_frames": 3,
+            "run_nms": false,
+            "track_in_reverse": false
+          },
+          {
+            "event": "init_state",
+            "state": "state-1"
+          },
+          {
+            "event": "add_new_masks",
+            "frame_idx": 0,
+            "obj_ids": [
+              0,
+              1
+            ],
+            "state": "state-1"
+          },
+          {
+            "event": "preflight",
+            "run_mem_encoder": true,
+            "state": "state-1"
+          }
+        ],
+        "frames": [
+          {
+            "feature_cache": {
+              "frame_keys": [
+                0
+              ],
+              "has_multigpu_buffer": true,
+              "keys": [
+                "0",
+                "multigpu_buffer",
+                "text"
+              ],
+              "text_keys": [
+                [
+                  "shoe"
+                ]
+              ]
+            },
+            "frame_idx": 0,
+            "frame_stats": {
+              "num_obj_dropped": 0,
+              "num_obj_tracked": 2
+            },
+            "obj_id_to_mask": {
+              "0": {
+                "area": 1,
+                "array": {
+                  "dtype": "bool",
+                  "shape": [
+                    1,
+                    2,
+                    2
+                  ],
+                  "values": [
+                    [
+                      [
+                        1,
+                        0
+                      ],
+                      [
+                        0,
+                        0
+                      ]
+                    ]
+                  ]
+                }
+              },
+              "1": {
+                "area": 1,
+                "array": {
+                  "dtype": "bool",
+                  "shape": [
+                    1,
+                    2,
+                    2
+                  ],
+                  "values": [
+                    [
+                      [
+                        0,
+                        0
+                      ],
+                      [
+                        0,
+                        1
+                      ]
+                    ]
+                  ]
+                }
+              }
+            },
+            "obj_id_to_score": {
+              "0": 0.8807970285415649,
+              "1": 0.9241418242454529
+            },
+            "states": [
+              {
+                "assignments": [
+                  [
+                    0,
+                    1
+                  ]
+                ],
+                "available_slots": 0,
+                "has_backbone_out": true,
+                "has_cached_features": false,
+                "name": "state-1",
+                "num_buckets": 1,
+                "obj_ids": [
+                  0,
+                  1
+                ],
+                "object_ids": [
+                  0,
+                  1
+                ],
+                "outputs": {
+                  "cond_frame_outputs": {
+                    "0": {
+                      "conditioning_objects": [
+                        0,
+                        1
+                      ],
+                      "object_score_logits": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          1
+                        ],
+                        "values": [
+                          [
+                            101.0
+                          ],
+                          [
+                            101.0
+                          ]
+                        ]
+                      },
+                      "pred_masks": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          1,
+                          2,
+                          2
+                        ],
+                        "values": [
+                          [
+                            [
+                              [
+                                2.0,
+                                -2.0
+                              ],
+                              [
+                                -2.0,
+                                -2.0
+                              ]
+                            ]
+                          ],
+                          [
+                            [
+                              [
+                                -2.0,
+                                -2.0
+                              ],
+                              [
+                                -2.0,
+                                2.0
+                              ]
+                            ]
+                          ]
+                        ]
+                      },
+                      "pred_masks_high_res": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          1,
+                          4,
+                          4
+                        ],
+                        "values": [
+                          [
+                            [
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ]
+                            ]
+                          ],
+                          [
+                            [
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ]
+                            ]
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  "non_cond_frame_outputs": {}
+                },
+                "total_valid_entries": 2,
+                "tracking_has_started": true
+              }
+            ],
+            "tracker_metadata": {
+              "gpu_metadata": {
+                "N_obj": 2,
+                "consecutive_unmatch_count": {
+                  "dtype": "int64",
+                  "shape": [
+                    2
+                  ],
+                  "values": [
+                    0,
+                    0
+                  ]
+                },
+                "last_occluded_tensor": {
+                  "dtype": "int64",
+                  "shape": [
+                    2
+                  ],
+                  "values": [
+                    -1,
+                    -1
+                  ]
+                },
+                "obj_first_frame": {
+                  "dtype": "int64",
+                  "shape": [
+                    2
+                  ],
+                  "values": [
+                    0,
+                    0
+                  ]
+                },
+                "overlap_pair_counts": {
+                  "dtype": "int64",
+                  "shape": [
+                    2,
+                    2
+                  ],
+                  "values": [
+                    [
+                      0,
+                      0
+                    ],
+                    [
+                      0,
+                      0
+                    ]
+                  ]
+                },
+                "removed_mask": {
+                  "dtype": "bool",
+                  "shape": [
+                    2
+                  ],
+                  "values": [
+                    0,
+                    0
+                  ]
+                },
+                "trk_keep_alive": {
+                  "dtype": "int64",
+                  "shape": [
+                    2
+                  ],
+                  "values": [
+                    0,
+                    0
+                  ]
+                }
+              },
+              "max_obj_id": 1,
+              "num_buc_per_gpu": [
+                1
+              ],
+              "num_obj_per_gpu": [
+                2
+              ],
+              "obj_id_to_sam2_score_frame_wise": {
+                "0": {
+                  "0": 0.8807970285415649,
+                  "1": 0.9241418242454529
+                }
+              },
+              "obj_id_to_score": {
+                "0": 0.8807970285415649,
+                "1": 0.9241418242454529
+              },
+              "obj_ids_all_gpu": [
+                0,
+                1
+              ],
+              "obj_ids_per_gpu": [
+                [
+                  0,
+                  1
+                ]
+              ],
+              "rank0_metadata": {
+                "obj_first_frame_idx": {},
+                "removed_obj_ids": [],
+                "trk_keep_alive": {}
+              }
+            },
+            "tracker_obj_scores_global": {
+              "dtype": "float32",
+              "shape": [
+                0
+              ],
+              "values": []
+            }
+          }
+        ]
+      },
+      "scalar_matches": {
+        "calls_without_arrays": true,
+        "event_order": true,
+        "frames_without_arrays": true
+      }
+    },
+    "two_frame_detector_tracker_loop": {
+      "metrics": {
+        "two_frame_detector_tracker_loop.add_calls.0.masks": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            4,
+            4
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame0.obj_id_to_mask.0": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            1,
+            2,
+            2
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame0.obj_id_to_mask.1": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            1,
+            2,
+            2
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame0.obj_id_to_score": {
+          "max_abs": 5.960464477539063e-08,
+          "mean_abs": 2.9802322387695312e-08,
+          "shape": [
+            2
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame0.states.0.cond_frame_outputs.0.object_score_logits": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            1
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame0.states.0.cond_frame_outputs.0.pred_masks": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            1,
+            2,
+            2
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame0.states.0.cond_frame_outputs.0.pred_masks_high_res": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            1,
+            4,
+            4
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame0.tracker_obj_scores_global": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            0
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame1.gpu_metadata.consecutive_unmatch_count": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame1.gpu_metadata.last_occluded_tensor": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame1.gpu_metadata.obj_first_frame": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame1.gpu_metadata.overlap_pair_counts": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            2
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame1.gpu_metadata.removed_mask": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame1.gpu_metadata.trk_keep_alive": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame1.obj_id_to_mask.0": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            1,
+            2,
+            2
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame1.obj_id_to_mask.1": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            1,
+            2,
+            2
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame1.obj_id_to_score": {
+          "max_abs": 5.960464477539063e-08,
+          "mean_abs": 2.9802322387695312e-08,
+          "shape": [
+            2
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame1.states.0.cond_frame_outputs.0.object_score_logits": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            1
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame1.states.0.cond_frame_outputs.0.pred_masks": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            1,
+            2,
+            2
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame1.states.0.cond_frame_outputs.0.pred_masks_high_res": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            1,
+            4,
+            4
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame1.states.0.non_cond_frame_outputs.1.image_features": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            3
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame1.states.0.non_cond_frame_outputs.1.image_pos_enc": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            4
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame1.states.0.non_cond_frame_outputs.1.maskmem_features": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            2
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame1.states.0.non_cond_frame_outputs.1.maskmem_pos_enc_0": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            1
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame1.states.0.non_cond_frame_outputs.1.object_score_logits": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            1
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame1.states.0.non_cond_frame_outputs.1.pred_masks": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            1,
+            2,
+            2
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame1.states.0.non_cond_frame_outputs.1.pred_masks_high_res": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            1,
+            4,
+            4
+          ]
+        },
+        "two_frame_detector_tracker_loop.frame1.tracker_obj_scores_global": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2
+          ]
+        },
+        "two_frame_detector_tracker_loop.memory_calls.0.local_high_res_masks": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            1,
+            4,
+            4
+          ]
+        },
+        "two_frame_detector_tracker_loop.memory_calls.0.local_object_score_logits": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            1
+          ]
+        },
+        "two_frame_detector_tracker_loop.suppress_calls.0.high_res_masks": {
+          "max_abs": 0.0,
+          "mean_abs": 0.0,
+          "shape": [
+            2,
+            1,
+            4,
+            4
+          ]
+        }
+      },
+      "mlx": {
+        "calls": {
+          "add_calls": [
+            {
+              "add_mask_to_memory": true,
+              "extra_keys": [],
+              "frame_idx": 0,
+              "masks": {
+                "dtype": "bool",
+                "shape": [
+                  2,
+                  4,
+                  4
+                ],
+                "values": [
+                  [
+                    [
+                      1,
+                      1,
+                      0,
+                      0
+                    ],
+                    [
+                      1,
+                      1,
+                      0,
+                      0
+                    ],
+                    [
+                      0,
+                      0,
+                      0,
+                      0
+                    ],
+                    [
+                      0,
+                      0,
+                      0,
+                      0
+                    ]
+                  ],
+                  [
+                    [
+                      0,
+                      0,
+                      0,
+                      0
+                    ],
+                    [
+                      0,
+                      0,
+                      0,
+                      0
+                    ],
+                    [
+                      0,
+                      0,
+                      1,
+                      1
+                    ],
+                    [
+                      0,
+                      0,
+                      1,
+                      1
+                    ]
+                  ]
+                ]
+              },
+              "obj_ids": [
+                0,
+                1
+              ],
+              "state": "state-1"
+            }
+          ],
+          "add_output_calls": [
+            {
+              "current_keys": [
+                "conditioning_objects",
+                "image_features",
+                "image_pos_enc",
+                "maskmem_features",
+                "maskmem_pos_enc",
+                "object_score_logits",
+                "pred_masks",
+                "pred_masks_high_res"
+              ],
+              "frame_idx": 1,
+              "state": "state-1",
+              "storage_key": "non_cond_frame_outputs"
+            }
+          ],
+          "init_calls": [
+            {
+              "cached_feature_keys": [
+                "0",
+                "multigpu_buffer",
+                "text"
+              ],
+              "num_frames": 3,
+              "state": "state-1",
+              "video_height": 2,
+              "video_width": 2
+            }
+          ],
+          "memory_calls": [
+            {
+              "frame_idx": 1,
+              "is_mask_from_pts": false,
+              "local_batch_size": 2,
+              "local_high_res_masks": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  1,
+                  4,
+                  4
+                ],
+                "values": [
+                  [
+                    [
+                      [
+                        2.0,
+                        1.0,
+                        -1.0,
+                        -2.0
+                      ],
+                      [
+                        1.0,
+                        0.25,
+                        -1.25,
+                        -2.0
+                      ],
+                      [
+                        -1.0,
+                        -1.25,
+                        -1.75,
+                        -2.0
+                      ],
+                      [
+                        -2.0,
+                        -2.0,
+                        -2.0,
+                        -2.0
+                      ]
+                    ]
+                  ],
+                  [
+                    [
+                      [
+                        -2.0,
+                        -2.0,
+                        -2.0,
+                        -2.0
+                      ],
+                      [
+                        -2.0,
+                        -1.75,
+                        -1.25,
+                        -1.0
+                      ],
+                      [
+                        -2.0,
+                        -1.25,
+                        0.25,
+                        1.0
+                      ],
+                      [
+                        -2.0,
+                        -1.0,
+                        1.0,
+                        2.0
+                      ]
+                    ]
+                  ]
+                ]
+              },
+              "local_object_score_logits": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  1
+                ],
+                "values": [
+                  [
+                    10.0
+                  ],
+                  [
+                    10.0
+                  ]
+                ]
+              },
+              "state": "state-1"
+            }
+          ],
+          "preflight_calls": [
+            {
+              "run_mem_encoder": true,
+              "state": "state-1"
+            }
+          ],
+          "propagate_calls": [
+            {
+              "frame_idx": 1,
+              "max_frame_num_to_track": 0,
+              "propagate_preflight": false,
+              "reverse": false,
+              "run_mem_encoder": false,
+              "state": "state-1",
+              "tqdm_disable": false
+            }
+          ],
+          "suppress_calls": [
+            {
+              "high_res_masks": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  1,
+                  4,
+                  4
+                ],
+                "values": [
+                  [
+                    [
+                      [
+                        2.0,
+                        1.0,
+                        -1.0,
+                        -2.0
+                      ],
+                      [
+                        1.0,
+                        0.25,
+                        -1.25,
+                        -2.0
+                      ],
+                      [
+                        -1.0,
+                        -1.25,
+                        -1.75,
+                        -2.0
+                      ],
+                      [
+                        -2.0,
+                        -2.0,
+                        -2.0,
+                        -2.0
+                      ]
+                    ]
+                  ],
+                  [
+                    [
+                      [
+                        -2.0,
+                        -2.0,
+                        -2.0,
+                        -2.0
+                      ],
+                      [
+                        -2.0,
+                        -1.75,
+                        -1.25,
+                        -1.0
+                      ],
+                      [
+                        -2.0,
+                        -1.25,
+                        0.25,
+                        1.0
+                      ],
+                      [
+                        -2.0,
+                        -1.0,
+                        1.0,
+                        2.0
+                      ]
+                    ]
+                  ]
+                ]
+              }
+            }
+          ]
+        },
+        "event_log": [
+          {
+            "device": "mlx",
+            "event": "forward_text",
+            "find_text_batch": [
+              "shoe"
+            ]
+          },
+          {
+            "event": "detector",
+            "frame_idx": 0,
+            "has_multigpu_buffer": true,
+            "nms_iou_thresh": 0.0,
+            "nms_prob_thresh": 0.5,
+            "nms_use_iom": false,
+            "num_frames": 3,
+            "run_nms": false,
+            "track_in_reverse": false
+          },
+          {
+            "event": "init_state",
+            "state": "state-1"
+          },
+          {
+            "event": "add_new_masks",
+            "frame_idx": 0,
+            "obj_ids": [
+              0,
+              1
+            ],
+            "state": "state-1"
+          },
+          {
+            "event": "preflight",
+            "run_mem_encoder": true,
+            "state": "state-1"
+          },
+          {
+            "event": "detector",
+            "frame_idx": 1,
+            "has_multigpu_buffer": true,
+            "nms_iou_thresh": 0.0,
+            "nms_prob_thresh": 0.5,
+            "nms_use_iom": false,
+            "num_frames": 3,
+            "run_nms": false,
+            "track_in_reverse": false
+          },
+          {
+            "event": "propagate",
+            "frame_idx": 1,
+            "obj_ids": [
+              0,
+              1
+            ],
+            "state": "state-1"
+          },
+          {
+            "event": "suppress_masks"
+          },
+          {
+            "event": "memory_encoder",
+            "frame_idx": 1,
+            "local_batch_size": 2,
+            "state": "state-1"
+          },
+          {
+            "event": "add_output_per_object",
+            "frame_idx": 1,
+            "state": "state-1",
+            "storage_key": "non_cond_frame_outputs"
+          }
+        ],
+        "frames": [
+          {
+            "feature_cache": {
+              "frame_keys": [
+                0
+              ],
+              "has_multigpu_buffer": true,
+              "keys": [
+                "0",
+                "multigpu_buffer",
+                "text"
+              ],
+              "text_keys": [
+                [
+                  "shoe"
+                ]
+              ]
+            },
+            "frame_idx": 0,
+            "frame_stats": {
+              "num_obj_dropped": 0,
+              "num_obj_tracked": 2
+            },
+            "obj_id_to_mask": {
+              "0": {
+                "area": 1,
+                "array": {
+                  "dtype": "bool",
+                  "shape": [
+                    1,
+                    2,
+                    2
+                  ],
+                  "values": [
+                    [
+                      [
+                        1,
+                        0
+                      ],
+                      [
+                        0,
+                        0
+                      ]
+                    ]
+                  ]
+                }
+              },
+              "1": {
+                "area": 1,
+                "array": {
+                  "dtype": "bool",
+                  "shape": [
+                    1,
+                    2,
+                    2
+                  ],
+                  "values": [
+                    [
+                      [
+                        0,
+                        0
+                      ],
+                      [
+                        0,
+                        1
+                      ]
+                    ]
+                  ]
+                }
+              }
+            },
+            "obj_id_to_score": {
+              "0": 0.8807970881462097,
+              "1": 0.9241418242454529
+            },
+            "states": [
+              {
+                "assignments": [
+                  [
+                    0,
+                    1
+                  ]
+                ],
+                "available_slots": 0,
+                "has_backbone_out": true,
+                "has_cached_features": true,
+                "name": "state-1",
+                "num_buckets": 1,
+                "obj_ids": [
+                  0,
+                  1
+                ],
+                "object_ids": [
+                  0,
+                  1
+                ],
+                "outputs": {
+                  "cond_frame_outputs": {
+                    "0": {
+                      "conditioning_objects": [
+                        0,
+                        1
+                      ],
+                      "object_score_logits": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          1
+                        ],
+                        "values": [
+                          [
+                            101.0
+                          ],
+                          [
+                            101.0
+                          ]
+                        ]
+                      },
+                      "pred_masks": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          1,
+                          2,
+                          2
+                        ],
+                        "values": [
+                          [
+                            [
+                              [
+                                2.0,
+                                -2.0
+                              ],
+                              [
+                                -2.0,
+                                -2.0
+                              ]
+                            ]
+                          ],
+                          [
+                            [
+                              [
+                                -2.0,
+                                -2.0
+                              ],
+                              [
+                                -2.0,
+                                2.0
+                              ]
+                            ]
+                          ]
+                        ]
+                      },
+                      "pred_masks_high_res": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          1,
+                          4,
+                          4
+                        ],
+                        "values": [
+                          [
+                            [
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ]
+                            ]
+                          ],
+                          [
+                            [
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ]
+                            ]
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  "non_cond_frame_outputs": {}
+                },
+                "total_valid_entries": 2,
+                "tracking_has_started": true
+              }
+            ],
+            "tracker_metadata": {
+              "gpu_metadata": {
+                "N_obj": 2
+              },
+              "max_obj_id": 1,
+              "num_buc_per_gpu": [
+                1
+              ],
+              "num_obj_per_gpu": [
+                2
+              ],
+              "obj_id_to_sam2_score_frame_wise": {
+                "0": {
+                  "0": 0.8807970881462097,
+                  "1": 0.9241418242454529
+                }
+              },
+              "obj_id_to_score": {
+                "0": 0.8807970881462097,
+                "1": 0.9241418242454529
+              },
+              "obj_ids_all_gpu": [
+                0,
+                1
+              ],
+              "obj_ids_per_gpu": [
+                [
+                  0,
+                  1
+                ]
+              ],
+              "rank0_metadata": {
+                "obj_first_frame_idx": {
+                  "0": 0,
+                  "1": 0
+                },
+                "removed_obj_ids": [],
+                "trk_keep_alive": {}
+              }
+            },
+            "tracker_obj_scores_global": {
+              "dtype": "float32",
+              "shape": [
+                0
+              ],
+              "values": []
+            }
+          },
+          {
+            "feature_cache": {
+              "frame_keys": [
+                1
+              ],
+              "has_multigpu_buffer": true,
+              "keys": [
+                "1",
+                "multigpu_buffer",
+                "text"
+              ],
+              "text_keys": [
+                [
+                  "shoe"
+                ]
+              ]
+            },
+            "frame_idx": 1,
+            "frame_stats": {
+              "num_obj_dropped": 0,
+              "num_obj_tracked": 2
+            },
+            "obj_id_to_mask": {
+              "0": {
+                "area": 1,
+                "array": {
+                  "dtype": "bool",
+                  "shape": [
+                    1,
+                    2,
+                    2
+                  ],
+                  "values": [
+                    [
+                      [
+                        1,
+                        0
+                      ],
+                      [
+                        0,
+                        0
+                      ]
+                    ]
+                  ]
+                }
+              },
+              "1": {
+                "area": 1,
+                "array": {
+                  "dtype": "bool",
+                  "shape": [
+                    1,
+                    2,
+                    2
+                  ],
+                  "values": [
+                    [
+                      [
+                        0,
+                        0
+                      ],
+                      [
+                        0,
+                        1
+                      ]
+                    ]
+                  ]
+                }
+              }
+            },
+            "obj_id_to_score": {
+              "0": 0.8807970881462097,
+              "1": 0.9241418242454529
+            },
+            "states": [
+              {
+                "assignments": [
+                  [
+                    0,
+                    1
+                  ]
+                ],
+                "available_slots": 0,
+                "has_backbone_out": true,
+                "has_cached_features": true,
+                "name": "state-1",
+                "num_buckets": 1,
+                "obj_ids": [
+                  0,
+                  1
+                ],
+                "object_ids": [
+                  0,
+                  1
+                ],
+                "outputs": {
+                  "cond_frame_outputs": {
+                    "0": {
+                      "conditioning_objects": [
+                        0,
+                        1
+                      ],
+                      "object_score_logits": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          1
+                        ],
+                        "values": [
+                          [
+                            101.0
+                          ],
+                          [
+                            101.0
+                          ]
+                        ]
+                      },
+                      "pred_masks": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          1,
+                          2,
+                          2
+                        ],
+                        "values": [
+                          [
+                            [
+                              [
+                                2.0,
+                                -2.0
+                              ],
+                              [
+                                -2.0,
+                                -2.0
+                              ]
+                            ]
+                          ],
+                          [
+                            [
+                              [
+                                -2.0,
+                                -2.0
+                              ],
+                              [
+                                -2.0,
+                                2.0
+                              ]
+                            ]
+                          ]
+                        ]
+                      },
+                      "pred_masks_high_res": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          1,
+                          4,
+                          4
+                        ],
+                        "values": [
+                          [
+                            [
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ]
+                            ]
+                          ],
+                          [
+                            [
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ]
+                            ]
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  "non_cond_frame_outputs": {
+                    "1": {
+                      "conditioning_objects": [
+                        0,
+                        1
+                      ],
+                      "image_features": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          3
+                        ],
+                        "values": [
+                          [
+                            44.0,
+                            44.0,
+                            44.0
+                          ],
+                          [
+                            44.0,
+                            44.0,
+                            44.0
+                          ]
+                        ]
+                      },
+                      "image_pos_enc": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          4
+                        ],
+                        "values": [
+                          [
+                            45.0,
+                            45.0,
+                            45.0,
+                            45.0
+                          ],
+                          [
+                            45.0,
+                            45.0,
+                            45.0,
+                            45.0
+                          ]
+                        ]
+                      },
+                      "maskmem_features": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          2
+                        ],
+                        "values": [
+                          [
+                            42.0,
+                            42.0
+                          ],
+                          [
+                            42.0,
+                            42.0
+                          ]
+                        ]
+                      },
+                      "maskmem_pos_enc_0": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          1
+                        ],
+                        "values": [
+                          [
+                            43.0
+                          ],
+                          [
+                            43.0
+                          ]
+                        ]
+                      },
+                      "object_score_logits": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          1
+                        ],
+                        "values": [
+                          [
+                            1.0
+                          ],
+                          [
+                            1.0
+                          ]
+                        ]
+                      },
+                      "pred_masks": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          1,
+                          2,
+                          2
+                        ],
+                        "values": [
+                          [
+                            [
+                              [
+                                2.0,
+                                -2.0
+                              ],
+                              [
+                                -2.0,
+                                -2.0
+                              ]
+                            ]
+                          ],
+                          [
+                            [
+                              [
+                                -2.0,
+                                -2.0
+                              ],
+                              [
+                                -2.0,
+                                2.0
+                              ]
+                            ]
+                          ]
+                        ]
+                      },
+                      "pred_masks_high_res": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          1,
+                          4,
+                          4
+                        ],
+                        "values": [
+                          [
+                            [
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ]
+                            ]
+                          ],
+                          [
+                            [
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ]
+                            ]
+                          ]
+                        ]
+                      }
+                    }
+                  }
+                },
+                "total_valid_entries": 2,
+                "tracking_has_started": true
+              }
+            ],
+            "tracker_metadata": {
+              "gpu_metadata": {
+                "N_obj": 2,
+                "consecutive_unmatch_count": {
+                  "dtype": "int64",
+                  "shape": [
+                    2
+                  ],
+                  "values": [
+                    0,
+                    0
+                  ]
+                },
+                "last_occluded_tensor": {
+                  "dtype": "int64",
+                  "shape": [
+                    2
+                  ],
+                  "values": [
+                    -1,
+                    -1
+                  ]
+                },
+                "obj_first_frame": {
+                  "dtype": "int64",
+                  "shape": [
+                    2
+                  ],
+                  "values": [
+                    0,
+                    0
+                  ]
+                },
+                "overlap_pair_counts": {
+                  "dtype": "int64",
+                  "shape": [
+                    2,
+                    2
+                  ],
+                  "values": [
+                    [
+                      0,
+                      0
+                    ],
+                    [
+                      0,
+                      0
+                    ]
+                  ]
+                },
+                "removed_mask": {
+                  "dtype": "bool",
+                  "shape": [
+                    2
+                  ],
+                  "values": [
+                    0,
+                    0
+                  ]
+                },
+                "trk_keep_alive": {
+                  "dtype": "int64",
+                  "shape": [
+                    2
+                  ],
+                  "values": [
+                    1,
+                    1
+                  ]
+                }
+              },
+              "max_obj_id": 1,
+              "num_buc_per_gpu": [
+                1
+              ],
+              "num_obj_per_gpu": [
+                2
+              ],
+              "obj_id_to_sam2_score_frame_wise": {
+                "0": {
+                  "0": 0.8807970881462097,
+                  "1": 0.9241418242454529
+                },
+                "1": {
+                  "0": 0.7310585975646973,
+                  "1": 0.7310585975646973
+                }
+              },
+              "obj_id_to_score": {
+                "0": 0.8807970881462097,
+                "1": 0.9241418242454529
+              },
+              "obj_ids_all_gpu": [
+                0,
+                1
+              ],
+              "obj_ids_per_gpu": [
+                [
+                  0,
+                  1
+                ]
+              ],
+              "rank0_metadata": {
+                "obj_first_frame_idx": {
+                  "0": 0,
+                  "1": 0
+                },
+                "removed_obj_ids": [],
+                "trk_keep_alive": {
+                  "0": 1,
+                  "1": 1
+                }
+              }
+            },
+            "tracker_obj_scores_global": {
+              "dtype": "float32",
+              "shape": [
+                2
+              ],
+              "values": [
+                0.7310585975646973,
+                0.7310585975646973
+              ]
+            }
+          }
+        ]
+      },
+      "official": {
+        "calls": {
+          "add_calls": [
+            {
+              "add_mask_to_memory": true,
+              "extra_keys": [],
+              "frame_idx": 0,
+              "masks": {
+                "dtype": "bool",
+                "shape": [
+                  2,
+                  4,
+                  4
+                ],
+                "values": [
+                  [
+                    [
+                      1,
+                      1,
+                      0,
+                      0
+                    ],
+                    [
+                      1,
+                      1,
+                      0,
+                      0
+                    ],
+                    [
+                      0,
+                      0,
+                      0,
+                      0
+                    ],
+                    [
+                      0,
+                      0,
+                      0,
+                      0
+                    ]
+                  ],
+                  [
+                    [
+                      0,
+                      0,
+                      0,
+                      0
+                    ],
+                    [
+                      0,
+                      0,
+                      0,
+                      0
+                    ],
+                    [
+                      0,
+                      0,
+                      1,
+                      1
+                    ],
+                    [
+                      0,
+                      0,
+                      1,
+                      1
+                    ]
+                  ]
+                ]
+              },
+              "obj_ids": [
+                0,
+                1
+              ],
+              "state": "state-1"
+            }
+          ],
+          "add_output_calls": [
+            {
+              "current_keys": [
+                "conditioning_objects",
+                "image_features",
+                "image_pos_enc",
+                "maskmem_features",
+                "maskmem_pos_enc",
+                "object_score_logits",
+                "pred_masks",
+                "pred_masks_high_res"
+              ],
+              "frame_idx": 1,
+              "state": "state-1",
+              "storage_key": "non_cond_frame_outputs"
+            }
+          ],
+          "init_calls": [
+            {
+              "cached_feature_keys": [
+                "0",
+                "multigpu_buffer",
+                "text"
+              ],
+              "num_frames": 3,
+              "state": "state-1",
+              "video_height": 2,
+              "video_width": 2
+            }
+          ],
+          "memory_calls": [
+            {
+              "frame_idx": 1,
+              "is_mask_from_pts": false,
+              "local_batch_size": 2,
+              "local_high_res_masks": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  1,
+                  4,
+                  4
+                ],
+                "values": [
+                  [
+                    [
+                      [
+                        2.0,
+                        1.0,
+                        -1.0,
+                        -2.0
+                      ],
+                      [
+                        1.0,
+                        0.25,
+                        -1.25,
+                        -2.0
+                      ],
+                      [
+                        -1.0,
+                        -1.25,
+                        -1.75,
+                        -2.0
+                      ],
+                      [
+                        -2.0,
+                        -2.0,
+                        -2.0,
+                        -2.0
+                      ]
+                    ]
+                  ],
+                  [
+                    [
+                      [
+                        -2.0,
+                        -2.0,
+                        -2.0,
+                        -2.0
+                      ],
+                      [
+                        -2.0,
+                        -1.75,
+                        -1.25,
+                        -1.0
+                      ],
+                      [
+                        -2.0,
+                        -1.25,
+                        0.25,
+                        1.0
+                      ],
+                      [
+                        -2.0,
+                        -1.0,
+                        1.0,
+                        2.0
+                      ]
+                    ]
+                  ]
+                ]
+              },
+              "local_object_score_logits": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  1
+                ],
+                "values": [
+                  [
+                    10.0
+                  ],
+                  [
+                    10.0
+                  ]
+                ]
+              },
+              "state": "state-1"
+            }
+          ],
+          "preflight_calls": [
+            {
+              "run_mem_encoder": true,
+              "state": "state-1"
+            }
+          ],
+          "propagate_calls": [
+            {
+              "frame_idx": 1,
+              "max_frame_num_to_track": 0,
+              "propagate_preflight": false,
+              "reverse": false,
+              "run_mem_encoder": false,
+              "state": "state-1",
+              "tqdm_disable": true
+            }
+          ],
+          "suppress_calls": [
+            {
+              "high_res_masks": {
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  1,
+                  4,
+                  4
+                ],
+                "values": [
+                  [
+                    [
+                      [
+                        2.0,
+                        1.0,
+                        -1.0,
+                        -2.0
+                      ],
+                      [
+                        1.0,
+                        0.25,
+                        -1.25,
+                        -2.0
+                      ],
+                      [
+                        -1.0,
+                        -1.25,
+                        -1.75,
+                        -2.0
+                      ],
+                      [
+                        -2.0,
+                        -2.0,
+                        -2.0,
+                        -2.0
+                      ]
+                    ]
+                  ],
+                  [
+                    [
+                      [
+                        -2.0,
+                        -2.0,
+                        -2.0,
+                        -2.0
+                      ],
+                      [
+                        -2.0,
+                        -1.75,
+                        -1.25,
+                        -1.0
+                      ],
+                      [
+                        -2.0,
+                        -1.25,
+                        0.25,
+                        1.0
+                      ],
+                      [
+                        -2.0,
+                        -1.0,
+                        1.0,
+                        2.0
+                      ]
+                    ]
+                  ]
+                ]
+              }
+            }
+          ]
+        },
+        "event_log": [
+          {
+            "device": "cpu",
+            "event": "forward_text",
+            "find_text_batch": [
+              "shoe"
+            ]
+          },
+          {
+            "event": "detector",
+            "frame_idx": 0,
+            "has_multigpu_buffer": true,
+            "nms_iou_thresh": 0.0,
+            "nms_prob_thresh": 0.5,
+            "nms_use_iom": false,
+            "num_frames": 3,
+            "run_nms": false,
+            "track_in_reverse": false
+          },
+          {
+            "event": "init_state",
+            "state": "state-1"
+          },
+          {
+            "event": "add_new_masks",
+            "frame_idx": 0,
+            "obj_ids": [
+              0,
+              1
+            ],
+            "state": "state-1"
+          },
+          {
+            "event": "preflight",
+            "run_mem_encoder": true,
+            "state": "state-1"
+          },
+          {
+            "event": "detector",
+            "frame_idx": 1,
+            "has_multigpu_buffer": true,
+            "nms_iou_thresh": 0.0,
+            "nms_prob_thresh": 0.5,
+            "nms_use_iom": false,
+            "num_frames": 3,
+            "run_nms": false,
+            "track_in_reverse": false
+          },
+          {
+            "event": "propagate",
+            "frame_idx": 1,
+            "obj_ids": [
+              0,
+              1
+            ],
+            "state": "state-1"
+          },
+          {
+            "event": "suppress_masks"
+          },
+          {
+            "event": "memory_encoder",
+            "frame_idx": 1,
+            "local_batch_size": 2,
+            "state": "state-1"
+          },
+          {
+            "event": "add_output_per_object",
+            "frame_idx": 1,
+            "state": "state-1",
+            "storage_key": "non_cond_frame_outputs"
+          }
+        ],
+        "frames": [
+          {
+            "feature_cache": {
+              "frame_keys": [
+                0
+              ],
+              "has_multigpu_buffer": true,
+              "keys": [
+                "0",
+                "multigpu_buffer",
+                "text"
+              ],
+              "text_keys": [
+                [
+                  "shoe"
+                ]
+              ]
+            },
+            "frame_idx": 0,
+            "frame_stats": {
+              "num_obj_dropped": 0,
+              "num_obj_tracked": 2
+            },
+            "obj_id_to_mask": {
+              "0": {
+                "area": 1,
+                "array": {
+                  "dtype": "bool",
+                  "shape": [
+                    1,
+                    2,
+                    2
+                  ],
+                  "values": [
+                    [
+                      [
+                        1,
+                        0
+                      ],
+                      [
+                        0,
+                        0
+                      ]
+                    ]
+                  ]
+                }
+              },
+              "1": {
+                "area": 1,
+                "array": {
+                  "dtype": "bool",
+                  "shape": [
+                    1,
+                    2,
+                    2
+                  ],
+                  "values": [
+                    [
+                      [
+                        0,
+                        0
+                      ],
+                      [
+                        0,
+                        1
+                      ]
+                    ]
+                  ]
+                }
+              }
+            },
+            "obj_id_to_score": {
+              "0": 0.8807970285415649,
+              "1": 0.9241418242454529
+            },
+            "states": [
+              {
+                "assignments": [
+                  [
+                    0,
+                    1
+                  ]
+                ],
+                "available_slots": 0,
+                "has_backbone_out": true,
+                "has_cached_features": false,
+                "name": "state-1",
+                "num_buckets": 1,
+                "obj_ids": [
+                  0,
+                  1
+                ],
+                "object_ids": [
+                  0,
+                  1
+                ],
+                "outputs": {
+                  "cond_frame_outputs": {
+                    "0": {
+                      "conditioning_objects": [
+                        0,
+                        1
+                      ],
+                      "object_score_logits": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          1
+                        ],
+                        "values": [
+                          [
+                            101.0
+                          ],
+                          [
+                            101.0
+                          ]
+                        ]
+                      },
+                      "pred_masks": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          1,
+                          2,
+                          2
+                        ],
+                        "values": [
+                          [
+                            [
+                              [
+                                2.0,
+                                -2.0
+                              ],
+                              [
+                                -2.0,
+                                -2.0
+                              ]
+                            ]
+                          ],
+                          [
+                            [
+                              [
+                                -2.0,
+                                -2.0
+                              ],
+                              [
+                                -2.0,
+                                2.0
+                              ]
+                            ]
+                          ]
+                        ]
+                      },
+                      "pred_masks_high_res": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          1,
+                          4,
+                          4
+                        ],
+                        "values": [
+                          [
+                            [
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ]
+                            ]
+                          ],
+                          [
+                            [
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ]
+                            ]
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  "non_cond_frame_outputs": {}
+                },
+                "total_valid_entries": 2,
+                "tracking_has_started": true
+              }
+            ],
+            "tracker_metadata": {
+              "gpu_metadata": {
+                "N_obj": 2,
+                "consecutive_unmatch_count": {
+                  "dtype": "int64",
+                  "shape": [
+                    2
+                  ],
+                  "values": [
+                    0,
+                    0
+                  ]
+                },
+                "last_occluded_tensor": {
+                  "dtype": "int64",
+                  "shape": [
+                    2
+                  ],
+                  "values": [
+                    -1,
+                    -1
+                  ]
+                },
+                "obj_first_frame": {
+                  "dtype": "int64",
+                  "shape": [
+                    2
+                  ],
+                  "values": [
+                    0,
+                    0
+                  ]
+                },
+                "overlap_pair_counts": {
+                  "dtype": "int64",
+                  "shape": [
+                    2,
+                    2
+                  ],
+                  "values": [
+                    [
+                      0,
+                      0
+                    ],
+                    [
+                      0,
+                      0
+                    ]
+                  ]
+                },
+                "removed_mask": {
+                  "dtype": "bool",
+                  "shape": [
+                    2
+                  ],
+                  "values": [
+                    0,
+                    0
+                  ]
+                },
+                "trk_keep_alive": {
+                  "dtype": "int64",
+                  "shape": [
+                    2
+                  ],
+                  "values": [
+                    0,
+                    0
+                  ]
+                }
+              },
+              "max_obj_id": 1,
+              "num_buc_per_gpu": [
+                1
+              ],
+              "num_obj_per_gpu": [
+                2
+              ],
+              "obj_id_to_sam2_score_frame_wise": {
+                "0": {
+                  "0": 0.8807970285415649,
+                  "1": 0.9241418242454529
+                }
+              },
+              "obj_id_to_score": {
+                "0": 0.8807970285415649,
+                "1": 0.9241418242454529
+              },
+              "obj_ids_all_gpu": [
+                0,
+                1
+              ],
+              "obj_ids_per_gpu": [
+                [
+                  0,
+                  1
+                ]
+              ],
+              "rank0_metadata": {
+                "obj_first_frame_idx": {},
+                "removed_obj_ids": [],
+                "trk_keep_alive": {}
+              }
+            },
+            "tracker_obj_scores_global": {
+              "dtype": "float32",
+              "shape": [
+                0
+              ],
+              "values": []
+            }
+          },
+          {
+            "feature_cache": {
+              "frame_keys": [
+                1
+              ],
+              "has_multigpu_buffer": true,
+              "keys": [
+                "1",
+                "multigpu_buffer",
+                "text"
+              ],
+              "text_keys": [
+                [
+                  "shoe"
+                ]
+              ]
+            },
+            "frame_idx": 1,
+            "frame_stats": {
+              "num_obj_dropped": 0,
+              "num_obj_tracked": 2
+            },
+            "obj_id_to_mask": {
+              "0": {
+                "area": 1,
+                "array": {
+                  "dtype": "bool",
+                  "shape": [
+                    1,
+                    2,
+                    2
+                  ],
+                  "values": [
+                    [
+                      [
+                        1,
+                        0
+                      ],
+                      [
+                        0,
+                        0
+                      ]
+                    ]
+                  ]
+                }
+              },
+              "1": {
+                "area": 1,
+                "array": {
+                  "dtype": "bool",
+                  "shape": [
+                    1,
+                    2,
+                    2
+                  ],
+                  "values": [
+                    [
+                      [
+                        0,
+                        0
+                      ],
+                      [
+                        0,
+                        1
+                      ]
+                    ]
+                  ]
+                }
+              }
+            },
+            "obj_id_to_score": {
+              "0": 0.8807970285415649,
+              "1": 0.9241418242454529
+            },
+            "states": [
+              {
+                "assignments": [
+                  [
+                    0,
+                    1
+                  ]
+                ],
+                "available_slots": 0,
+                "has_backbone_out": true,
+                "has_cached_features": false,
+                "name": "state-1",
+                "num_buckets": 1,
+                "obj_ids": [
+                  0,
+                  1
+                ],
+                "object_ids": [
+                  0,
+                  1
+                ],
+                "outputs": {
+                  "cond_frame_outputs": {
+                    "0": {
+                      "conditioning_objects": [
+                        0,
+                        1
+                      ],
+                      "object_score_logits": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          1
+                        ],
+                        "values": [
+                          [
+                            101.0
+                          ],
+                          [
+                            101.0
+                          ]
+                        ]
+                      },
+                      "pred_masks": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          1,
+                          2,
+                          2
+                        ],
+                        "values": [
+                          [
+                            [
+                              [
+                                2.0,
+                                -2.0
+                              ],
+                              [
+                                -2.0,
+                                -2.0
+                              ]
+                            ]
+                          ],
+                          [
+                            [
+                              [
+                                -2.0,
+                                -2.0
+                              ],
+                              [
+                                -2.0,
+                                2.0
+                              ]
+                            ]
+                          ]
+                        ]
+                      },
+                      "pred_masks_high_res": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          1,
+                          4,
+                          4
+                        ],
+                        "values": [
+                          [
+                            [
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ]
+                            ]
+                          ],
+                          [
+                            [
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ]
+                            ]
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  "non_cond_frame_outputs": {
+                    "1": {
+                      "conditioning_objects": [
+                        0,
+                        1
+                      ],
+                      "image_features": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          3
+                        ],
+                        "values": [
+                          [
+                            44.0,
+                            44.0,
+                            44.0
+                          ],
+                          [
+                            44.0,
+                            44.0,
+                            44.0
+                          ]
+                        ]
+                      },
+                      "image_pos_enc": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          4
+                        ],
+                        "values": [
+                          [
+                            45.0,
+                            45.0,
+                            45.0,
+                            45.0
+                          ],
+                          [
+                            45.0,
+                            45.0,
+                            45.0,
+                            45.0
+                          ]
+                        ]
+                      },
+                      "maskmem_features": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          2
+                        ],
+                        "values": [
+                          [
+                            42.0,
+                            42.0
+                          ],
+                          [
+                            42.0,
+                            42.0
+                          ]
+                        ]
+                      },
+                      "maskmem_pos_enc_0": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          1
+                        ],
+                        "values": [
+                          [
+                            43.0
+                          ],
+                          [
+                            43.0
+                          ]
+                        ]
+                      },
+                      "object_score_logits": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          1
+                        ],
+                        "values": [
+                          [
+                            1.0
+                          ],
+                          [
+                            1.0
+                          ]
+                        ]
+                      },
+                      "pred_masks": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          1,
+                          2,
+                          2
+                        ],
+                        "values": [
+                          [
+                            [
+                              [
+                                2.0,
+                                -2.0
+                              ],
+                              [
+                                -2.0,
+                                -2.0
+                              ]
+                            ]
+                          ],
+                          [
+                            [
+                              [
+                                -2.0,
+                                -2.0
+                              ],
+                              [
+                                -2.0,
+                                2.0
+                              ]
+                            ]
+                          ]
+                        ]
+                      },
+                      "pred_masks_high_res": {
+                        "dtype": "float32",
+                        "shape": [
+                          2,
+                          1,
+                          4,
+                          4
+                        ],
+                        "values": [
+                          [
+                            [
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ]
+                            ]
+                          ],
+                          [
+                            [
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ],
+                              [
+                                1.0,
+                                1.0,
+                                1.0,
+                                1.0
+                              ]
+                            ]
+                          ]
+                        ]
+                      }
+                    }
+                  }
+                },
+                "total_valid_entries": 2,
+                "tracking_has_started": true
+              }
+            ],
+            "tracker_metadata": {
+              "gpu_metadata": {
+                "N_obj": 2,
+                "consecutive_unmatch_count": {
+                  "dtype": "int64",
+                  "shape": [
+                    2
+                  ],
+                  "values": [
+                    0,
+                    0
+                  ]
+                },
+                "last_occluded_tensor": {
+                  "dtype": "int64",
+                  "shape": [
+                    2
+                  ],
+                  "values": [
+                    -1,
+                    -1
+                  ]
+                },
+                "obj_first_frame": {
+                  "dtype": "int64",
+                  "shape": [
+                    2
+                  ],
+                  "values": [
+                    0,
+                    0
+                  ]
+                },
+                "overlap_pair_counts": {
+                  "dtype": "int64",
+                  "shape": [
+                    2,
+                    2
+                  ],
+                  "values": [
+                    [
+                      0,
+                      0
+                    ],
+                    [
+                      0,
+                      0
+                    ]
+                  ]
+                },
+                "removed_mask": {
+                  "dtype": "bool",
+                  "shape": [
+                    2
+                  ],
+                  "values": [
+                    0,
+                    0
+                  ]
+                },
+                "trk_keep_alive": {
+                  "dtype": "int64",
+                  "shape": [
+                    2
+                  ],
+                  "values": [
+                    1,
+                    1
+                  ]
+                }
+              },
+              "max_obj_id": 1,
+              "num_buc_per_gpu": [
+                1
+              ],
+              "num_obj_per_gpu": [
+                2
+              ],
+              "obj_id_to_sam2_score_frame_wise": {
+                "0": {
+                  "0": 0.8807970285415649,
+                  "1": 0.9241418242454529
+                },
+                "1": {
+                  "0": 0.7310585975646973,
+                  "1": 0.7310585975646973
+                }
+              },
+              "obj_id_to_score": {
+                "0": 0.8807970285415649,
+                "1": 0.9241418242454529
+              },
+              "obj_ids_all_gpu": [
+                0,
+                1
+              ],
+              "obj_ids_per_gpu": [
+                [
+                  0,
+                  1
+                ]
+              ],
+              "rank0_metadata": {
+                "obj_first_frame_idx": {},
+                "removed_obj_ids": [],
+                "trk_keep_alive": {}
+              }
+            },
+            "tracker_obj_scores_global": {
+              "dtype": "float32",
+              "shape": [
+                2
+              ],
+              "values": [
+                0.7310585975646973,
+                0.7310585975646973
+              ]
+            }
+          }
+        ]
+      },
+      "scalar_matches": {
+        "calls_without_arrays": true,
+        "event_order": true,
+        "frames_without_arrays": true
+      }
+    }
+  },
+  "component": "Sam3MultiplexBase._det_track_one_frame",
+  "official_commit": "2814fa619404a722d03e9a012e083e4f293a4e53"
+}

@@ -1,0 +1,71 @@
+{
+  "atol": 0.002,
+  "results": {
+    "high_res_masks": {
+      "max_abs": 0.0,
+      "mean_abs": 0.0,
+      "shape": [
+        2,
+        1,
+        1152,
+        1152
+      ]
+    },
+    "high_res_multimasks": {
+      "max_abs": 0.0,
+      "mean_abs": 0.0,
+      "shape": [
+        2,
+        1,
+        1152,
+        1152
+      ]
+    },
+    "ious": {
+      "max_abs": 0.0,
+      "mean_abs": 0.0,
+      "shape": [
+        2,
+        1
+      ]
+    },
+    "low_res_masks": {
+      "max_abs": 2.86102294921875e-06,
+      "mean_abs": 6.476641942754213e-07,
+      "shape": [
+        2,
+        1,
+        328,
+        328
+      ]
+    },
+    "low_res_multimasks": {
+      "max_abs": 2.86102294921875e-06,
+      "mean_abs": 6.476641942754213e-07,
+      "shape": [
+        2,
+        1,
+        328,
+        328
+      ]
+    },
+    "obj_ptr": {
+      "max_abs": 2.086162567138672e-07,
+      "mean_abs": 3.4787404956659884e-08,
+      "shape": [
+        2,
+        256
+      ]
+    },
+    "object_score_logits": {
+      "max_abs": 0.0,
+      "mean_abs": 0.0,
+      "shape": [
+        2,
+        1
+      ]
+    }
+  },
+  "seed": 0,
+  "worst_max_abs": 2.86102294921875e-06
+}

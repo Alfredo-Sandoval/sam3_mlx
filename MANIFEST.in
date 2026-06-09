@@ -1,0 +1,15 @@
+prune tests
+prune dev_docs
+prune scripts
+prune examples
+prune third_party
+prune checkpoints
+
+prune sam3_mlx/agent
+prune sam3_mlx/eval
+prune sam3_mlx/train
+prune sam3_mlx/perflib/triton
+
+global-exclude .DS_Store
+global-exclude __pycache__
+global-exclude *.py[cod]
