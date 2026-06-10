@@ -1,6 +1,6 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "Sam3MlxUnsupportedError",

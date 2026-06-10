@@ -1,7 +1,7 @@
 [project]
 name = "sam3_mlx"
-version = "0.1.0"
-description = "Maintained MLX port of SAM 3.1-oriented image segmentation components."
+version = "0.1.1"
+description = "MLX port of Meta's Segment Anything 3 (SAM 3) for Apple Silicon."
 readme = "README.md"
 license = "LicenseRef-SAM"
 license-files = ["LICENSE"]
