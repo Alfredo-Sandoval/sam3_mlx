@@ -15,7 +15,7 @@ import contextlib
 import fnmatch
 import logging
 from collections.abc import Mapping, Sequence
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, List, NoReturn, Optional, Set
 
 import numpy as np
 
@@ -30,7 +30,7 @@ _UNSUPPORTED_CHECKPOINT_MESSAGE = (
 )
 
 
-def _raise_checkpoint_unsupported(feature: str) -> None:
+def _raise_checkpoint_unsupported(feature: str) -> NoReturn:
     raise_unsupported(
         feature,
         reason="training-loop",
@@ -40,8 +40,8 @@ def _raise_checkpoint_unsupported(feature: str) -> None:
 
 
 def unix_pattern_to_parameter_names(
-    constraints: List[str], all_parameter_names: Sequence[str]
-) -> Union[None, Set[str]]:
+    constraints: Sequence[str], all_parameter_names: Sequence[str]
+) -> Set[str]:
     """Select names matching any of the provided unix-style constraints."""
 
     parameter_names = []
@@ -174,50 +174,50 @@ def load_checkpoint(
     _raise_checkpoint_unsupported("load_checkpoint")
 
 
-def get_state_dict(checkpoint, ckpt_state_dict_keys):
+def get_state_dict(checkpoint: Any, ckpt_state_dict_keys: Sequence[str | int]) -> Any:
     pre_train_dict = checkpoint
     for index, key in enumerate(ckpt_state_dict_keys):
-        key_exists = (
-            isinstance(pre_train_dict, Mapping)
-            and key in pre_train_dict
-            or isinstance(pre_train_dict, Sequence)
-            and not isinstance(pre_train_dict, (str, bytes))
-            and isinstance(key, int)
-            and key < len(pre_train_dict)
+        if isinstance(pre_train_dict, Mapping):
+            if key in pre_train_dict:
+                pre_train_dict = pre_train_dict[key]
+                continue
+            available: object = pre_train_dict.keys()
+        elif isinstance(pre_train_dict, Sequence) and not isinstance(
+            pre_train_dict, (str, bytes)
+        ):
+            if isinstance(key, int) and -len(pre_train_dict) <= key < len(
+                pre_train_dict
+            ):
+                pre_train_dict = pre_train_dict[key]
+                continue
+            available = f"sequence length {len(pre_train_dict)}"
+        else:
+            available = type(pre_train_dict).__name__
+
+        key_str = "".join(
+            f"[{prior_key!r}]" for prior_key in ckpt_state_dict_keys[:index]
         )
-        if not key_exists:
-            key_str = "".join(
-                f"[{prior_key!r}]" for prior_key in ckpt_state_dict_keys[:index]
-            )
-            available = (
-                pre_train_dict.keys()
-                if isinstance(pre_train_dict, Mapping)
-                else f"sequence length {len(pre_train_dict)}"
-                if isinstance(pre_train_dict, Sequence)
-                else type(pre_train_dict).__name__
-            )
-            raise KeyError(
-                f"{key!r} not found in checkpoint{key_str} with keys: {available}"
-            )
-        pre_train_dict = pre_train_dict[key]
+        raise KeyError(
+            f"{key!r} not found in checkpoint{key_str} with keys: {available}"
+        )
     return pre_train_dict
 
 
 def load_checkpoint_and_apply_kernels(
     checkpoint_path: str,
-    checkpoint_kernels: List[Callable] = None,
-    ckpt_state_dict_keys: Tuple[str] = ("state_dict",),
+    checkpoint_kernels: Sequence[Callable[..., Any]] | None = None,
+    ckpt_state_dict_keys: tuple[str | int, ...] = ("state_dict",),
     map_location: str = "cpu",
 ):
     _raise_checkpoint_unsupported("load_checkpoint_and_apply_kernels")
 
 
 def check_load_state_dict_errors(
-    missing_keys,
-    unexpected_keys,
+    missing_keys: Sequence[str],
+    unexpected_keys: Sequence[str],
     strict: bool,
-    ignore_missing_keys: List[str] = None,
-    ignore_unexpected_keys: List[str] = None,
+    ignore_missing_keys: Sequence[str] | None = None,
+    ignore_unexpected_keys: Sequence[str] | None = None,
 ):
     if ignore_missing_keys is not None and len(ignore_missing_keys) > 0:
         ignored_keys = unix_pattern_to_parameter_names(
@@ -249,9 +249,9 @@ def load_state_dict_into_model(
     state_dict: Dict[str, Any],
     model,
     strict: bool = True,
-    ignore_missing_keys: List[str] = None,
-    ignore_unexpected_keys: List[str] = None,
-    checkpoint_kernels: List[Callable] = None,
+    ignore_missing_keys: Sequence[str] | None = None,
+    ignore_unexpected_keys: Sequence[str] | None = None,
+    checkpoint_kernels: Sequence[Callable[..., Any]] | None = None,
 ):
     """Load a state dict into a model only when the model exposes the API."""
 

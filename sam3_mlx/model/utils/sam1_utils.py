@@ -74,7 +74,11 @@ class SAM2Transforms:
                 labels, areas = connected_components(
                     (mask_flat <= self.mask_threshold).astype(mx.uint8)
                 )
-                is_hole = (labels > 0) & (areas <= self.max_hole_area)
+                labels = mx.array(labels)
+                areas = mx.array(areas)
+                is_hole = mx.logical_and(
+                    mx.greater(labels, 0), mx.less_equal(areas, self.max_hole_area)
+                )
                 masks = mx.where(
                     is_hole.reshape(masks.shape),
                     self.mask_threshold + 10.0,
@@ -85,7 +89,12 @@ class SAM2Transforms:
                 labels, areas = connected_components(
                     (mask_flat > self.mask_threshold).astype(mx.uint8)
                 )
-                is_sprinkle = (labels > 0) & (areas <= self.max_sprinkle_area)
+                labels = mx.array(labels)
+                areas = mx.array(areas)
+                is_sprinkle = mx.logical_and(
+                    mx.greater(labels, 0),
+                    mx.less_equal(areas, self.max_sprinkle_area),
+                )
                 masks = mx.where(
                     is_sprinkle.reshape(masks.shape),
                     self.mask_threshold - 10.0,

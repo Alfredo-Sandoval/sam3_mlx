@@ -5,6 +5,8 @@ constructed MLX parameter tree against the SAM2-canonical tracker structure so
 later checkpoint-mapping and forward-parity increments build on a stable base.
 """
 
+from typing import TypedDict
+
 import mlx.core as mx
 import pytest
 from mlx.utils import tree_flatten
@@ -17,25 +19,40 @@ from sam3_mlx.model_builder import (
     _create_tracker_transformer,
 )
 
+
 # kwargs mirror the official build_tracker(...) call at upstream commit
 # 2814fa619404a722d03e9a012e083e4f293a4e53.
-_TRACKER_KWARGS = dict(
-    image_size=1008,
-    num_maskmem=7,
-    backbone_stride=14,
-    multimask_output_in_sam=True,
-    forward_backbone_per_frame_for_eval=True,
-    multimask_output_for_tracking=True,
-    multimask_min_pt_num=0,
-    multimask_max_pt_num=1,
-    non_overlap_masks_for_mem_enc=False,
-    max_cond_frames_in_attn=4,
-    sam_mask_decoder_extra_args={
+class _TrackerKwargs(TypedDict):
+    image_size: int
+    num_maskmem: int
+    backbone_stride: int
+    multimask_output_in_sam: bool
+    forward_backbone_per_frame_for_eval: bool
+    multimask_output_for_tracking: bool
+    multimask_min_pt_num: int
+    multimask_max_pt_num: int
+    non_overlap_masks_for_mem_enc: bool
+    max_cond_frames_in_attn: int
+    sam_mask_decoder_extra_args: dict[str, bool | float]
+
+
+_TRACKER_KWARGS: _TrackerKwargs = {
+    "image_size": 1008,
+    "num_maskmem": 7,
+    "backbone_stride": 14,
+    "multimask_output_in_sam": True,
+    "forward_backbone_per_frame_for_eval": True,
+    "multimask_output_for_tracking": True,
+    "multimask_min_pt_num": 0,
+    "multimask_max_pt_num": 1,
+    "non_overlap_masks_for_mem_enc": False,
+    "max_cond_frames_in_attn": 4,
+    "sam_mask_decoder_extra_args": {
         "dynamic_multimask_via_stability": True,
         "dynamic_multimask_stability_delta": 0.05,
         "dynamic_multimask_stability_thresh": 0.98,
     },
-)
+}
 
 
 @pytest.fixture(scope="module")
@@ -58,6 +75,8 @@ def test_component_builders_match_official_shape():
 
     maskmem_backbone = _create_tracker_maskmem_backbone()
     # out_dim=64 introduces channel compression -> mem_dim must read back as 64
+    assert maskmem_backbone.out_proj is not None
+    assert maskmem_backbone.out_proj.weight is not None
     assert maskmem_backbone.out_proj.weight.shape[0] == 64
 
 

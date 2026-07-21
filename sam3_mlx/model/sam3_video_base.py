@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from enum import Enum
 import math
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, NoReturn, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -71,7 +71,7 @@ def _raise_video_base_unsupported(
     reason: str = "video-multiplex",
     detail: str,
     alternative: str | None = None,
-):
+) -> NoReturn:
     raise_unsupported(
         feature,
         reason=reason,
@@ -105,18 +105,18 @@ def _mask_iom_np(masks1: np.ndarray, masks2: np.ndarray) -> np.ndarray:
 
 @dataclass
 class RealizedAssociateDetTrkresult:
-    new_det_fa_inds: np.array
-    unmatched_trk_obj_ids: np.array
-    det_to_matched_trk_obj_ids: Dict[int, np.array]
+    new_det_fa_inds: np.ndarray
+    unmatched_trk_obj_ids: np.ndarray
+    det_to_matched_trk_obj_ids: Dict[int, np.ndarray]
     trk_id_to_max_iou_high_conf_det: Dict[int, int]
-    empty_trk_obj_ids: np.array
-    new_det_obj_ids: Optional[np.array] = None
-    new_det_gpu_ids: Optional[np.array] = None
+    empty_trk_obj_ids: np.ndarray
+    new_det_obj_ids: Optional[np.ndarray] = None
+    new_det_gpu_ids: Optional[np.ndarray] = None
     num_obj_dropped_due_to_limit: Optional[int] = None
 
     def get_new_det_gpu_ids(
         self, tracker_metadata_prev, is_image_only, det_scores, tracking_obj
-    ):
+    ) -> tuple[np.ndarray, np.ndarray, int]:
         if self.new_det_obj_ids is None:
             det_scores_np = _to_numpy(det_scores)
             prev_obj_num = np.sum(tracker_metadata_prev["num_obj_per_gpu"])
@@ -146,6 +146,12 @@ class RealizedAssociateDetTrkresult:
             self.new_det_obj_ids = new_det_obj_ids
             self.new_det_gpu_ids = new_det_gpu_ids
             self.num_obj_dropped_due_to_limit = num_obj_dropped_due_to_limit
+        if (
+            self.new_det_obj_ids is None
+            or self.new_det_gpu_ids is None
+            or self.num_obj_dropped_due_to_limit is None
+        ):
+            raise RuntimeError("Detection-to-tracker assignment was not initialized.")
         return (
             self.new_det_obj_ids,
             self.new_det_gpu_ids,
@@ -153,13 +159,15 @@ class RealizedAssociateDetTrkresult:
         )
 
 
-def realize_adt_result(adt_lazy_result, tracker_metadata_prev, det_mask_preds):
-    if isinstance(adt_lazy_result, LazyAssociateDetTrkResult):
-        adt_lazy_result._convert_to_numpy()
-        return adt_lazy_result._create_cpu_metadata(
-            tracker_metadata_prev["obj_ids_all_gpu"], det_mask_preds
-        )
-    return adt_lazy_result
+def realize_adt_result(
+    adt_lazy_result: LazyAssociateDetTrkResult,
+    tracker_metadata_prev: dict[str, Any],
+    det_mask_preds: Any,
+) -> RealizedAssociateDetTrkresult:
+    adt_lazy_result._convert_to_numpy()
+    return adt_lazy_result._create_cpu_metadata(
+        tracker_metadata_prev["obj_ids_all_gpu"], det_mask_preds
+    )
 
 
 class LazyAssociateDetTrkResult:
@@ -484,14 +492,14 @@ class Sam3VideoBase(nn.Module):
             & (y_c < 1.0 - margin)
         )
 
-    def _process_hotstart(self, *args, **kwargs):
+    def _process_hotstart(self, *args, **kwargs) -> Any:
         del args, kwargs
         _raise_video_base_unsupported(
             "sam3_mlx.model.sam3_video_base.Sam3VideoBase._process_hotstart",
             detail="Hotstart tracking heuristics require the unported tracker state.",
         )
 
-    def update_masklet_confirmation_status(self, *args, **kwargs):
+    def update_masklet_confirmation_status(self, *args, **kwargs) -> Any:
         del args, kwargs
         _raise_video_base_unsupported(
             "sam3_mlx.model.sam3_video_base.Sam3VideoBase.update_masklet_confirmation_status",
@@ -532,7 +540,9 @@ class Sam3VideoBase(nn.Module):
             object_masks_np = np.concatenate(object_masks, axis=0)
             preds["scores"].append(_scalar_float(score))
             preds["labels"].append(_scalar_int(label))
-            boxes = mask_to_box(object_masks_np[:, None, :, :]).reshape(num_frames, 4)
+            boxes = _to_numpy(mask_to_box(object_masks_np[:, None, :, :])).reshape(
+                num_frames, 4
+            )
             preds["boxes"].append(boxes.astype(np.float32, copy=False))
             preds["masks_rle"].append(rle_encode(object_masks_np, return_areas=True))
 

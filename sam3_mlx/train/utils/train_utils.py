@@ -12,7 +12,7 @@ import os
 import random
 import re
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import Any, Callable, Mapping, NoReturn, Optional
 
 import numpy as np
 
@@ -27,7 +27,7 @@ _UNSUPPORTED_TRAIN_UTILS_MESSAGE = (
 )
 
 
-def _raise_train_utils_unsupported(feature: str) -> None:
+def _raise_train_utils_unsupported(feature: str) -> NoReturn:
     raise_unsupported(
         feature,
         reason="training-loop",
@@ -75,18 +75,20 @@ def register_omegaconf_resolvers():
             "runtime dependency of sam3_mlx."
         ) from exc
 
+    def missing_hydra_resolver(*args: Any, **kwargs: Any) -> NoReturn:
+        del args, kwargs
+        raise NotImplementedError("Hydra resolver is unavailable")
+
+    get_method: Callable[..., Any]
+    get_class: Callable[..., Any]
     try:
         import hydra
-
+    except ImportError:  # pragma: no cover - optional config dependency
+        get_method = missing_hydra_resolver
+        get_class = missing_hydra_resolver
+    else:
         get_method = hydra.utils.get_method
         get_class = hydra.utils.get_class
-    except ImportError:  # pragma: no cover - optional config dependency
-
-        def get_method(*args, **kwargs):
-            raise NotImplementedError("Hydra get_method resolver is unavailable")
-
-        def get_class(*args, **kwargs):
-            raise NotImplementedError("Hydra get_class resolver is unavailable")
 
     resolvers = {
         "get_method": get_method,

@@ -71,7 +71,7 @@ def rle_encode(orig_mask, return_areas=False):
     if masks.size == 0:
         return []
 
-    batch_rles = []
+    batch_rles: list[dict[str, Any]] = []
     for mask in masks:
         pixels = mask.reshape(-1, order="F").astype(np.uint8)
         counts: list[int] = []
@@ -86,7 +86,10 @@ def rle_encode(orig_mask, return_areas=False):
                 run = 1
                 last = value_i
         counts.append(run)
-        rle = {"counts": counts, "size": [int(mask.shape[0]), int(mask.shape[1])]}
+        rle: dict[str, Any] = {
+            "counts": counts,
+            "size": [int(mask.shape[0]), int(mask.shape[1])],
+        }
         if return_areas:
             rle["area"] = int(mask.sum())
         batch_rles.append(rle)

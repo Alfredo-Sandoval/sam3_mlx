@@ -53,9 +53,10 @@ class RotatedBoxes(Boxes):
             clipped = Boxes(axis_boxes)
             clipped.clip((height, width))
             xywh = BoxMode.convert(clipped.tensor, BoxMode.XYXY_ABS, BoxMode.XYWH_ABS)
-            self.tensor[near_axis_aligned, :4] = BoxMode.convert(
-                xywh, BoxMode.XYWH_ABS, BoxMode.XYWHA_ABS
-            )[:, :4]
+            converted = np.asarray(
+                BoxMode.convert(xywh, BoxMode.XYWH_ABS, BoxMode.XYWHA_ABS)
+            )
+            self.tensor[near_axis_aligned, :4] = converted[:, :4]
 
     def nonempty(self, threshold: float = 0.0) -> np.ndarray:
         return (self.tensor[:, 2] > threshold) & (self.tensor[:, 3] > threshold)

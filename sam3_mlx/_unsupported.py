@@ -29,6 +29,8 @@ REASONS = frozenset(
         "triton-kernel",
         "unsupported-device",
         "video-multi-gpu",
+        "video-async-loading",
+        "video-offload",
         "video-multiplex",
         "video-tracker",
         "xformers",

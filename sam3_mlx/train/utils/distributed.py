@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import functools
-from typing import Any, Callable, List, Tuple
+from typing import Any, Callable, List, NoReturn, Tuple
 
 from sam3_mlx._unsupported import UPSTREAM_COMMIT, raise_unsupported
 
@@ -24,7 +24,7 @@ _UNSUPPORTED_DISTRIBUTED_MESSAGE = (
 )
 
 
-def _raise_distributed_unsupported(feature: str) -> None:
+def _raise_distributed_unsupported(feature: str) -> NoReturn:
     raise_unsupported(
         feature,
         reason="torch-distributed",
@@ -90,7 +90,7 @@ def all_reduce_max(tensor):
 def all_reduce_op(
     tensor,
     op,
-    after_op_func: Callable[[Any], Any] = None,
+    after_op_func: Callable[[Any], Any] | None = None,
 ):
     if after_op_func is not None:
         return after_op_func(tensor)

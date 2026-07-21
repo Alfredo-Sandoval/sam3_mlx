@@ -39,6 +39,25 @@ dependencies = [
 [project.optional-dependencies]
 viz = [
     "matplotlib>=3.10.8",
+    "pandas>=2.3.3",
+]
+video = [
+    "opencv-python-headless>=4.12.0.88",
+]
+
+[dependency-groups]
+dev = [
+    "build>=1.3.0",
+    "hydra-core>=1.3.2",
+    "matplotlib>=3.10.8",
+    "numba>=0.63.1",
+    "omegaconf>=2.3.0",
+    "pandas>=2.3.3",
+    "pyright>=1.1.411",
+    "pytest>=8.4.2",
+    "ruff>=0.15.22",
+    "scipy>=1.16.3",
+    "twine>=6.2.0",
 ]
 
 [project.urls]
@@ -69,8 +88,20 @@ sam3_mlx = ["assets/*.txt.gz"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "integration: opt-in tests that download and execute real model weights",
+]
 norecursedirs = [
     ".git",
     ".venv",
     "third_party",
 ]
+
+[tool.ruff]
+target-version = "py313"
+
+[tool.pyright]
+include = ["sam3_mlx", "tests"]
+pythonVersion = "3.13"
+typeCheckingMode = "standard"
+reportUnnecessaryTypeIgnoreComment = "error"

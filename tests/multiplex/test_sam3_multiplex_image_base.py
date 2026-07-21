@@ -59,12 +59,12 @@ class _BatchedForwardingDetector(Sam3MultiplexDetector):
 
     def forward_grounding(
         self,
-        *,
         backbone_out,
         find_input,
         find_target,
         geometric_prompt,
     ):
+        assert geometric_prompt.box_mask is not None
         self.calls.append(
             {
                 "img_ids": np.asarray(find_input.img_ids),
@@ -93,7 +93,6 @@ class _BatchedNmsDetector(_BatchedForwardingDetector):
 
     def forward_grounding(
         self,
-        *,
         backbone_out,
         find_input,
         find_target,
@@ -207,6 +206,12 @@ def test_batch_geometric_prompts_preserves_official_prompt_batch_axes():
 
     batched = instance._batch_geometric_prompts_from_list(prompts)
 
+    assert batched.box_embeddings is not None
+    assert batched.box_mask is not None
+    assert batched.box_labels is not None
+    assert batched.point_embeddings is not None
+    assert batched.point_mask is not None
+    assert batched.point_labels is not None
     assert batched.box_embeddings.shape == (1, 2, 2)
     assert batched.box_mask.shape == (2, 1)
     assert batched.box_labels.shape == (1, 2)

@@ -1,3 +1,5 @@
+include UPSTREAM.md
+
 prune tests
 prune dev_docs
 prune scripts

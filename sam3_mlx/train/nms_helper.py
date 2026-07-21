@@ -2,21 +2,22 @@
 
 # pyre-unsafe
 import warnings
+from types import ModuleType
 from typing import Dict, List
 
 import numpy as np
 
 
 # Check if Numba is available
-HAS_NUMBA = False
+nb: ModuleType | None
 try:
     import numba as nb
-
-    HAS_NUMBA = True
 except ImportError:
+    nb = None
     warnings.warn(
         "Numba not found. Using slower pure Python implementations.", UserWarning
     )
+HAS_NUMBA = nb is not None
 
 
 # -------------------- Helper Functions --------------------
@@ -155,37 +156,41 @@ def compute_track_iou_matrix(
     return iou_matrix
 
 
-if HAS_NUMBA:
+def _compute_track_iou_matrix_impl(bboxes_stacked, valid_masks, areas):
+    """Numba-compatible IoU matrix implementation."""
+    num_tracks = bboxes_stacked.shape[0]
+    iou_matrix = np.zeros((num_tracks, num_tracks), dtype=np.float32)
+    for i in range(num_tracks):
+        for j in range(i + 1, num_tracks):
+            valid_ij = valid_masks[i] & valid_masks[j]
+            if not valid_ij.any():
+                continue
+            bboxes_i = bboxes_stacked[i, valid_ij]
+            bboxes_j = bboxes_stacked[j, valid_ij]
+            area_i = areas[i, valid_ij]
+            area_j = areas[j, valid_ij]
+            inter_total = 0.0
+            union_total = 0.0
+            for k in range(bboxes_i.shape[0]):
+                x1 = max(bboxes_i[k, 0], bboxes_j[k, 0])
+                y1 = max(bboxes_i[k, 1], bboxes_j[k, 1])
+                x2 = min(bboxes_i[k, 2], bboxes_j[k, 2])
+                y2 = min(bboxes_i[k, 3], bboxes_j[k, 3])
+                inter = max(0, x2 - x1) * max(0, y2 - y1)
+                union = area_i[k] + area_j[k] - inter
+                inter_total += inter
+                union_total += union
+            if union_total > 0:
+                iou_matrix[i, j] = inter_total / union_total
+                iou_matrix[j, i] = iou_matrix[i, j]
+    return iou_matrix
 
-    @nb.jit(nopython=True, parallel=True)
-    def _compute_track_iou_matrix_numba(bboxes_stacked, valid_masks, areas):
-        """Numba-optimized IoU matrix computation for track-level NMS"""
-        num_tracks = bboxes_stacked.shape[0]
-        iou_matrix = np.zeros((num_tracks, num_tracks), dtype=np.float32)
-        for i in nb.prange(num_tracks):
-            for j in range(i + 1, num_tracks):
-                valid_ij = valid_masks[i] & valid_masks[j]
-                if not valid_ij.any():
-                    continue
-                bboxes_i = bboxes_stacked[i, valid_ij]
-                bboxes_j = bboxes_stacked[j, valid_ij]
-                area_i = areas[i, valid_ij]
-                area_j = areas[j, valid_ij]
-                inter_total = 0.0
-                union_total = 0.0
-                for k in range(bboxes_i.shape[0]):
-                    x1 = max(bboxes_i[k, 0], bboxes_j[k, 0])
-                    y1 = max(bboxes_i[k, 1], bboxes_j[k, 1])
-                    x2 = min(bboxes_i[k, 2], bboxes_j[k, 2])
-                    y2 = min(bboxes_i[k, 3], bboxes_j[k, 3])
-                    inter = max(0, x2 - x1) * max(0, y2 - y1)
-                    union = area_i[k] + area_j[k] - inter
-                    inter_total += inter
-                    union_total += union
-                if union_total > 0:
-                    iou_matrix[i, j] = inter_total / union_total
-                    iou_matrix[j, i] = iou_matrix[i, j]
-        return iou_matrix
+
+_compute_track_iou_matrix_numba = (
+    nb.jit(nopython=True, parallel=True)(_compute_track_iou_matrix_impl)
+    if nb is not None
+    else _compute_track_iou_matrix_impl
+)
 
 
 def apply_track_nms(
@@ -195,7 +200,7 @@ def apply_track_nms(
     if not track_detections:
         return []
     bboxes_stacked = np.stack([d["bboxes"] for d in track_detections], axis=0)
-    valid_masks = ~np.isnan(bboxes_stacked).any(axis=2)
+    valid_masks = np.asarray(~np.isnan(bboxes_stacked).any(axis=2))
     areas = (bboxes_stacked[:, :, 2] - bboxes_stacked[:, :, 0]) * (
         bboxes_stacked[:, :, 3] - bboxes_stacked[:, :, 1]
     )
@@ -236,25 +241,29 @@ def compute_frame_ious(bbox: np.ndarray, bboxes: np.ndarray) -> np.ndarray:
         return ious
 
 
-if HAS_NUMBA:
+def _compute_frame_ious_impl(bbox, bboxes):
+    """Numba-compatible frame IoU implementation."""
+    ious = np.zeros(len(bboxes), dtype=np.float32)
+    for i in range(len(bboxes)):
+        x1 = max(bbox[0], bboxes[i, 0])
+        y1 = max(bbox[1], bboxes[i, 1])
+        x2 = min(bbox[2], bboxes[i, 2])
+        y2 = min(bbox[3], bboxes[i, 3])
 
-    @nb.jit(nopython=True, parallel=True)
-    def _compute_frame_ious_numba(bbox, bboxes):
-        """Numba-optimized IoU computation"""
-        ious = np.zeros(len(bboxes), dtype=np.float32)
-        for i in nb.prange(len(bboxes)):
-            x1 = max(bbox[0], bboxes[i, 0])
-            y1 = max(bbox[1], bboxes[i, 1])
-            x2 = min(bbox[2], bboxes[i, 2])
-            y2 = min(bbox[3], bboxes[i, 3])
+        inter = max(0, x2 - x1) * max(0, y2 - y1)
+        area1 = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+        area2 = (bboxes[i, 2] - bboxes[i, 0]) * (bboxes[i, 3] - bboxes[i, 1])
+        union = area1 + area2 - inter
 
-            inter = max(0, x2 - x1) * max(0, y2 - y1)
-            area1 = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
-            area2 = (bboxes[i, 2] - bboxes[i, 0]) * (bboxes[i, 3] - bboxes[i, 1])
-            union = area1 + area2 - inter
+        ious[i] = inter / union if union > 0 else 0.0
+    return ious
 
-            ious[i] = inter / union if union > 0 else 0.0
-        return ious
+
+_compute_frame_ious_numba = (
+    nb.jit(nopython=True, parallel=True)(_compute_frame_ious_impl)
+    if nb is not None
+    else _compute_frame_ious_impl
+)
 
 
 def apply_frame_nms(
@@ -284,26 +293,28 @@ def apply_frame_nms(
         return keep
 
 
-if HAS_NUMBA:
+def _apply_frame_nms_impl(bboxes, scores, nms_threshold):
+    """Numba-compatible frame NMS implementation."""
+    order = np.argsort(-scores)
+    keep = []
+    suppress = np.zeros(len(bboxes), dtype=bool)
 
-    @nb.jit(nopython=True)
-    def _apply_frame_nms_numba(bboxes, scores, nms_threshold):
-        """Numba-optimized NMS implementation"""
-        order = np.argsort(-scores)
-        keep = []
-        suppress = np.zeros(len(bboxes), dtype=nb.boolean)
+    for i in range(len(order)):
+        if not suppress[order[i]]:
+            keep.append(order[i])
+            current_bbox = bboxes[order[i]]
 
-        for i in range(len(order)):
-            if not suppress[order[i]]:
-                keep.append(order[i])
-                current_bbox = bboxes[order[i]]
+            if i + 1 < len(order):
+                ious = _compute_frame_ious_numba(current_bbox, bboxes[order[i + 1 :]])
+                suppress[order[i + 1 :]] = suppress[order[i + 1 :]] | (
+                    ious >= nms_threshold
+                )
 
-                if i + 1 < len(order):  # Check bounds
-                    ious = _compute_frame_ious_numba(
-                        current_bbox, bboxes[order[i + 1 :]]
-                    )
-                    suppress[order[i + 1 :]] = suppress[order[i + 1 :]] | (
-                        ious >= nms_threshold
-                    )
+    return keep
 
-        return keep
+
+_apply_frame_nms_numba = (
+    nb.jit(nopython=True)(_apply_frame_nms_impl)
+    if nb is not None
+    else _apply_frame_nms_impl
+)

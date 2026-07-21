@@ -133,8 +133,8 @@ def _roi_align(
 
     if exact_sampling:
         count = max(roi_bin_grid_h * roi_bin_grid_w, 1)
-        iy = mx.arange(roi_bin_grid_h)
-        ix = mx.arange(roi_bin_grid_w)
+        iy = mx.arange(sampling_ratio)
+        ix = mx.arange(sampling_ratio)
         ymask = None
         xmask = None
     else:
@@ -164,6 +164,7 @@ def _roi_align(
     )  # [K, C, PH, PW, IY, IX]
 
     if not exact_sampling:
+        assert ymask is not None and xmask is not None
         val = mx.where(ymask[:, None, None, None, :, None], val, 0)
         val = mx.where(xmask[:, None, None, None, None, :], val, 0)
 

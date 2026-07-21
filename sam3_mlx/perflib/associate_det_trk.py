@@ -61,7 +61,7 @@ def associate_det_trk(
     track_binary = track_np > 0
     iou = _to_numpy(mask_iou(det_binary, track_binary)).astype(np.float32, copy=False)
     iou_ge_det = iou >= iou_threshold
-    iou_ge_det_any = iou_ge_det.any(axis=1)
+    iou_ge_det_any = np.asarray(iou_ge_det.any(axis=1), dtype=bool)
     iou_ge_trk = iou >= iou_threshold_trk
 
     scores = None

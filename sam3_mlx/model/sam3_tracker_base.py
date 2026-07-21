@@ -217,7 +217,7 @@ class Sam3TrackerBase(nn.Module):
 
         t_diff_max = max_abs_pos - 1 if max_abs_pos is not None else 1
         pos_enc = mx.array(rel_pos_list, dtype=mx.float32) / t_diff_max
-        pos_enc = get_1d_sine_pe(pos_enc, dim=self.hidden_dim)
+        pos_enc = mx.array(get_1d_sine_pe(pos_enc, dim=self.hidden_dim))
         return self.obj_ptr_tpos_proj(pos_enc)
 
     def _forward_sam_heads(
@@ -567,6 +567,7 @@ class Sam3TrackerBase(nn.Module):
             ]
 
             r = 1 if training else self.memory_temporal_stride_for_eval
+            valid_indices: list[int] = []
             if self.use_memory_selection:
                 valid_indices = self.frame_filter(
                     output_dict, track_in_reverse, frame_idx, num_frames, r
@@ -663,9 +664,12 @@ class Sam3TrackerBase(nn.Module):
 
             if len(pos_and_ptrs) > 0:
                 pos_list, ptrs_list, is_selected_cond_frame_list = zip(*pos_and_ptrs)
-                obj_ptrs = mx.stack(ptrs_list, axis=0)
-                if getattr(self, "cond_frame_obj_ptr_embedding", None) is not None:
-                    obj_ptrs = obj_ptrs + self.cond_frame_obj_ptr_embedding * mx.array(
+                obj_ptrs = mx.stack(list(ptrs_list), axis=0)
+                cond_frame_obj_ptr_embedding = getattr(
+                    self, "cond_frame_obj_ptr_embedding", None
+                )
+                if cond_frame_obj_ptr_embedding is not None:
+                    obj_ptrs = obj_ptrs + cond_frame_obj_ptr_embedding * mx.array(
                         is_selected_cond_frame_list, dtype=mx.float32
                     ).reshape(-1, 1, 1)
 
@@ -761,6 +765,9 @@ class Sam3TrackerBase(nn.Module):
     def forward_tracking(self, backbone_out, input, return_dict=False):
         """Forward tracking over precomputed frame features."""
         img_feats_already_computed = backbone_out["backbone_fpn"] is not None
+        vision_feats: list[mx.array] = []
+        vision_pos_embeds: list[mx.array] = []
+        feat_sizes: list[tuple[int, int]] = []
         if img_feats_already_computed:
             _, vision_feats, vision_pos_embeds, feat_sizes = (
                 self._prepare_backbone_features(backbone_out)

@@ -1,7 +1,7 @@
 from functools import lru_cache, partial
 from numbers import Integral
-from typing import Dict, List
-import PIL
+from collections.abc import Sequence
+from typing import Dict, List, NoReturn
 from PIL import Image
 import numpy as np
 import mlx.core as mx
@@ -16,7 +16,7 @@ SAM3_IMAGE_PATCH_SIZE = 14
 
 def _raise_processor_unsupported(
     feature: str, *, reason: str, detail: str, alternative=None
-):
+) -> NoReturn:
     raise_unsupported(
         feature,
         reason=reason,
@@ -193,7 +193,7 @@ def transform(image_path_or_pil, resolution):
 
 
 def _as_pil_rgb_image(image):
-    if isinstance(image, PIL.Image.Image):
+    if isinstance(image, Image.Image):
         return image if image.mode == "RGB" else image.convert("RGB")
     if isinstance(image, np.ndarray):
         array = np.asarray(image)
@@ -315,7 +315,7 @@ class Sam3Processor:
         self._patch_interactive_backbone_features(state["backbone_out"])
         return state
 
-    def set_image_batch(self, images: List[np.ndarray], state=None):
+    def set_image_batch(self, images: Sequence[np.ndarray | Image.Image], state=None):
         """Sets an image batch and computes batched backbone features."""
 
         if state is None:
@@ -574,6 +574,7 @@ class Sam3Processor:
             scores_by_image.append(image_scores)
 
             if semantic_seg_by_image is not None:
+                assert semantic_seg is not None
                 semantic_seg_by_image.append(
                     interpolator(semantic_seg[batch_idx : batch_idx + 1])
                 )

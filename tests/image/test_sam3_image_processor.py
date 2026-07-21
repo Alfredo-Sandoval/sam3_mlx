@@ -1,3 +1,5 @@
+import importlib
+
 import numpy as np
 from PIL import Image
 import pytest
@@ -232,8 +234,10 @@ def _synthetic_rgb_image(width, height):
 def test_transform_matches_torchvision_on_synthetic_aspect_ratios_when_available():
     torch = pytest.importorskip("torch")
     pytest.importorskip("torchvision")
-    from torchvision.transforms import v2
-    from torchvision.transforms.v2 import functional as torch_vision_functional
+    v2 = importlib.import_module("torchvision.transforms.v2")
+    torch_vision_functional = importlib.import_module(
+        "torchvision.transforms.v2.functional"
+    )
 
     resolution = 42
     official_transform = v2.Compose(

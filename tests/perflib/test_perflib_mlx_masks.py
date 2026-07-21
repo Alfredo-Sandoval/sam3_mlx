@@ -1,6 +1,7 @@
 import mlx.core as mx
 import numpy as np
 import pytest
+from numpy.typing import DTypeLike
 from PIL import Image
 
 from sam3_mlx.perflib import nms
@@ -18,10 +19,11 @@ def _to_numpy(value):
     return np.asarray(value)
 
 
-def _load_official_masks_fixture(dtype: np.dtype) -> np.ndarray:
+def _load_official_masks_fixture(dtype: DTypeLike) -> np.ndarray:
     image = Image.open(PERFLIB_FIXTURE_ROOT / "masks.tiff")
     frames = []
-    for index in range(image.n_frames):
+    frame_count = int(getattr(image, "n_frames", 1))
+    for index in range(frame_count):
         image.seek(index)
         frames.append(np.asarray(image, dtype=dtype))
     return np.stack(frames, axis=0)

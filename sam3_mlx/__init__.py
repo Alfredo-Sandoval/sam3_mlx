@@ -1,5 +1,20 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sam3_mlx._unsupported import Sam3MlxUnsupportedError
+    from sam3_mlx.model_builder import (
+        build_sam3_image_model,
+        build_sam3_multiplex_video_model,
+        build_sam3_multiplex_video_predictor,
+        build_sam3_predictor,
+        build_sam3_video_model,
+        build_sam3_video_predictor,
+        build_tracker,
+        download_ckpt_from_hf,
+    )
+
 __version__ = "0.1.1"
 
 __all__ = [

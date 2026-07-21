@@ -1,4 +1,6 @@
-from typing import Dict, List, Optional, Tuple
+from __future__ import annotations
+
+from typing import Dict, List, NoReturn, Optional, Tuple
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
@@ -16,11 +18,15 @@ from sam3_mlx.model.model_misc import (
     SAM3Output,
     inverse_sigmoid,
 )
+from sam3_mlx.model.sam1_task_predictor import (
+    SAM3InteractiveImagePredictor,
+    _PredictorFeatures,
+)
 
 
 def _raise_image_unsupported(
     feature: str, *, reason: str, detail: str, alternative=None
-):
+) -> NoReturn:
     raise_unsupported(
         feature,
         reason=reason,
@@ -67,7 +73,8 @@ class Sam3Image(nn.Module):
         detach_presence_in_joint_score: bool = False,
         separate_scorer_for_instance: bool = False,
         num_interactive_steps_val: int = 0,
-        inst_interactive_predictor=None,
+        inst_interactive_predictor: SAM3InteractiveImagePredictor | None = None,
+        interactive_prompt_sampler=None,
         **kwargs,
     ):
         super().__init__()
@@ -132,6 +139,7 @@ class Sam3Image(nn.Module):
         self.multimask_output = multimask_output
 
         self.inst_interactive_predictor = inst_interactive_predictor
+        self.interactive_prompt_sampler = interactive_prompt_sampler
 
     @property
     def device(self):
@@ -231,6 +239,10 @@ class Sam3Image(nn.Module):
             visual_prompt_embed = mx.zeros((0, *geo_feats.shape[1:]))
             visual_prompt_mask = mx.zeros(
                 (*geo_masks.shape[:-1], 0), dtype=geo_masks.dtype
+            )
+        elif visual_prompt_mask is None:
+            raise ValueError(
+                "visual_prompt_mask is required when visual_prompt_embed is provided."
             )
 
         if encode_text:
@@ -351,6 +363,7 @@ class Sam3Image(nn.Module):
             dot_prod_scoring_head = self.dot_prod_scoring
             if is_instance_prompt and self.instance_dot_prod_scoring is not None:
                 dot_prod_scoring_head = self.instance_dot_prod_scoring
+            assert dot_prod_scoring_head is not None
             outputs_class = dot_prod_scoring_head(hs, prompt, prompt_mask)
         else:
             class_embed_head = self.class_embed
@@ -550,6 +563,10 @@ class Sam3Image(nn.Module):
     def _get_geo_prompt_from_find_input(self, find_input: FindStage):
         point_embeddings, point_mask, point_labels = None, None, None
         if find_input.input_points_before_embed is not None:
+            if isinstance(find_input.input_points_before_embed, list):
+                raise TypeError(
+                    "input_points_before_embed must be a converted MLX array."
+                )
             point_embeddings = find_input.input_points_before_embed.swapaxes(0, 1)
             point_labels = point_embeddings[..., -1]
             point_embeddings = point_embeddings[..., :-1]
@@ -564,8 +581,10 @@ class Sam3Image(nn.Module):
             point_labels=point_labels,
         )
 
-    def forward(self, input: BatchedDatapoint):
+    def forward(self, input: BatchedDatapoint) -> SAM3Output | tuple[SAM3Output, None]:
         device = self.device
+        if isinstance(input.img_batch, list):
+            raise TypeError("BatchedDatapoint.img_batch must be a converted MLX array.")
         backbone_out = {"img_batch_all_stages": input.img_batch}
         backbone_out.update(self.backbone.forward_image(input.img_batch))
         num_frames = len(input.find_inputs)
@@ -579,6 +598,8 @@ class Sam3Image(nn.Module):
         )
         find_input = input.find_inputs[0]
         find_target = input.find_targets[0]
+        if isinstance(find_input.input_points, list):
+            raise TypeError("FindStage.input_points must be a converted MLX array.")
         if find_input.input_points is not None and find_input.input_points.size > 0:
             print("Warning: Point prompts are ignored in PCS.")
 
@@ -592,6 +613,10 @@ class Sam3Image(nn.Module):
         stage_outs = []
         for cur_step in range(num_interactive_steps + 1):
             if cur_step > 0:
+                if self.interactive_prompt_sampler is None:
+                    raise RuntimeError(
+                        "interactive_prompt_sampler is required for interactive steps."
+                    )
                 geometric_prompt, _ = self.interactive_prompt_sampler.sample(
                     geo_prompt=geometric_prompt,
                     find_target=find_target,
@@ -635,8 +660,9 @@ class Sam3Image(nn.Module):
             "object_ids_padded": targets.object_ids_padded,
         }
 
-    def _inst_predictor_features_from_state(self, inference_state, batch_size=None):
-        if self.inst_interactive_predictor is None:
+    def _require_inst_predictor(self) -> SAM3InteractiveImagePredictor:
+        predictor = self.inst_interactive_predictor
+        if predictor is None:
             _raise_image_unsupported(
                 "sam3_mlx.model.sam3_image.Sam3Image.predict_inst",
                 reason="image-interactivity",
@@ -646,6 +672,12 @@ class Sam3Image(nn.Module):
                 ),
                 alternative="build_sam3_image_model(enable_inst_interactivity=True)",
             )
+        return predictor
+
+    def _inst_predictor_features_from_state(
+        self, inference_state, batch_size=None
+    ) -> _PredictorFeatures:
+        predictor = self._require_inst_predictor()
         if "backbone_out" not in inference_state:
             raise ValueError("inference_state must contain backbone_out.")
         backbone_out = inference_state["backbone_out"].get("sam2_backbone_out")
@@ -664,18 +696,14 @@ class Sam3Image(nn.Module):
             vision_feats,
             _,
             _,
-        ) = self.inst_interactive_predictor.model._prepare_backbone_features(
-            backbone_out
-        )
-        vision_feats[-1] = (
-            vision_feats[-1] + self.inst_interactive_predictor.model.no_mem_embed
-        )
+        ) = predictor.model._prepare_backbone_features(backbone_out)
+        vision_feats[-1] = vision_feats[-1] + predictor.model.no_mem_embed
         if batch_size is None:
             batch_size = vision_feats[-1].shape[1]
         feats = [
             feat.transpose(1, 2, 0).reshape(batch_size, -1, *feat_size)
             for feat, feat_size in zip(
-                vision_feats[::-1], self.inst_interactive_predictor._bb_feat_sizes[::-1]
+                vision_feats[::-1], predictor._bb_feat_sizes[::-1]
             )
         ][::-1]
         return {"image_embed": feats[-1], "high_res_feats": feats[:-1]}
@@ -689,7 +717,7 @@ class Sam3Image(nn.Module):
             inference_state["original_height"],
             inference_state["original_width"],
         )
-        predictor = self.inst_interactive_predictor
+        predictor = self._require_inst_predictor()
         features = self._inst_predictor_features_from_state(inference_state, 1)
         predictor._features = features
         predictor._is_image_set = True
@@ -715,7 +743,7 @@ class Sam3Image(nn.Module):
             raise AssertionError(
                 "original_heights and original_widths must have the same length."
             )
-        predictor = self.inst_interactive_predictor
+        predictor = self._require_inst_predictor()
         features = self._inst_predictor_features_from_state(inference_state, batch_size)
         if features["image_embed"].shape[0] != batch_size:
             raise AssertionError(

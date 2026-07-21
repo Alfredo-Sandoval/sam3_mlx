@@ -43,7 +43,11 @@ class ColoredFormatter(logging.Formatter):
         return formatter.format(record)
 
 
-def get_logger(name, level=logging.INFO):
+class _ColoredStreamHandler(logging.StreamHandler):
+    """Marker type used to avoid installing duplicate colored handlers."""
+
+
+def get_logger(name: str, level: int = logging.INFO) -> logging.Logger:
     """Return a configured command-line logger."""
     if "LOG_LEVEL" in os.environ:
         level_name = os.environ["LOG_LEVEL"].upper()
@@ -57,11 +61,10 @@ def get_logger(name, level=logging.INFO):
     logger.setLevel(level)
     logger.propagate = False
     if not any(
-        getattr(handler, "_sam3_mlx_colored", False) for handler in logger.handlers
+        isinstance(handler, _ColoredStreamHandler) for handler in logger.handlers
     ):
-        handler = logging.StreamHandler()
+        handler = _ColoredStreamHandler()
         handler.setLevel(level)
         handler.setFormatter(ColoredFormatter())
-        handler._sam3_mlx_colored = True
         logger.addHandler(handler)
     return logger

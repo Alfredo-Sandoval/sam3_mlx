@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import itertools
+from collections.abc import Sequence
 from typing import Any, Iterator, List, Union
 
 import numpy as np
@@ -82,7 +83,10 @@ class BitMasks:
         return int(self.tensor.shape[0])
 
     def nonempty(self) -> np.ndarray:
-        return self.tensor.reshape(self.tensor.shape[0], -1).any(axis=1)
+        return np.asarray(
+            self.tensor.reshape(self.tensor.shape[0], -1).any(axis=1),
+            dtype=bool,
+        )
 
     @staticmethod
     def from_polygon_masks(
@@ -100,8 +104,10 @@ class BitMasks:
         return BitMasks(np.empty((0, height, width), dtype=bool))
 
     @staticmethod
-    def from_roi_masks(roi_masks: "ROIMasks", height: int, width: int) -> "BitMasks":
-        return roi_masks.to_bitmasks(height, width)
+    def from_roi_masks(
+        roi_masks: "ROIMasks", boxes: Any, height: int, width: int
+    ) -> "BitMasks":
+        return roi_masks.to_bitmasks(boxes, height, width)
 
     def crop_and_resize(self, boxes, mask_size: int) -> np.ndarray:
         boxes_arr = boxes.tensor if isinstance(boxes, Boxes) else np.asarray(boxes)
@@ -141,7 +147,10 @@ class BitMasks:
 class PolygonMasks:
     """Store segmentation masks as polygon coordinate arrays."""
 
-    def __init__(self, polygons: List[List[Union[np.ndarray, list]]]):
+    def __init__(
+        self,
+        polygons: Sequence[Sequence[np.ndarray | list[float]]],
+    ):
         if not isinstance(polygons, list):
             raise ValueError(
                 "Cannot create PolygonMasks: expected a list of polygons per image. "

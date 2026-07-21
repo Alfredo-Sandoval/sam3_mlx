@@ -11,7 +11,6 @@ from sam3_mlx.model.sam3_image_processor import Sam3Processor
 from sam3_mlx.model.sam3_video_inference import Sam3VideoInference
 from sam3_mlx.model.sam3_video_predictor import Sam3VideoPredictor
 
-
 BLOCKED_ACCELERATOR = "cu" + "da"
 
 
@@ -124,6 +123,32 @@ def test_public_builders_keep_upstream_parameter_names_and_order():
         assert list(signature.parameters)[: len(expected_order)] == expected_order
 
 
+def test_image_builder_rejects_orphaned_interactive_checkpoint():
+    with pytest.raises(
+        ValueError,
+        match="interactive_checkpoint_path requires base image weights",
+    ):
+        sam3_mlx.build_sam3_image_model(
+            checkpoint_path=None,
+            load_from_HF=False,
+            enable_inst_interactivity=True,
+            interactive_checkpoint_path="interactive.safetensors",
+        )
+
+
+def test_mlx_predictor_defaults_select_supported_runtime_paths():
+    multiplex_signature = inspect.signature(
+        sam3_mlx.build_sam3_multiplex_video_predictor
+    )
+    predictor_signature = inspect.signature(sam3_mlx.build_sam3_predictor)
+
+    assert multiplex_signature.parameters["use_fa3"].default is False
+    assert multiplex_signature.parameters["async_loading_frames"].default is False
+    assert predictor_signature.parameters["version"].default == "sam3"
+    assert predictor_signature.parameters["use_fa3"].default is False
+    assert predictor_signature.parameters["async_loading_frames"].default is False
+
+
 def test_video_predictor_builder_keeps_upstream_vararg_shape():
     signature = inspect.signature(sam3_mlx.build_sam3_video_predictor)
     kinds = {name: param.kind for name, param in signature.parameters.items()}
@@ -211,10 +236,11 @@ def test_video_predictor_accepts_upstream_positional_builder_args():
     assert isinstance(predictor, Sam3VideoPredictor)
     assert predictor.async_loading_frames is True
     assert predictor.video_loader_type == "imageio"
-    response = predictor.handle_request(
-        {"type": "start_session", "resource_path": "<load-dummy-video-1>"}
-    )
-    assert sorted(response) == ["session_id"]
+    with pytest.raises(Sam3MlxUnsupportedError) as exc:
+        predictor.handle_request(
+            {"type": "start_session", "resource_path": "<load-dummy-video-1>"}
+        )
+    assert exc.value.reason == "video-async-loading"
 
 
 def test_sam3_predictor_version_sam3_uses_explicit_mlx_device():
@@ -229,10 +255,28 @@ def test_sam3_predictor_version_sam3_uses_explicit_mlx_device():
     )
 
     assert isinstance(predictor, Sam3VideoPredictor)
-    assert predictor.async_loading_frames is True
+    assert predictor.async_loading_frames is False
     assert predictor.model.image_model is image_model
     assert predictor.model.image_size == 14
     assert predictor.model.processor_factory is _FakeImageProcessor
+
+
+def test_sam3_predictor_forwards_load_from_hf_to_sam3_builder(monkeypatch):
+    captured = {}
+
+    def fake_builder(**kwargs):
+        captured.update(kwargs)
+        return "predictor"
+
+    monkeypatch.setattr(
+        "sam3_mlx.model_builder.build_sam3_video_predictor",
+        fake_builder,
+    )
+
+    result = sam3_mlx.build_sam3_predictor(version="sam3", load_from_HF=False)
+
+    assert result == "predictor"
+    assert captured["load_from_HF"] is False
 
 
 def test_sam3_predictor_version_sam3_propagates_compile_fail_fast():

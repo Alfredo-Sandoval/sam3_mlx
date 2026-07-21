@@ -16,7 +16,8 @@ import fnmatch
 import importlib
 import inspect
 import itertools
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Set, Tuple
+from collections.abc import Mapping, Sequence
+from typing import Any, Callable, Dict, Iterable, List, NoReturn, Optional, Set, Tuple
 
 from sam3_mlx._unsupported import UPSTREAM_COMMIT, raise_unsupported
 
@@ -30,7 +31,7 @@ _UNSUPPORTED_OPTIMIZER_MESSAGE = (
 )
 
 
-def _raise_optimizer_unsupported(feature: str) -> None:
+def _raise_optimizer_unsupported(feature: str) -> NoReturn:
     raise_unsupported(
         feature,
         reason="training-loop",
@@ -39,7 +40,11 @@ def _raise_optimizer_unsupported(feature: str) -> None:
 
 
 class Optimizer:
-    def __init__(self, optimizer, schedulers=None) -> None:
+    def __init__(
+        self,
+        optimizer: Any,
+        schedulers: Sequence[Mapping[str, Callable[..., Any]]] | None = None,
+    ) -> None:
         self.optimizer = optimizer
         self.schedulers = schedulers
         self._validate_optimizer_schedulers()
@@ -75,10 +80,10 @@ class Optimizer:
                 if "step" in inspect.signature(scheduler.__call__).parameters:
                     new_value = scheduler(step=step, where=where)
                 elif (
-                    hasattr(scheduler, "scheduler")
-                    and "step"
-                    in inspect.signature(scheduler.scheduler.__call__).parameters
-                ):
+                    wrapped_scheduler := getattr(scheduler, "scheduler", None)
+                ) is not None and "step" in inspect.signature(
+                    wrapped_scheduler.__call__
+                ).parameters:
                     new_value = scheduler(step=step, where=where)
                 else:
                     new_value = scheduler(where)
@@ -103,18 +108,11 @@ def set_default_parameters(
 ) -> None:
     """Set up the official "default" scheduler with the right parameters."""
 
-    constraints = [
-        scheduler_cfg.parameter_names
-        if hasattr(scheduler_cfg, "parameter_names")
-        else scheduler_cfg.get("parameter_names")
-        for scheduler_cfg in scheduler_cfgs
-        if (
-            scheduler_cfg.parameter_names
-            if hasattr(scheduler_cfg, "parameter_names")
-            else scheduler_cfg.get("parameter_names")
-        )
-        is not None
-    ]
+    constraints: list[set[str]] = []
+    for scheduler_cfg in scheduler_cfgs:
+        configured_names = scheduler_cfg.get("parameter_names")
+        if configured_names is not None:
+            constraints.append(set(configured_names))
     default_params = (
         set(all_parameter_names)
         if len(constraints) == 0
@@ -122,16 +120,9 @@ def set_default_parameters(
     )
     default_count = 0
     for scheduler_cfg in scheduler_cfgs:
-        parameter_names = (
-            scheduler_cfg.parameter_names
-            if hasattr(scheduler_cfg, "parameter_names")
-            else scheduler_cfg.get("parameter_names")
-        )
+        parameter_names = scheduler_cfg.get("parameter_names")
         if parameter_names is None:
-            if hasattr(scheduler_cfg, "parameter_names"):
-                scheduler_cfg.parameter_names = default_params
-            else:
-                scheduler_cfg["parameter_names"] = default_params
+            scheduler_cfg["parameter_names"] = default_params
             default_count += 1
     if default_count > 1:
         raise AssertionError("Only one scheduler per option can be default")
@@ -279,11 +270,13 @@ def _unix_pattern_to_parameter_names(
         and _cfg_get(scheduler_cfg, "module_cls_names") is None
     ):
         return None
+    param_name_patterns = _cfg_get(scheduler_cfg, "param_names")
+    module_name_patterns = _cfg_get(scheduler_cfg, "module_cls_names")
     return unix_param_pattern_to_parameter_names(
-        _cfg_get(scheduler_cfg, "param_names"), parameter_names
+        param_name_patterns, parameter_names
     ).union(
         unix_module_cls_pattern_to_parameter_names(
-            _cfg_get(scheduler_cfg, "module_cls_names"), module_cls_to_param_names
+            module_name_patterns, module_cls_to_param_names
         )
     )
 
@@ -307,8 +300,8 @@ def get_module_cls_to_param_names(
 def construct_optimizer(
     model,
     optimizer_conf: Any,
-    options_conf: Mapping[str, List] = None,
-    param_group_modifiers_conf: List[Callable] = None,
+    options_conf: Mapping[str, List[Any]] | None = None,
+    param_group_modifiers_conf: Sequence[Callable[..., Any]] | None = None,
     param_allowlist: Optional[Set[str]] = None,
     validate_param_groups=True,
 ) -> Optimizer:
@@ -346,7 +339,7 @@ class ValueScaler:
         return val * self.mult_val
 
 
-def rgetattr(obj, rattrs: str = None):
+def rgetattr(obj: Any, rattrs: str | None = None) -> Any:
     """Like getattr(), but supports dotted notation for nested objects."""
 
     if rattrs is None:
@@ -363,7 +356,7 @@ def layer_decay_param_modifier(
     layer_decay_value: float,
     layer_decay_min: Optional[float] = None,
     apply_to: Optional[str] = None,
-    overrides: List[Dict[str, Any]] = (),
+    overrides: Sequence[Mapping[str, Any]] = (),
 ) -> List[List[Dict[str, Any]]]:
     """Apply official SAM3 layer-decay rewriting to scheduler configs."""
 

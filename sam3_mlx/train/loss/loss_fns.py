@@ -90,6 +90,12 @@ def _empty_scalar(dtype=mx.float32) -> mx.array:
     return mx.array(0.0, dtype=dtype)
 
 
+def _spatial_size(value: mx.array) -> tuple[int, int]:
+    if value.ndim < 2:
+        raise ValueError("Expected an array with at least two spatial dimensions.")
+    return value.shape[-2], value.shape[-1]
+
+
 def _bce_with_logits(inputs, targets):
     inputs = _as_float_array(inputs)
     targets = _as_float_array(targets)
@@ -140,7 +146,7 @@ def accuracy(output, target, topk=(1,)):
     maxk = max(topk)
     batch_size = target.shape[0]
     pred = mx.argsort(output, axis=1)[:, -maxk:][:, ::-1].transpose(1, 0)
-    correct = pred == target.reshape(1, -1)
+    correct = mx.equal(pred, target.reshape(1, -1))
     results = []
     for k in topk:
         correct_k = mx.sum(correct[:k].reshape(-1).astype(mx.float32))
@@ -340,12 +346,14 @@ class LossWithWeights(nn.Module):
     def __call__(self, *args, is_aux=False, **kwargs):
         if is_aux and not self.compute_aux:
             return {CORE_LOSS_KEY: _empty_scalar()}
-        losses = self.get_loss(*args, **kwargs)
+        get_loss = getattr(self, "get_loss", None)
+        if not callable(get_loss):
+            raise NotImplementedError(f"{type(self).__name__} must define get_loss().")
+        losses = get_loss(*args, **kwargs)
+        if not isinstance(losses, dict):
+            raise TypeError("get_loss() must return a mutable loss dictionary.")
         losses[CORE_LOSS_KEY] = self.reduce_loss(losses)
         return losses
-
-    def get_loss(self, **kwargs):
-        raise NotImplementedError
 
     def reduce_loss(self, losses):
         reduced_loss = _empty_scalar()
@@ -404,9 +412,9 @@ class Masks(LossWithWeights):
         compute_aux=False,
         focal_alpha=0.25,
         focal_gamma=2,
-        num_sample_points=None,
-        oversample_ratio=None,
-        importance_sample_ratio=None,
+        num_sample_points: int | None = None,
+        oversample_ratio: int | None = None,
+        importance_sample_ratio: float | None = None,
         apply_loss_to_det_queries_in_video_grounding=True,
     ):
         super().__init__(weight_dict, compute_aux)
@@ -425,6 +433,15 @@ class Masks(LossWithWeights):
             raise AssertionError("sampled mask loss expects rank-3 masks.")
         src_masks = src_masks[:, None]
         target_masks = target_masks[:, None]
+        if (
+            self.num_sample_points is None
+            or self.oversample_ratio is None
+            or self.importance_sample_ratio is None
+        ):
+            raise ValueError(
+                "Sampled mask loss requires num_sample_points, oversample_ratio, "
+                "and importance_sample_ratio."
+            )
         point_coords = get_uncertain_point_coords_with_randomness(
             src_masks,
             calculate_uncertainty,
@@ -488,7 +505,7 @@ class Masks(LossWithWeights):
                 src_masks = src_masks[:, None]
             src_masks = interpolate(
                 src_masks.astype(mx.float32),
-                size=target_masks.shape[-2:],
+                size=_spatial_size(target_masks),
                 mode="bilinear",
                 align_corners=False,
             )
@@ -539,7 +556,7 @@ class SemanticSegCriterion(LossWithWeights):
                 semantic_targets = (
                     interpolate(
                         semantic_targets.astype(mx.float32)[:, None],
-                        size=outputs.shape[-2:],
+                        size=_spatial_size(outputs),
                         mode="bilinear",
                         align_corners=False,
                     )[:, 0]
@@ -550,7 +567,7 @@ class SemanticSegCriterion(LossWithWeights):
                 segments = (
                     interpolate(
                         _as_float_array(targets["masks"])[:, None],
-                        size=outputs.shape[-2:],
+                        size=_spatial_size(outputs),
                         mode="bilinear",
                         align_corners=False,
                     )[:, 0]
@@ -565,7 +582,7 @@ class SemanticSegCriterion(LossWithWeights):
         if not self.downsample:
             outputs = interpolate(
                 outputs.astype(mx.float32),
-                size=semantic_targets.shape[-2:],
+                size=_spatial_size(semantic_targets),
                 mode="bilinear",
                 align_corners=False,
             )
@@ -617,9 +634,9 @@ class SemanticSegCriterion(LossWithWeights):
                     )
                 )
                 presence_acc = mx.mean(
-                    (
-                        (mx.sigmoid(_as_float_array(presence_logit).reshape(-1)) > 0.5)
-                        == presence_target
+                    mx.equal(
+                        mx.sigmoid(_as_float_array(presence_logit).reshape(-1)) > 0.5,
+                        presence_target,
                     ).astype(mx.float32)
                 )
             else:
@@ -774,7 +791,7 @@ class IABCEMdetr(LossWithWeights):
             gamma=self.presence_gamma,
         )
         pred = (mx.sigmoid(presence_logits) > 0.5).astype(mx.float32)
-        presence_acc = mx.mean((pred == keep_loss).astype(mx.float32))
+        presence_acc = mx.mean(mx.equal(pred, keep_loss).astype(mx.float32))
         return loss_bce, presence_loss, presence_acc
 
     def get_loss(self, outputs, targets, indices, num_boxes):

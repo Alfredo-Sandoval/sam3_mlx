@@ -60,13 +60,13 @@ class PromptEncoder(nn.Module):
             points, self.input_image_size
         )
         point_embedding = mx.where(
-            (labels == -1)[..., None],
+            mx.equal(labels, -1)[..., None],
             mx.zeros_like(point_embedding) + self.not_a_point_embed.weight,
             point_embedding,
         )
         for label_value, embedding in enumerate(self.point_embeddings):
             point_embedding = mx.where(
-                (labels == label_value)[..., None],
+                mx.equal(labels, label_value)[..., None],
                 point_embedding + embedding.weight,
                 point_embedding,
             )

@@ -4,7 +4,8 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
-from typing import Any, get_args, get_origin, List, Optional, Union
+from collections.abc import Sequence
+from typing import Any, get_args, get_origin, List, Literal, Optional, Union
 
 from sam3_mlx._unsupported import raise_unsupported
 
@@ -160,22 +161,27 @@ def _interpolate_bilinear_antialias_nchw(input: mx.array, size: tuple[int, int])
 
 
 def interpolate(
-    input,
-    size=None,
-    scale_factor=None,
-    mode="nearest",
-    align_corners=None,
-    antialias=False,
-):
+    input: mx.array,
+    size: int | tuple[int, int] | None = None,
+    scale_factor: float | int | tuple[float, float] | None = None,
+    mode: Literal["nearest", "linear", "cubic", "bilinear", "bicubic"] = "nearest",
+    align_corners: bool | None = None,
+    antialias: bool = False,
+) -> mx.array:
     if input.size == 0:
         out_shape = list(input.shape)
         if size is not None:
             # size is usually (H, W)
-            out_shape[2] = size[0]
-            out_shape[3] = size[1]
+            output_size = (size, size) if isinstance(size, int) else size
+            out_shape[2], out_shape[3] = output_size
         elif scale_factor is not None:
-            out_shape[2] = int(out_shape[2] * scale_factor)
-            out_shape[3] = int(out_shape[3] * scale_factor)
+            output_scale = (
+                (scale_factor, scale_factor)
+                if isinstance(scale_factor, (float, int))
+                else scale_factor
+            )
+            out_shape[2] = int(out_shape[2] * output_scale[0])
+            out_shape[3] = int(out_shape[3] * output_scale[1])
         return mx.zeros(out_shape, dtype=input.dtype)
 
     x = input.transpose(0, 2, 3, 1)
@@ -214,7 +220,9 @@ def interpolate(
         return _interpolate_bilinear_antialias_nchw(input, size)
 
     upsample_layer = nn.Upsample(
-        scale_factor=final_scale, mode=mode, align_corners=align_corners
+        scale_factor=final_scale,
+        mode=mode,
+        align_corners=False if align_corners is None else align_corners,
     )
 
     x = upsample_layer(x)
@@ -243,16 +251,16 @@ class FindStage:
     text_ids: MyTensor
     text_ids__type = mx.int64
 
-    input_boxes: MyTensor
+    input_boxes: Optional[MyTensor]
     input_boxes__type = mx.float32
-    input_boxes_mask: MyTensor
+    input_boxes_mask: Optional[MyTensor]
     input_boxes_mask__type = mx.bool_
-    input_boxes_label: MyTensor
+    input_boxes_label: Optional[MyTensor]
     input_boxes_label__type = mx.int64
 
-    input_points: MyTensor
+    input_points: Optional[MyTensor]
     input_points__type = mx.float32
-    input_points_mask: MyTensor
+    input_points_mask: Optional[MyTensor]
     input_points_mask__type = mx.bool_
 
     # We track the object ids referred to by this query.
@@ -320,8 +328,8 @@ class BatchedDatapoint:
     img_batch: MyTensor
     find_text_batch: List[str]
     find_inputs: List[FindStage]
-    find_targets: List[BatchedFindTarget]
-    find_metadatas: List[BatchedInferenceMetadata]
+    find_targets: Sequence[Optional[BatchedFindTarget]]
+    find_metadatas: Sequence[Optional[BatchedInferenceMetadata]]
     raw_images: Optional[List[Any]] = None
     get_queries: Optional[Any] = None
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import random
-from typing import List, Optional, Union
+from typing import List
 
 import mlx.core as mx
 import numpy as np
@@ -38,14 +38,14 @@ def _scalar(value):
 
 
 class FilterDataPointQueries:
-    find_ids_to_filter: set = None
-    get_ids_to_filter: set = None
-    obj_ids_to_filter: set = None
+    find_ids_to_filter: set[int] | None = None
+    get_ids_to_filter: set[int] | None = None
+    obj_ids_to_filter: set[tuple[int, int]] | None = None
 
     def identify_queries_to_filter(self, datapoint: Datapoint) -> None:
         raise NotImplementedError
 
-    def _do_filter_query(self, query: Union[FindQuery], query_id: int):
+    def _do_filter_query(self, query: FindQuery, query_id: int):
         del query
         if self.find_ids_to_filter is None:
             raise AssertionError("identify_queries_to_filter must run first.")
@@ -54,7 +54,9 @@ class FilterDataPointQueries:
 
 class FilterQueryWithText(FilterDataPointQueries):
     def __init__(
-        self, exclude_find_keys: List[str] = None, exclude_get_keys: List[str] = None
+        self,
+        exclude_find_keys: List[str] | None = None,
+        exclude_get_keys: List[str] | None = None,
     ):
         self.find_filter_keys = exclude_find_keys if exclude_find_keys else []
         self.get_filter_keys = exclude_get_keys if exclude_get_keys else []
@@ -322,10 +324,10 @@ class FlexibleFilterFindGetQueries:
 class AddPrefixSuffixToFindText:
     def __init__(
         self,
-        prefix: Optional[str] = None,
-        suffix: Optional[str] = None,
+        prefix: str | None = None,
+        suffix: str | None = None,
         condition_on_text: bool = False,
-        condition_text_list: Optional[List[str]] = None,
+        condition_text_list: List[str] | None = None,
         enabled: bool = True,
     ) -> None:
         self.prefix = prefix

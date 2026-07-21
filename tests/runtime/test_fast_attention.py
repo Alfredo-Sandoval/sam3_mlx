@@ -44,6 +44,7 @@ def test_attention_mask_merge_preserves_bool_keep_mask_for_fast_path():
         preserve_bool=True,
     )
 
+    assert merged is not None
     assert merged.dtype == mx.bool_
     np.testing.assert_array_equal(
         _to_numpy(merged),
@@ -62,6 +63,7 @@ def test_attention_mask_merge_converts_bool_when_additive_bias_is_present():
         preserve_bool=False,
     )
 
+    assert merged is not None
     assert merged.dtype == mx.float32
     np.testing.assert_allclose(
         _to_numpy(merged),
@@ -78,6 +80,8 @@ def test_attention_mask_normalization_keeps_bool_for_fast_path():
         uint8_block_mask, mx.float32, preserve_bool=True
     )
 
+    assert bool_keep_mask is not None
+    assert uint8_keep_mask is not None
     assert bool_keep_mask.dtype == mx.bool_
     assert uint8_keep_mask.dtype == mx.bool_
     expected_keep = np.array([[True, False, True], [False, True, True]], dtype=bool)
@@ -90,6 +94,7 @@ def test_attention_mask_normalization_converts_bool_for_manual_path():
 
     additive = _to_attention_mask(block_mask, mx.float32, preserve_bool=False)
 
+    assert additive is not None
     assert additive.dtype == mx.float32
     np.testing.assert_allclose(
         _to_numpy(additive),
@@ -124,6 +129,7 @@ def test_multihead_attention_wrapper_combines_bool_masks_as_fast_keep_mask():
         dtype=mx.float32,
     )
 
+    assert mask is not None
     assert mask.dtype == mx.bool_
     np.testing.assert_array_equal(
         _to_numpy(mask),
@@ -152,6 +158,7 @@ def test_multihead_attention_wrapper_uses_additive_mask_when_bias_requires_it():
         dtype=mx.float32,
     )
 
+    assert mask is not None
     assert mask.dtype == mx.float32
     np.testing.assert_allclose(
         _to_numpy(mask),
@@ -419,6 +426,7 @@ def test_scaled_dot_product_attention_fast_path_matches_manual_path():
     )
 
     assert fast_weights is None
+    assert manual_weights is not None
     assert manual_weights.shape == (1, 2, 2, 3)
     np.testing.assert_allclose(
         _to_numpy(manual_weights).sum(axis=-1),
@@ -526,7 +534,10 @@ def test_multi_head_attention_forward_bool_mask_matches_additive_mask():
     additive_mask = np.where(bool_mask, -np.inf, 0.0).astype(np.float32)
 
     identity = mx.eye(4, dtype=mx.float32)
-    common_kwargs = dict(
+    bool_out, _ = multi_head_attention_forward(
+        mx.array(query),
+        mx.array(key),
+        mx.array(value),
         embed_dim_to_check=4,
         num_heads=2,
         in_proj_weight=None,
@@ -540,24 +551,34 @@ def test_multi_head_attention_forward_bool_mask_matches_additive_mask():
         training=False,
         key_padding_mask=None,
         need_weights=False,
+        attn_mask=mx.array(bool_mask),
         use_separate_proj_weight=True,
         q_proj_weight=identity,
         k_proj_weight=identity,
         v_proj_weight=identity,
     )
-    bool_out, _ = multi_head_attention_forward(
-        mx.array(query),
-        mx.array(key),
-        mx.array(value),
-        attn_mask=mx.array(bool_mask),
-        **common_kwargs,
-    )
     additive_out, _ = multi_head_attention_forward(
         mx.array(query),
         mx.array(key),
         mx.array(value),
+        embed_dim_to_check=4,
+        num_heads=2,
+        in_proj_weight=None,
+        in_proj_bias=None,
+        bias_k=None,
+        bias_v=None,
+        add_zero_attn=False,
+        dropout_p=0.0,
+        out_proj_weight=identity,
+        out_proj_bias=None,
+        training=False,
+        key_padding_mask=None,
+        need_weights=False,
         attn_mask=mx.array(additive_mask),
-        **common_kwargs,
+        use_separate_proj_weight=True,
+        q_proj_weight=identity,
+        k_proj_weight=identity,
+        v_proj_weight=identity,
     )
 
     np.testing.assert_allclose(
@@ -653,6 +674,7 @@ def test_scaled_dot_product_attention_keeps_manual_dropout_path_for_training():
         need_weights=False,
     )
 
+    assert weights is not None
     assert weights.shape == (1, 1, 2, 2)
     np.testing.assert_array_equal(
         _to_numpy(weights),

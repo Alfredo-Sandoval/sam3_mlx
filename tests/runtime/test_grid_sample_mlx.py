@@ -35,7 +35,9 @@ def _grid_sample_numpy_bilinear_zero_nhwc(
     return out
 
 
-def _mlx_to_numpy(array: mx.array) -> np.ndarray:
+def _mlx_to_numpy(array: object) -> np.ndarray:
+    if not isinstance(array, mx.array):
+        raise TypeError("Expected grid_sample to return an MLX array.")
     mx.eval(array)
     return np.asarray(array)
 

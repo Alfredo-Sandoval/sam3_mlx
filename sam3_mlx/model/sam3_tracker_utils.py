@@ -65,7 +65,7 @@ def sample_box_points(
     bsz, _, height, width = masks.shape
 
     if _is_mlx_array(masks):
-        box_coords = box_coords.astype(mx.float32)
+        box_coords = mx.array(box_coords, dtype=mx.float32)
         box_labels = mx.tile(
             mx.array([top_left_label, bottom_right_label], dtype=mx.int32),
             (bsz,),
@@ -77,14 +77,14 @@ def sample_box_points(
             max_dx = mx.minimum(bbox_w * noise, noise_bound_arr)
             max_dy = mx.minimum(bbox_h * noise, noise_bound_arr)
             box_noise = 2 * mx.random.uniform(shape=(bsz, 1, 4)) - 1
-            box_noise = box_noise * mx.stack((max_dx, max_dy, max_dx, max_dy), axis=-1)
+            box_noise = box_noise * mx.stack([max_dx, max_dy, max_dx, max_dy], axis=-1)
             img_bounds = (
                 mx.array([width, height, width, height], dtype=box_coords.dtype) - 1
             )
             box_coords = mx.minimum(mx.maximum(box_coords + box_noise, 0), img_bounds)
         return box_coords.reshape(-1, 2, 2), box_labels.reshape(-1, 2)
 
-    box_coords = box_coords.astype(np.float32, copy=False)
+    box_coords = np.asarray(box_coords, dtype=np.float32)
     box_labels = np.tile(
         np.array([top_left_label, bottom_right_label], dtype=np.int32),
         bsz,
@@ -121,7 +121,7 @@ def mask_to_box(masks):
         max_xs = mx.max(mx.where(mask_bool, grid_xs, -1), axis=(-1, -2))
         min_ys = mx.min(mx.where(mask_bool, grid_ys, height), axis=(-1, -2))
         max_ys = mx.max(mx.where(mask_bool, grid_ys, -1), axis=(-1, -2))
-        bbox_coords = mx.stack((min_xs, min_ys, max_xs, max_ys), axis=-1)
+        bbox_coords = mx.stack([min_xs, min_ys, max_xs, max_ys], axis=-1)
         return mx.where(
             mask_area[..., None] > 0, bbox_coords, mx.zeros_like(bbox_coords)
         )
@@ -159,7 +159,7 @@ def sample_random_points_from_errors(gt_masks, pred_masks, num_pt=1):
         neg_map = fp_masks | (all_correct & (~gt_masks))
         pos_map = fn_masks
         pts_noise = mx.stack(
-            (pts_noise[..., 0] * neg_map, pts_noise[..., 1] * pos_map),
+            [pts_noise[..., 0] * neg_map, pts_noise[..., 1] * pos_map],
             axis=-1,
         )
         pts_idx = mx.argmax(pts_noise.reshape(bsz, num_pt, -1), axis=2)
@@ -170,8 +170,8 @@ def sample_random_points_from_errors(gt_masks, pred_masks, num_pt=1):
         points = mx.stack([pts_x, pts_y], axis=2).astype(mx.float32)
         return points, labels
 
-    gt_masks = gt_masks.astype(bool)
-    pred_masks = pred_masks.astype(bool)
+    gt_masks = np.asarray(gt_masks, dtype=bool)
+    pred_masks = np.asarray(pred_masks, dtype=bool)
     fp_masks = ~gt_masks & pred_masks
     fn_masks = gt_masks & ~pred_masks
     all_correct = np.all((gt_masks == pred_masks).reshape(bsz, 1, -1), axis=2)
@@ -201,10 +201,10 @@ def sample_one_point_from_error_center(gt_masks, pred_masks, padding=True):
         fp_masks = mx.squeeze((~gt_masks) & pred_masks, axis=1)
         fn_masks = mx.squeeze(gt_masks & (~pred_masks), axis=1)
         if padding:
-            fp_masks = mx.pad(fp_masks, ((0, 0), (1, 1), (1, 1)))
-            fn_masks = mx.pad(fn_masks, ((0, 0), (1, 1), (1, 1)))
-        fn_mask_dt = edt_triton(fn_masks)
-        fp_mask_dt = edt_triton(fp_masks)
+            fp_masks = mx.pad(fp_masks, [(0, 0), (1, 1), (1, 1)])
+            fn_masks = mx.pad(fn_masks, [(0, 0), (1, 1), (1, 1)])
+        fn_mask_dt = mx.array(edt_triton(fn_masks))
+        fp_mask_dt = mx.array(edt_triton(fp_masks))
         if padding:
             fn_mask_dt = fn_mask_dt[:, 1:-1, 1:-1]
             fp_mask_dt = fp_mask_dt[:, 1:-1, 1:-1]
@@ -220,8 +220,8 @@ def sample_one_point_from_error_center(gt_masks, pred_masks, padding=True):
         labels = is_positive.astype(mx.int64)
         return mx.expand_dims(points, axis=1), mx.expand_dims(labels, axis=1)
 
-    gt_masks = gt_masks.astype(bool)
-    pred_masks = pred_masks.astype(bool)
+    gt_masks = np.asarray(gt_masks, dtype=bool)
+    pred_masks = np.asarray(pred_masks, dtype=bool)
     fp_masks = (~gt_masks & pred_masks).squeeze(1)
     fn_masks = (gt_masks & ~pred_masks).squeeze(1)
     if padding:
@@ -387,6 +387,7 @@ def fill_holes_in_mask_scores(
     if fill_holes:
         mask_bg = mask_np <= 0
         _, areas_bg = _get_connected_components_with_padding(mask_bg)
+        areas_bg = _to_numpy(areas_bg)
         small_components_bg = mask_bg & (areas_bg <= max_area)
         mask_np = np.where(small_components_bg, np.array(0.1, mask_np.dtype), mask_np)
 
@@ -395,6 +396,7 @@ def fill_holes_in_mask_scores(
         fg_area_thresh = np.sum(mask_fg, axis=(2, 3), keepdims=True, dtype=np.int32)
         fg_area_thresh = np.minimum(fg_area_thresh // 2, max_area)
         _, areas_fg = _get_connected_components_with_padding(mask_fg)
+        areas_fg = _to_numpy(areas_fg)
         small_components_fg = mask_fg & (areas_fg <= fg_area_thresh)
         mask_np = np.where(small_components_fg, np.array(-0.1, mask_np.dtype), mask_np)
 

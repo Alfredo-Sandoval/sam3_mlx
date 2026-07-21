@@ -1,5 +1,6 @@
 import json
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import mlx.core as mx
@@ -607,11 +608,8 @@ class _PackedStartupTracker(_PackedDetectorFrameTracker):
 
     def propagate_in_video_preflight(self, sam2_state, run_mem_encoder=True):
         self.preflight_calls.append((sam2_state, run_mem_encoder))
-        VideoTrackingMultiplex.propagate_in_video_preflight(
-            self,
-            sam2_state,
-            run_mem_encoder=run_mem_encoder,
-        )
+        del run_mem_encoder
+        sam2_state["tracking_has_started"] = True
 
 
 def test_sam3_multiplex_base_ports_constructor_state_for_multiplex_metadata(
@@ -1217,7 +1215,7 @@ def test_sam3_multiplex_base_planning_skips_hotstart_during_warm_up():
             im_mask=np.zeros((0, 1), dtype=bool),
         )
 
-    base._associate_det_trk = associate_det_trk
+    setattr(base, "_associate_det_trk", associate_det_trk)
 
     update_plan, metadata = base.run_tracker_update_planning_phase(
         frame_idx=1,
@@ -1566,7 +1564,10 @@ def test_sam3_multiplex_base_tracker_remove_objects_drops_empty_packed_states():
 
     assert tracker_states == []
     assert multiplex_state.object_ids == []
-    assert multiplex_state.assignments is None
+    assert multiplex_state.assignments == []
+    assert multiplex_state.num_buckets == 0
+    assert multiplex_state.total_valid_entries == 0
+    assert multiplex_state.total_non_padding_entries == 0
 
 
 def test_sam3_multiplex_base_tracker_update_memories_writes_encoded_outputs():
@@ -2677,7 +2678,7 @@ def test_sam3_multiplex_base_tracker_add_new_objects_creates_dynamic_state_when_
     )
     full_state["backbone_out"] = cached_backbone
     tracker_states = [full_state]
-    feature_cache = {"frame": "features"}
+    feature_cache: dict[str | int, Any] = {"frame": "features"}
 
     returned_states = base._tracker_add_new_objects(
         frame_idx=5,
@@ -2928,7 +2929,7 @@ def test_sam3_multiplex_base_non_dynamic_add_creates_new_state_without_per_obj()
         "backbone_out": cached_backbone,
     }
     tracker_states = [existing_state]
-    feature_cache = {"frame": "features"}
+    feature_cache: dict[str | int, Any] = {"frame": "features"}
 
     returned_states = base._tracker_add_new_objects(
         frame_idx=6,
@@ -4174,7 +4175,7 @@ def test_sam3_multiplex_base_runs_backbone_detection_and_caches_tracker_features
         find_text_batch=["shoe", "visual", "geometric"],
         find_inputs=["frame-0", "frame-1"],
     )
-    feature_cache = {
+    feature_cache: dict[str | int, Any] = {
         "tracking_bounds": {
             "max_frame_num_to_track": 2,
             "propagate_in_video_start_frame_idx": 0,

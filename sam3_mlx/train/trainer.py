@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, NoReturn, Optional
 
 from sam3_mlx._unsupported import UPSTREAM_COMMIT, raise_unsupported
 
@@ -30,7 +30,7 @@ _UNSUPPORTED_TRAINER_MESSAGE = (
 )
 
 
-def _raise_trainer_unsupported(feature: str) -> None:
+def _raise_trainer_unsupported(feature: str) -> NoReturn:
     raise_unsupported(
         feature,
         reason="training-loop",
@@ -53,7 +53,7 @@ class OptimConf:
     optimizer: Any = None
     options: Optional[Dict[str, Any]] = None
     param_group_modifiers: Optional[List] = None
-    amp: Optional[Dict[str, Any]] = None
+    amp: OptimAMPConf | Mapping[str, Any] | None = None
     gradient_clip: Any = None
     gradient_logger: Any = None
 
@@ -91,7 +91,7 @@ class CheckpointConf:
     save_freq: int
     save_list: List[int] = field(default_factory=list)
     model_weight_initializer: Any = None
-    save_best_meters: List[str] = None
+    save_best_meters: List[str] = field(default_factory=list)
     skip_saving_parameters: List[str] = field(default_factory=list)
     initialize_after_preemption: Optional[bool] = None
     resume_from: Optional[str] = None
@@ -134,8 +134,8 @@ class Trainer:
         accelerator: str = "mlx",
         seed_value: int = 123,
         val_epoch_freq: int = 1,
-        distributed: Dict[str, bool] = None,
-        accelerator_config: Dict[str, bool] = None,
+        distributed: Dict[str, bool] | None = None,
+        accelerator_config: Dict[str, bool] | None = None,
         env_variables: Optional[Dict[str, Any]] = None,
         optim: Optional[Dict[str, Any]] = None,
         optim_overrides: Optional[List[Dict[str, Any]]] = None,

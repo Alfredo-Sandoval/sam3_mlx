@@ -138,7 +138,7 @@ def test_training_matcher_cpu_boundary_is_named_and_returns_mlx_indices():
         "num_boxes": mx.array([1], dtype=mx.int64),
     }
 
-    batch_idx, src_idx, tgt_idx = matcher_module(outputs, targets)
+    batch_idx, src_idx, tgt_idx = matcher_module.forward(outputs, targets)
 
     np.testing.assert_array_equal(to_numpy(batch_idx), np.array([0], dtype=np.int64))
     np.testing.assert_array_equal(to_numpy(src_idx), np.array([1], dtype=np.int64))

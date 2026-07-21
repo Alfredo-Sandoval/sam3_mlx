@@ -104,7 +104,10 @@ class Sam3MultiplexImageBase(Sam3Image):
         chunk_find_inputs = [
             find_inputs[i % len(find_inputs)] for i in range(chunk_start, chunk_end)
         ]
-        dtype = chunk_find_inputs[0].img_ids.dtype
+        source_img_ids = chunk_find_inputs[0].img_ids
+        if isinstance(source_img_ids, list):
+            raise TypeError("FindStage.img_ids must be an MLX array when batching.")
+        dtype = source_img_ids.dtype
         batched_img_ids = mx.arange(chunk_start, chunk_end, dtype=dtype)
         batched_img_ids_np = np.arange(chunk_start, chunk_end)
 

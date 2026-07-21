@@ -106,7 +106,7 @@ def _divide_with_eps_mlx(numerator, denominator, eps):
     return numerator / (denominator + eps)
 
 
-def pairwise_iou(pred_masks, gt_masks, eps=1e-6):
+def pairwise_iou(pred_masks, gt_masks, eps: float | None = 1e-6):
     """Compute pairwise IoU, preserving NumPy or MLX execution."""
 
     if _is_mlx_array(pred_masks) or _is_mlx_array(gt_masks):

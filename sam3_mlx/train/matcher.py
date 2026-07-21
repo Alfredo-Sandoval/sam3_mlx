@@ -13,6 +13,8 @@ returned as MLX ``int64`` arrays.
 
 from __future__ import annotations
 
+from typing import overload
+
 import numpy as np
 import mlx.core as mx
 import mlx.nn as nn
@@ -238,6 +240,18 @@ def _offset_target_indices(tgt_indices, num_boxes: np.ndarray) -> np.ndarray:
     return _concat_int(parts)
 
 
+@overload
+def _return_indices(
+    indices, tgt_indices: None = None, batch_ids=None
+) -> tuple[mx.array, mx.array]: ...
+
+
+@overload
+def _return_indices(
+    indices, tgt_indices: np.ndarray, batch_ids=None
+) -> tuple[mx.array, mx.array, mx.array]: ...
+
+
 def _return_indices(indices, tgt_indices=None, batch_ids=None):
     batch_idx = _to_mx_int(_batch_indices(indices, batch_ids=batch_ids))
     src_idx = _to_mx_int(_concat_int(indices))
@@ -248,7 +262,10 @@ def _return_indices(indices, tgt_indices=None, batch_ids=None):
 
 class _MatcherModule(nn.Module):
     def __call__(self, *args, **kwargs):
-        return self.forward(*args, **kwargs)
+        forward = getattr(self, "forward", None)
+        if not callable(forward):
+            raise NotImplementedError(f"{type(self).__name__} must define forward().")
+        return forward(*args, **kwargs)
 
 
 class HungarianMatcher(_MatcherModule):
@@ -392,8 +409,8 @@ class BinaryHungarianMatcher(_MatcherModule):
             return _return_indices(indices, tgt_indices=tgt_indices)
 
         indices = [_do_matching(chunk, repeats=repeats) for chunk in costs]
-        batch_idx, src_idx = _return_indices(indices)
-        return batch_idx, src_idx, None
+        result = _return_indices(indices)
+        return result[0], result[1], None
 
 
 class BinaryFocalHungarianMatcher(_MatcherModule):
@@ -469,8 +486,8 @@ class BinaryFocalHungarianMatcher(_MatcherModule):
             return _return_indices(indices, tgt_indices=tgt_indices)
 
         indices = [_do_matching(chunk, repeats=repeats) for chunk in costs]
-        batch_idx, src_idx = _return_indices(indices)
-        return batch_idx, src_idx, None
+        result = _return_indices(indices)
+        return result[0], result[1], None
 
 
 def _binary_focal_cost(
@@ -642,8 +659,8 @@ class BinaryHungarianMatcherV2(_MatcherModule):
 
         batch_ids = np.nonzero(batch_keep)[0] if self.remove_samples_with_0_gt else None
         if tgt_indices is None:
-            batch_idx, src_idx = _return_indices(indices, batch_ids=batch_ids)
-            return batch_idx, src_idx, None
+            result = _return_indices(indices, batch_ids=batch_ids)
+            return result[0], result[1], None
         return _return_indices(indices, tgt_indices=tgt_indices, batch_ids=batch_ids)
 
 

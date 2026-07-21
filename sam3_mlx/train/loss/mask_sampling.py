@@ -57,6 +57,8 @@ def point_sample(input, point_coords, **kwargs):
 
     normalized_point_coords = 2.0 * point_coords - 1.0
     output = grid_sample(input.transpose(0, 2, 3, 1), normalized_point_coords)
+    if not isinstance(output, mx.array):
+        raise TypeError("grid_sample must return an MLX array.")
     output = output.transpose(0, 3, 1, 2)
     if add_dim:
         output = output.squeeze(3)

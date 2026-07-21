@@ -1,5 +1,5 @@
 import math
-import weakref
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 from copy import deepcopy
 from enum import Enum, auto
@@ -98,9 +98,7 @@ def _to_block_bool_mask(mask):
     raise TypeError(f"Expected a bool-like attention mask, got {mask.dtype}.")
 
 
-def _to_additive_attention_mask(mask, dtype):
-    if mask is None:
-        return None
+def _to_additive_attention_mask(mask: mx.array, dtype) -> mx.array:
     if _is_bool_mask(mask):
         return mx.where(
             mask, mx.array(-float("inf"), dtype=dtype), mx.array(0.0, dtype=dtype)
@@ -205,7 +203,7 @@ def multi_head_attention_forward(
     static_v: Optional[mx.array] = None,
     average_attn_weights: bool = True,
     is_causal: bool = False,
-    attn_type: AttentionType = AttentionType.Vanilla,
+    attn_type: str = AttentionType.Vanilla,
     attn_sparsity: float = 0.0,
     attn_bias: Optional[mx.array] = None,
     use_fa3: bool = False,
@@ -406,11 +404,12 @@ def multi_head_attention_forward(
         return attn_output, None
 
     if average_attn_weights:
+        assert attn_output_weights is not None
         attn_output_weights = mx.sum(attn_output_weights, axis=1) / num_heads
     return attn_output, attn_output_weights
 
 
-class MultiheadAttentionWrapper(nn.MultiHeadAttention):
+class MultiheadAttentionWrapper(nn.Module):
     def __init__(self, *args, **kwargs):
         has_dims_keyword = "dims" in kwargs
         has_embed_dim_keyword = "embed_dim" in kwargs
@@ -502,16 +501,15 @@ class MultiheadAttentionWrapper(nn.MultiHeadAttention):
         if batch_first is None:
             batch_first = not used_embed_dim_keyword
 
-        super().__init__(
-            dims,
-            num_heads,
-            query_input_dims=query_input_dims,
-            key_input_dims=key_input_dims,
-            value_input_dims=value_input_dims,
-            value_dims=dims,
-            value_output_dims=dims,
-            bias=bias,
-        )
+        super().__init__()
+        query_input_dims = query_input_dims or dims
+        key_input_dims = key_input_dims or dims
+        value_input_dims = value_input_dims or key_input_dims
+        self.num_heads = num_heads
+        self.query_proj = nn.Linear(query_input_dims, dims, bias=bias)
+        self.key_proj = nn.Linear(key_input_dims, dims, bias=bias)
+        self.value_proj = nn.Linear(value_input_dims, dims, bias=bias)
+        self.out_proj = nn.Linear(dims, dims, bias=bias)
         self.embed_dim = dims
         self.kdim = key_input_dims if key_input_dims is not None else dims
         self.vdim = value_input_dims if value_input_dims is not None else dims
@@ -603,7 +601,7 @@ class MultiheadAttentionWrapper(nn.MultiHeadAttention):
             return None
         if any(bias is None for bias in biases):
             raise AssertionError("q/k/v projection biases must be all set or all None.")
-        return mx.concat(biases, axis=0)
+        return mx.concat(list(biases), axis=0)
 
     def __call__(self, *args, **kwargs):
         queries = self._pop_alias(kwargs, "queries", "query", "q")
@@ -823,8 +821,8 @@ class DropPath(nn.Module):
 class TransformerWrapper(nn.Module):
     def __init__(
         self,
-        encoder,
-        decoder,
+        encoder: nn.Module | None,
+        decoder: nn.Module | None,
         d_model: int,
         two_stage_type="none",
         pos_enc_at_input_dec=True,
@@ -909,7 +907,7 @@ class Mlp(nn.Module):
         hidden_features: Optional[int] = None,
         out_features: Optional[int] = None,
         act_layer: Type[nn.Module] = nn.GELU,
-        norm_layer: Optional[Type[nn.Module]] = None,
+        norm_layer: Optional[Callable[[int], nn.Module]] = None,
         bias: Union[bool, Tuple[bool, bool]] = True,
         drop: Union[float, Tuple[float, float]] = 0.0,
         use_conv: bool = False,
@@ -978,7 +976,7 @@ class LayerNorm2d(nn.Module):
         return self.forward(x)
 
 
-def get_clones(module, N):
+def get_clones(module: nn.Module | Callable[[], nn.Module], N: int) -> list[nn.Module]:
     if isinstance(module, nn.Module):
         return [deepcopy(module) for _ in range(N)]
     if callable(module):
@@ -1041,10 +1039,10 @@ def gen_sineembed_for_position(pos_array, num_feats=256):
     pos_x = x_embed[:, :, None] / dim_t
     pos_y = y_embed[:, :, None] / dim_t
     pos_x = mx.stack(
-        (mx.sin(pos_x[:, :, 0::2]), mx.cos(pos_x[:, :, 1::2])), axis=3
+        [mx.sin(pos_x[:, :, 0::2]), mx.cos(pos_x[:, :, 1::2])], axis=3
     ).flatten(2)
     pos_y = mx.stack(
-        (mx.sin(pos_y[:, :, 0::2]), mx.cos(pos_y[:, :, 1::2])), axis=3
+        [mx.sin(pos_y[:, :, 0::2]), mx.cos(pos_y[:, :, 1::2])], axis=3
     ).flatten(2)
     if pos_array.shape[-1] == 2:
         pos = mx.concat([pos_y, pos_x], axis=2)
@@ -1052,22 +1050,22 @@ def gen_sineembed_for_position(pos_array, num_feats=256):
         w_embed = pos_array[:, :, 2] * scale
         pos_w = w_embed[:, :, None] / dim_t
         pos_w = mx.stack(
-            (mx.sin(pos_w[:, :, 0::2]), mx.cos(pos_w[:, :, 1::2])), axis=3
+            [mx.sin(pos_w[:, :, 0::2]), mx.cos(pos_w[:, :, 1::2])], axis=3
         ).flatten(2)
 
         h_embed = pos_array[:, :, 3] * scale
         pos_h = h_embed[:, :, None] / dim_t
         pos_h = mx.stack(
-            (mx.sin(pos_h[:, :, 0::2]), mx.cos(pos_h[:, :, 1::2])), axis=3
+            [mx.sin(pos_h[:, :, 0::2]), mx.cos(pos_h[:, :, 1::2])], axis=3
         ).flatten(2)
 
-        pos = mx.concat((pos_y, pos_x, pos_w, pos_h), axis=2)
+        pos = mx.concat([pos_y, pos_x, pos_w, pos_h], axis=2)
     else:
         raise ValueError("Unknown pos_tensor shape(-1):{}".format(pos_array.shape[-1]))
     return pos
 
 
-class SAM3Output(list):
+class SAM3Output:
     """Official-style SAM3 output container with selectable iteration modes."""
 
     class IterMode(Enum):
@@ -1081,7 +1079,6 @@ class SAM3Output(list):
         iter_mode: IterMode = IterMode.ALL_STEPS_PER_STAGE,
         loss_stages: Optional[List[int]] = None,
     ):
-        super().__init__()
         if output is not None:
             assert (
                 isinstance(output, list)
@@ -1096,19 +1093,13 @@ class SAM3Output(list):
         )
         self.iter_mode = iter_mode
         self.loss_stages = loss_stages
-        self_ref = weakref.ref(self)
-        self._mode2iter = {
-            SAM3Output.IterMode.ALL_STEPS_PER_STAGE: lambda: iter(self_ref().output),
-            SAM3Output.IterMode.LAST_STEP_PER_STAGE: lambda: (
-                inner_list[-1] for inner_list in self_ref().output
-            ),
-            SAM3Output.IterMode.FLATTENED: lambda: (
-                element for inner_list in self_ref().output for element in inner_list
-            ),
-        }
 
     def __iter__(self) -> Iterator:
-        return self._mode2iter[self.iter_mode]()
+        if self.iter_mode == SAM3Output.IterMode.ALL_STEPS_PER_STAGE:
+            return iter(self.output)
+        if self.iter_mode == SAM3Output.IterMode.LAST_STEP_PER_STAGE:
+            return (inner_list[-1] for inner_list in self.output)
+        return (element for inner_list in self.output for element in inner_list)
 
     def __getitem__(self, index):
         assert isinstance(index, int), f"index should be an integer. Got {type(index)}"
@@ -1135,7 +1126,7 @@ class SAM3Output(list):
 
         def __exit__(self, exc_type, exc_value, traceback):
             self._model_output.iter_mode = self._orig_iter_mode
-            return super().__exit__(exc_type, exc_value, traceback)
+            return False
 
     @staticmethod
     def iteration_mode(

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import fields, is_dataclass
-from typing import Any
+from typing import Any, cast
 
 import mlx.core as mx
 import numpy as np
@@ -65,6 +65,13 @@ def _mlx_to(data: Any, *args: Any, **kwargs: Any) -> Any:
 
 def _array_to_numpy(value: Any, *, dtype=None) -> np.ndarray:
     return to_numpy(value, dtype=dtype, copy=False)
+
+
+def _require_method(owner: object | None, name: str) -> Callable[..., Any]:
+    candidate = getattr(owner, name, None) if owner is not None else None
+    if not callable(candidate):
+        raise ValueError(f"Required model method {name!r} is unavailable.")
+    return cast(Callable[..., Any], candidate)
 
 
 HOTSTART_GPU_METADATA_KEYS = (
@@ -172,7 +179,7 @@ def _mask_centers(binary_masks: Any) -> np.ndarray:
 
 def _point_count(points: Any) -> int:
     if _is_mlx_array(points):
-        shape = tuple(points.shape)
+        shape = list(points.shape)
         if not shape:
             return 0
         if len(shape) >= 2 and shape[-1] in (2, 3):
@@ -187,14 +194,13 @@ def recursive_to(data: Any, *args: Any, **kwargs: Any) -> Any:
     if isinstance(data, np.ndarray):
         return data
     if isinstance(data, Mapping):
-        ret = type(data)()
-        for key, value in data.items():
-            ret[key] = recursive_to(value, *args, **kwargs)
-        return ret
+        return {
+            key: recursive_to(value, *args, **kwargs) for key, value in data.items()
+        }
     if isinstance(data, tuple):
         return tuple(recursive_to(value, *args, **kwargs) for value in data)
     if isinstance(data, Sequence) and not isinstance(data, str):
-        return type(data)(recursive_to(value, *args, **kwargs) for value in data)
+        return [recursive_to(value, *args, **kwargs) for value in data]
     if is_dataclass(data):
         ret_cls = type(data)
         ret_fields = {
@@ -455,7 +461,9 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
             self.tracker,
             "_apply_object_wise_non_overlapping_constraints",
         ):
-            constrained = self.tracker._apply_object_wise_non_overlapping_constraints(
+            constrained = _require_method(
+                self.tracker, "_apply_object_wise_non_overlapping_constraints"
+            )(
                 kept_masks[:, None, :, :],
                 kept_sam2_probs[:, None],
                 background_value=0,
@@ -1126,7 +1134,7 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         self,
         inference_state: dict[str, Any],
         frame_idx: int | None,
-    ) -> tuple[int | None, dict[str, Any] | None]:
+    ) -> tuple[int | None, dict[str, Any] | str | None]:
         if frame_idx is None:
             return frame_idx, None
         if self.rank != 0:
@@ -1213,7 +1221,7 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         obj_id: Any,
         frame_idx: int | None,
         strict: bool,
-    ) -> tuple[int | None, dict[str, Any] | None]:
+    ) -> tuple[int | None, dict[str, Any] | str | None]:
         if self.world_size != 1:
             raise_unsupported_multiplex_runtime(
                 "Sam3MultiplexTracking.remove_object(existing-tracker-states-distributed)"
@@ -1324,7 +1332,7 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         frame_idx: int | None = 0,
         strict: bool = False,
         is_user_action: bool = False,
-    ) -> tuple[int | None, dict[str, Any] | None]:
+    ) -> tuple[int | None, dict[str, Any] | str | None]:
         """Remove an object from cached/image-only state or local SAM2 states."""
         del is_user_action
         if inference_state.get("sam2_inference_states"):
@@ -1334,6 +1342,8 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
                 frame_idx=frame_idx,
                 strict=strict,
             )
+        if frame_idx is None:
+            raise ValueError("frame_idx is required when removing cached objects.")
         num_frames = int(inference_state["num_frames"])
         frame_idx = int(frame_idx)
         if not 0 <= frame_idx < num_frames:
@@ -1468,7 +1478,7 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         max_frame_num_to_track: int | None,
         reverse: bool,
     ):
-        num_frames = inference_state["num_frames"]
+        num_frames = int(inference_state["num_frames"])
         previous_stages_out = inference_state["previous_stages_out"]
         if all(out is None for out in previous_stages_out) and start_frame_idx is None:
             raise RuntimeError(
@@ -1481,14 +1491,15 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
                 for frame_idx, out in enumerate(previous_stages_out)
                 if out is not None
             )
-        if max_frame_num_to_track is None:
-            max_frame_num_to_track = num_frames
+        max_frames = (
+            num_frames if max_frame_num_to_track is None else max_frame_num_to_track
+        )
         if reverse:
-            end_frame_idx = max(start_frame_idx - max_frame_num_to_track, 0)
+            end_frame_idx = max(start_frame_idx - max_frames, 0)
             processing_order = range(start_frame_idx - 1, end_frame_idx - 1, -1)
         else:
             end_frame_idx = min(
-                start_frame_idx + max_frame_num_to_track,
+                start_frame_idx + max_frames,
                 num_frames - 1,
             )
             processing_order = range(start_frame_idx, end_frame_idx + 1)
@@ -1528,7 +1539,8 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
 
     def _init_backbone_out(self, inference_state: dict[str, Any]) -> dict[str, Any]:
         input_batch = inference_state["input_batch"]
-        text_outputs = self.detector.backbone.forward_text(
+        detector_backbone = getattr(self.detector, "backbone", None)
+        text_outputs = _require_method(detector_backbone, "forward_text")(
             input_batch.find_text_batch,
             device=self.device,
         )
@@ -2366,7 +2378,7 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
             mask_input = None
         add_new_mask = getattr(self.tracker, "add_new_mask", None)
         if mask_input is not None and add_new_mask is not None:
-            self.tracker.clear_all_points_in_frame(
+            _require_method(self.tracker, "clear_all_points_in_frame")(
                 sam2_state,
                 frame_idx,
                 obj_id,
@@ -2379,17 +2391,17 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
                 mask_input,
             )
         else:
-            frame_idx, obj_ids, _low_res_masks, video_res_masks = (
-                self.tracker.add_new_points(
-                    inference_state=sam2_state,
-                    frame_idx=frame_idx,
-                    obj_id=obj_id,
-                    points=points,
-                    labels=labels,
-                    clear_old_points=clear_old_points,
-                    rel_coordinates=rel_coordinates,
-                    use_prev_mem_frame=use_prev_mem_frame,
-                )
+            frame_idx, obj_ids, _low_res_masks, video_res_masks = _require_method(
+                self.tracker, "add_new_points"
+            )(
+                inference_state=sam2_state,
+                frame_idx=frame_idx,
+                obj_id=obj_id,
+                points=points,
+                labels=labels,
+                clear_old_points=clear_old_points,
+                rel_coordinates=rel_coordinates,
+                use_prev_mem_frame=use_prev_mem_frame,
             )
         if video_res_masks is not None and len(video_res_masks) > 0:
             video_res_masks = fill_holes_in_mask_scores(
@@ -2400,7 +2412,9 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
                 remove_sprinkles=True,
             )
         self._sync_sam2_inputs_before_point_preflight(sam2_state)
-        self.tracker.propagate_in_video_preflight(sam2_state, run_mem_encoder=True)
+        _require_method(self.tracker, "propagate_in_video_preflight")(
+            sam2_state, run_mem_encoder=True
+        )
         if not inference_state.get("is_image_only", False):
             self.clear_detector_added_cond_frame_in_sam2(sam2_state, obj_id, frame_idx)
 
@@ -2631,7 +2645,7 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
         self,
         inference_state: Any,
         obj_id: Any,
-        frame_idx: int | None,
+        frame_idx: int | None = 0,
         strict: bool = False,
         is_user_action: bool = False,
     ) -> Any:
@@ -2711,7 +2725,7 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
             return mask_input_np[0]
         return mask_input
 
-    def _convert_low_res_mask_to_video_res(
+    def _convert_low_res_mask_to_video_res_from_state(
         self,
         low_res_mask: Any,
         inference_state: dict[str, Any],
@@ -2757,7 +2771,10 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
                 f"with {len(obj_ids_per_gpu)} entries."
             )
 
-        h_mask = w_mask = int(self.tracker.low_res_mask_size)
+        low_res_mask_size = getattr(self.tracker, "low_res_mask_size", None)
+        if low_res_mask_size is None:
+            raise ValueError("Tracker low_res_mask_size is required.")
+        h_mask = w_mask = int(low_res_mask_size)
         low_res_masks_local = []
         for obj_id in obj_ids_per_gpu[self.rank]:
             if obj_id in obj_id_to_mask_local:
@@ -2796,7 +2813,7 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
         seen_obj_ids: set[Any] = set()
 
         for sam2_state in tracker_states_local:
-            frame_results = self.tracker.propagate_in_video(
+            frame_results = _require_method(self.tracker, "propagate_in_video")(
                 sam2_state,
                 start_frame_idx=frame_idx,
                 max_frame_num_to_track=0,
@@ -2906,7 +2923,7 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
         obj_ids_on_state = list(sam2_state.get("obj_id_to_idx", {}).keys())
         for frame_idx in frame_indices_to_clear:
             for obj_id_to_clear in obj_ids_on_state:
-                self.tracker.clear_all_points_in_frame(
+                _require_method(self.tracker, "clear_all_points_in_frame")(
                     sam2_state,
                     frame_idx,
                     obj_id_to_clear,
@@ -2991,7 +3008,7 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
             obj_ids,
         )
         for sam2_state in tracker_states_local:
-            self.tracker.propagate_in_video_preflight(
+            _require_method(self.tracker, "propagate_in_video_preflight")(
                 sam2_state,
                 run_mem_encoder=True,
             )
@@ -3024,7 +3041,7 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
                 continue
 
             refined_obj_id_to_mask = {
-                obj_id: self._convert_low_res_mask_to_video_res(
+                obj_id: self._convert_low_res_mask_to_video_res_from_state(
                     refined_mask_low_res,
                     inference_state,
                 )

@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from typing import Dict, List, Optional, Tuple
 
 import mlx.core as mx
@@ -63,7 +64,11 @@ class TransformerEncoderLayer(nn.Module):
         query_pos: Optional[mx.array] = None,
         **kwargs,
     ) -> mx.array:
-        q = k = tgt + query_pos if self.pos_enc_at_attn else tgt
+        if self.pos_enc_at_attn:
+            assert query_pos is not None
+            q = k = tgt + query_pos
+        else:
+            q = k = tgt
 
         # self attention
         tgt2 = self.self_attn(
@@ -73,9 +78,15 @@ class TransformerEncoderLayer(nn.Module):
         tgt = self.norm1(tgt)
 
         # cross attn to image
+        if self.pos_enc_at_cross_attn_queries:
+            assert query_pos is not None
+        if self.pos_enc_at_cross_attn_keys:
+            assert pos is not None
+        cross_query = tgt + query_pos if query_pos is not None else tgt
+        cross_key = memory + pos if pos is not None else memory
         tgt2 = self.cross_attn_image(
-            query=tgt + query_pos if self.pos_enc_at_cross_attn_queries else tgt,
-            key=memory + pos if self.pos_enc_at_cross_attn_keys else memory,
+            query=cross_query,
+            key=cross_key,
             value=memory,
             attn_mask=memory_mask,
             key_padding_mask=memory_key_padding_mask,
@@ -102,24 +113,36 @@ class TransformerEncoderLayer(nn.Module):
         query_pos: Optional[mx.array] = None,
         **kwargs,
     ) -> mx.array:
+        other_tgt: mx.array | None = None
         if dac:
             # we only apply self attention to the first half of the queries
             assert tgt.shape[0] % 2 == 0
             other_tgt = tgt[tgt.shape[0] // 2 :]
             tgt = tgt[: tgt.shape[0] // 2]
         tgt2 = self.norm1(tgt)
-        q = k = tgt2 + query_pos if self.pos_enc_at_attn else tgt2
+        if self.pos_enc_at_attn:
+            assert query_pos is not None
+            q = k = tgt2 + query_pos
+        else:
+            q = k = tgt2
         tgt2 = self.self_attn(
             q, k, values=tgt2, attn_mask=tgt_mask, key_padding_mask=tgt_key_padding_mask
         )
         tgt = tgt + self.dropout1(tgt2)
         if dac:
             # Recombine
-            tgt = mx.concat((tgt, other_tgt), axis=0)
+            assert other_tgt is not None
+            tgt = mx.concat([tgt, other_tgt], axis=0)
         tgt2 = self.norm2(tgt)
+        if self.pos_enc_at_cross_attn_queries:
+            assert query_pos is not None
+        if self.pos_enc_at_cross_attn_keys:
+            assert pos is not None
+        cross_query = tgt2 + query_pos if query_pos is not None else tgt2
+        cross_key = memory + pos if pos is not None else memory
         tgt2 = self.cross_attn_image(
-            queries=tgt2 + query_pos if self.pos_enc_at_cross_attn_queries else tgt2,
-            keys=memory + pos if self.pos_enc_at_cross_attn_keys else memory,
+            queries=cross_query,
+            keys=cross_key,
             values=memory,
             attn_mask=memory_mask,
             key_padding_mask=memory_key_padding_mask,
@@ -187,7 +210,7 @@ class TransformerEncoderLayer(nn.Module):
 class TransformerEncoder(nn.Module):
     def __init__(
         self,
-        layer: nn.Module,
+        layer: nn.Module | Callable[[], nn.Module],
         num_layers: int,
         d_model: int,
         num_feature_levels: int,
@@ -223,12 +246,20 @@ class TransformerEncoder(nn.Module):
             "mismatch between expected and received * of feature levels"
         )
 
-        src_flatten = []
-        mask_flatten = []
-        lvl_pos_embed_flatten = []
+        mask_values = masks if masks is not None else [None] * len(srcs)
+        pos_values = (
+            pos_embeds
+            if pos_embeds is not None
+            else [mx.zeros_like(src) for src in srcs]
+        )
+        src_flatten: list[mx.array] = []
+        mask_flatten: list[mx.array] = []
+        lvl_pos_embed_flatten: list[mx.array] = []
         spatial_shapes = []
         has_mask = masks is not None and masks[0] is not None
-        for lvl, (src, mask, pos_embed) in enumerate(zip(srcs, masks, pos_embeds)):
+        for lvl, (src, mask, pos_embed) in enumerate(
+            zip(srcs, mask_values, pos_values)
+        ):
             bs, c, h, w = src.shape
             spatial_shape = (h, w)
             spatial_shapes.append(spatial_shape)
@@ -236,8 +267,8 @@ class TransformerEncoder(nn.Module):
             src = src.flatten(2).transpose(
                 0, 2, 1
             )  # bs, c, h, w -> bs, c, hw -> bs, hw, c
-            if has_mask:
-                mask = mask.flatten(1)
+            if mask is not None:
+                mask_flatten.append(mask.flatten(1))
             pos_embed = pos_embed.flatten(2).transpose(0, 2, 1)
             if self.level_embed is not None:
                 lvl_pos_embed = pos_embed + self.level_embed[lvl].reshape(1, 1, -1)
@@ -245,43 +276,44 @@ class TransformerEncoder(nn.Module):
                 lvl_pos_embed = pos_embed
             lvl_pos_embed_flatten.append(lvl_pos_embed)
             src_flatten.append(src)
-            if has_mask:
-                mask_flatten.append(mask)
-        src_flatten = mx.concat(src_flatten, axis=1)  # bs, \sum{hxw}, c
-        mask_flatten = (
+        src_flatten_array = mx.concat(src_flatten, axis=1)  # bs, \sum{hxw}, c
+        mask_flatten_array = (
             mx.concat(mask_flatten, axis=1) if has_mask else None
         )  # bs, \sum{hxw}
-        lvl_pos_embed_flatten = mx.concat(
+        lvl_pos_embed_flatten_array = mx.concat(
             lvl_pos_embed_flatten, axis=1
         )  # bs, \sum{hxw}, c
-        spatial_shapes = mx.array(spatial_shapes, dtype=mx.int64)
+        spatial_shapes_array = mx.array(spatial_shapes, dtype=mx.int64)
         level_start_index = mx.concat(
-            (
+            [
                 mx.zeros((1,), dtype=mx.int64),
-                spatial_shapes.prod(1).cumsum(0)[:-1],
-            )
+                spatial_shapes_array.prod(1).cumsum(0)[:-1],
+            ]
         )
 
         if has_mask:
-            valid_ratios = mx.stack([get_valid_ratio(m) for m in masks], axis=1)
+            valid_ratios = mx.stack(
+                [get_valid_ratio(mask) for mask in mask_values if mask is not None],
+                axis=1,
+            )
         else:
             valid_ratios = mx.ones(
-                (src_flatten.shape[0], self.num_feature_levels, 2),
+                (src_flatten_array.shape[0], self.num_feature_levels, 2),
             )
 
         return (
-            src_flatten,
-            mask_flatten,
-            lvl_pos_embed_flatten,
+            src_flatten_array,
+            mask_flatten_array,
+            lvl_pos_embed_flatten_array,
             level_start_index,
             valid_ratios,
-            spatial_shapes,
+            spatial_shapes_array,
         )
 
     def forward(
         self,
         src: List[mx.array],
-        src_key_padding_masks: Optional[List[mx.array]] = None,
+        src_key_padding_masks: Optional[List[mx.array | None]] = None,
         pos: Optional[List[mx.array]] = None,
         prompt: Optional[mx.array] = None,
         prompt_key_padding_mask: Optional[mx.array] = None,
@@ -339,7 +371,7 @@ class TransformerEncoder(nn.Module):
     def __call__(
         self,
         src: List[mx.array],
-        src_key_padding_masks: Optional[List[mx.array]] = None,
+        src_key_padding_masks: Optional[List[mx.array | None]] = None,
         pos: Optional[List[mx.array]] = None,
         prompt: Optional[mx.array] = None,
         prompt_key_padding_mask: Optional[mx.array] = None,
@@ -355,17 +387,18 @@ class TransformerEncoder(nn.Module):
         )
 
 
-class TransformerEncoderFusion(TransformerEncoder):
+class TransformerEncoderFusion(nn.Module):
     def __init__(
         self,
-        layer: nn.Module,
+        layer: nn.Module | Callable[[], nn.Module],
         num_layers: int,
         d_model: int,
         num_feature_levels: int,
         add_pooled_text_to_img_feat: bool = True,
         pool_text_with_mask: bool = False,
         compile_mode: Optional[str] = None,
-        **kwargs,
+        frozen: bool = False,
+        use_act_checkpoint: bool = False,
     ):
         if compile_mode not in (None, False):
             raise_unsupported(
@@ -373,7 +406,18 @@ class TransformerEncoderFusion(TransformerEncoder):
                 reason="torch-compile",
                 detail="torch.compile is not part of the sam3_mlx runtime.",
             )
-        super().__init__(layer, num_layers, d_model, num_feature_levels, **kwargs)
+        super().__init__()
+        self.layers = get_clones(layer, num_layers)
+        self.num_layers = num_layers
+        self.use_act_checkpoint = use_act_checkpoint
+        self.num_feature_levels = num_feature_levels
+        self.level_embed = (
+            mx.zeros((num_feature_levels, d_model)) if num_feature_levels > 1 else None
+        )
+        if frozen:
+            self.freeze()
+        for layer_idx, encoder_layer in enumerate(self.layers):
+            setattr(encoder_layer, "layer_idx", layer_idx)
 
         self.add_pooled_text_to_img_feat = add_pooled_text_to_img_feat
         if self.add_pooled_text_to_img_feat:
@@ -390,11 +434,11 @@ class TransformerEncoderFusion(TransformerEncoder):
         self,
         src: List[mx.array],
         prompt: mx.array,
-        src_key_padding_mask: Optional[List[mx.array]] = None,
+        src_key_padding_mask: Optional[List[mx.array | None]] = None,
         src_pos: Optional[List[mx.array]] = None,
         prompt_key_padding_mask: Optional[mx.array] = None,
         prompt_pos: Optional[mx.array] = None,
-        feat_sizes: Optional[List[int]] = None,
+        feat_sizes: Optional[List[tuple[int, int]]] = None,
         encoder_extra_kwargs: Optional[Dict] = None,
         **kwargs,
     ):
@@ -415,16 +459,23 @@ class TransformerEncoderFusion(TransformerEncoder):
         bs = src[0].shape[1]
         if feat_sizes is not None:
             assert len(feat_sizes) == len(src)
-            if src_key_padding_mask is None:
-                src_key_padding_mask = [None] * len(src)
+            padding_masks: list[mx.array | None] = (
+                src_key_padding_mask
+                if src_key_padding_mask is not None
+                else [None for _ in src]
+            )
+            if src_pos is None:
+                raise ValueError("src_pos is required when feat_sizes are provided.")
             for i, (h, w) in enumerate(feat_sizes):
                 src[i] = src[i].reshape(h, w, bs, -1).transpose(2, 3, 0, 1)
                 src_pos[i] = src_pos[i].reshape(h, w, bs, -1).transpose(2, 3, 0, 1)
-                src_key_padding_mask[i] = (
-                    src_key_padding_mask[i].reshape(h, w, bs).transpose(2, 0, 1)
-                    if src_key_padding_mask[i] is not None
+                padding_mask = padding_masks[i]
+                padding_masks[i] = (
+                    padding_mask.reshape(h, w, bs).transpose(2, 0, 1)
+                    if padding_mask is not None
                     else None
                 )
+            src_key_padding_mask = padding_masks
         else:
             assert all(x.ndim == 4 for x in src), (
                 "expected list of (bs, c, h, w) arrays"
@@ -437,6 +488,16 @@ class TransformerEncoderFusion(TransformerEncoder):
             pooled_text = self.text_pooling_proj(pooled_text)[..., None, None]
             src = [x + pooled_text for x in src]
 
+        encoder = TransformerEncoder(
+            layer=nn.Identity(),
+            num_layers=0,
+            d_model=1,
+            num_feature_levels=self.num_feature_levels,
+        )
+        encoder.layers = self.layers
+        encoder.level_embed = self.level_embed
+        encoder.use_act_checkpoint = self.use_act_checkpoint
+        encoder.train(self.training)
         (
             out,
             key_padding_masks_flatten,
@@ -444,8 +505,7 @@ class TransformerEncoderFusion(TransformerEncoder):
             level_start_index,
             spatial_shapes,
             valid_ratios,
-        ) = TransformerEncoder.forward(
-            self,
+        ) = encoder.forward(
             src=src,
             src_key_padding_masks=src_key_padding_mask,
             pos=src_pos,
@@ -468,11 +528,11 @@ class TransformerEncoderFusion(TransformerEncoder):
         self,
         src: List[mx.array],
         prompt: mx.array,
-        src_key_padding_mask: Optional[List[mx.array]] = None,
+        src_key_padding_mask: Optional[List[mx.array | None]] = None,
         src_pos: Optional[List[mx.array]] = None,
         prompt_key_padding_mask: Optional[mx.array] = None,
         prompt_pos: Optional[mx.array] = None,
-        feat_sizes: Optional[List[int]] = None,
+        feat_sizes: Optional[List[tuple[int, int]]] = None,
         encoder_extra_kwargs: Optional[Dict] = None,
         **kwargs,
     ):

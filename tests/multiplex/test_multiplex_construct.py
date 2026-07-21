@@ -24,6 +24,7 @@ def test_multiplex_component_builders_construct_official_shapes():
     assert maskmem.out_proj.__class__.__name__ == "Identity"
     assert transformer.decoder is None
     assert transformer.d_model == 256
+    assert transformer.encoder is not None
     assert transformer.encoder.num_layers == 4
     assert transformer.encoder.use_image_in_output is False
     assert isinstance(tri_neck, Sam3TriViTDetNeck)
@@ -49,6 +50,7 @@ def test_multiplex_video_model_builder_constructs_checkpoint_free_mlx_shell():
     assert model.sam_mask_decoder.num_multimask_outputs == 3
     assert model.interactive_sam_mask_decoder.pred_obj_scores is True
     assert model.use_obj_ptrs_in_encoder is True
+    assert model.obj_ptr_tpos_proj.weight is not None
     assert model.obj_ptr_tpos_proj.weight.shape == (256, 256)
     params = dict(tree_flatten(model.parameters()))
     assert params["maskmem_tpos_enc"].shape == (7, 1, 1, 256)

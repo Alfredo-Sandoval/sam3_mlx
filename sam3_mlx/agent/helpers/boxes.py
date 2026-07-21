@@ -87,7 +87,8 @@ class BoxMode(IntEnum):
             )
 
         if single_box:
-            return original_type(arr.reshape(-1).tolist())
+            values = arr.reshape(-1).tolist()
+            return tuple(values) if original_type is tuple else values
         return arr
 
 

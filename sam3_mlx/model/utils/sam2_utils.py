@@ -72,7 +72,7 @@ class AsyncVideoFrameLoader:
         self.offload_video_to_cpu = offload_video_to_cpu
         self.img_mean = img_mean
         self.img_std = img_std
-        self.images = [None] * len(img_paths)
+        self.images: list[mx.array | None] = [None] * len(img_paths)
         self.exception = None
         self.video_height = None
         self.video_width = None
@@ -210,6 +210,7 @@ def load_video_frames_from_jpg_images(
         return lazy_images, lazy_images.video_height, lazy_images.video_width
 
     images = []
+    video_height = video_width = 0
     for img_path in tqdm(img_paths, desc="frame loading (JPEG)"):
         img, video_height, video_width = _load_img_as_tensor(img_path, image_size)
         images.append(img)

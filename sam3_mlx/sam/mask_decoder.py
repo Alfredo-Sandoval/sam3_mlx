@@ -162,7 +162,7 @@ class MaskDecoder(nn.Module):
                 output_tokens.shape[1],
             ),
         )
-        tokens = mx.concat((output_tokens, sparse_prompt_embeddings), axis=1)
+        tokens = mx.concat([output_tokens, sparse_prompt_embeddings], axis=1)
 
         if repeat_image:
             src = mx.repeat(image_embeddings, tokens.shape[0], axis=0)
@@ -217,8 +217,9 @@ class MaskDecoder(nn.Module):
         multimask_logits = all_mask_logits[:, 1:, :, :]
         multimask_iou_scores = all_iou_scores[:, 1:]
         best_indices = mx.argmax(multimask_iou_scores, axis=-1)
-        best_mask = (
-            mx.arange(multimask_iou_scores.shape[1])[None, :] == best_indices[:, None]
+        best_mask = mx.equal(
+            mx.arange(multimask_iou_scores.shape[1])[None, :],
+            best_indices[:, None],
         )
         best_iou_scores = mx.sum(
             mx.where(

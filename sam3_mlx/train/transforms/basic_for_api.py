@@ -700,7 +700,12 @@ class NormalizeAPI:
                 obj.bbox = box_xyxy_to_cxcywh(_as_float_array(obj.bbox)) / norm
 
         for query in datapoint.find_queries:
-            cur_h, cur_w = datapoint.images[query.image_id].data.shape[-2:]
+            image_data = datapoint.images[query.image_id].data
+            if not isinstance(image_data, mx.array):
+                raise TypeError(
+                    "NormalizeAPI expects MLX arrays; call ToTensorAPI first"
+                )
+            cur_h, cur_w = image_data.shape[-2:]
             norm = mx.array([cur_w, cur_h, cur_w, cur_h], dtype=mx.float32)
             if query.input_bbox is not None:
                 query.input_bbox = (

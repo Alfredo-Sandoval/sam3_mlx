@@ -37,9 +37,6 @@ QWEN.local.md
 # Local upstream reference checkouts
 third_party/
 
-# Local-only provenance doc (not shipped in the public tree)
-/UPSTREAM.md
-
 # Local developer parity/benchmark scripts
 scripts/
 

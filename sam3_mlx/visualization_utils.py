@@ -262,6 +262,8 @@ def visualize_formatted_frame_output(
             plot_mask(binary_mask, color=color, ax=ax)
             objects_drawn += 1
         if points_list is not None and points_list[idx] is not None:
+            if points_labels_list is None:
+                raise ValueError("Point labels are required when points are provided.")
             show_points(
                 points_list[idx], points_labels_list[idx], ax=ax, marker_size=200
             )

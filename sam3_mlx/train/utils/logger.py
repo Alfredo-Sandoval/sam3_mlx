@@ -11,7 +11,7 @@ import functools
 import logging
 import sys
 import uuid
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, NoReturn, Optional, Union
 
 import numpy as np
 
@@ -28,7 +28,7 @@ _UNSUPPORTED_LOGGER_MESSAGE = (
 )
 
 
-def _raise_logger_unsupported(feature: str) -> None:
+def _raise_logger_unsupported(feature: str) -> NoReturn:
     raise_unsupported(
         feature,
         reason="training-loop",
@@ -47,7 +47,7 @@ class TensorBoardWriterWrapper:
         self,
         path: str,
         *args: Any,
-        filename_suffix: str = None,
+        filename_suffix: str | None = None,
         summary_writer_method: Any = None,
         **kwargs: Any,
     ) -> None:

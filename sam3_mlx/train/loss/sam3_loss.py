@@ -136,11 +136,13 @@ class Sam3LossWrapper(nn.Module):
                 raise KeyError("Sam3LossWrapper expects outputs to contain indices.")
             indices = out["indices"]
             has_o2m_out = "pred_logits_o2m" in out
+            o2m_out = {}
+            o2m_targets = targets
+            o2m_indices = None
             if has_o2m_out:
                 o2m_out = {
                     k[: -len("_o2m")]: v for k, v in out.items() if k.endswith("_o2m")
                 }
-                o2m_targets = targets
                 o2m_indices = self._get_o2m_indices(
                     is_aux,
                     o2m_out,

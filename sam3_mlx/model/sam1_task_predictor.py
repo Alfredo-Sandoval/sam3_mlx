@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import List, Optional, Tuple, Union
+from typing import List, NoReturn, Optional, Tuple, TypedDict, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -18,7 +18,7 @@ from sam3_mlx.sam.transformer import TwoWayTransformer
 
 def _raise_sam1_unsupported(
     feature: str, *, reason: str, detail: str, alternative=None
-):
+) -> NoReturn:
     raise_unsupported(
         feature,
         reason=reason,
@@ -149,6 +149,11 @@ class SAM3InteractiveImageModel(nn.Module):
         return backbone_out, vision_feats, vision_pos_embeds, feat_sizes
 
 
+class _PredictorFeatures(TypedDict):
+    image_embed: mx.array
+    high_res_feats: list[mx.array]
+
+
 class SAM3InteractiveImagePredictor(nn.Module):
     def __init__(
         self,
@@ -170,8 +175,8 @@ class SAM3InteractiveImagePredictor(nn.Module):
             max_sprinkle_area=max_sprinkle_area,
         )
         self._is_image_set = False
-        self._features = None
-        self._orig_hw = None
+        self._features: _PredictorFeatures | None = None
+        self._orig_hw: list[tuple[int, int]] | None = None
         self._is_batch = False
         self.mask_threshold = mask_threshold
         image_embedding_size = self.model.image_size // self.model.backbone_stride
@@ -235,10 +240,10 @@ class SAM3InteractiveImagePredictor(nn.Module):
 
     def predict_batch(
         self,
-        point_coords_batch: List[np.ndarray] = None,
-        point_labels_batch: List[np.ndarray] = None,
-        box_batch: List[np.ndarray] = None,
-        mask_input_batch: List[np.ndarray] = None,
+        point_coords_batch: Optional[List[np.ndarray]] = None,
+        point_labels_batch: Optional[List[np.ndarray]] = None,
+        box_batch: Optional[List[np.ndarray]] = None,
+        mask_input_batch: Optional[List[np.ndarray]] = None,
         multimask_output: bool = True,
         return_logits: bool = False,
         normalize_coords=True,
@@ -249,7 +254,12 @@ class SAM3InteractiveImagePredictor(nn.Module):
             raise RuntimeError(
                 "An image must be set with .set_image_batch(...) before prediction."
             )
-        num_images = len(self._features["image_embed"])
+        features = self._features
+        if features is None:
+            raise RuntimeError(
+                "Predictor features are unavailable after set_image_batch."
+            )
+        num_images = len(features["image_embed"])
         all_masks = []
         all_ious = []
         all_low_res_masks = []
@@ -264,7 +274,7 @@ class SAM3InteractiveImagePredictor(nn.Module):
             mask_input = (
                 mask_input_batch[img_idx] if mask_input_batch is not None else None
             )
-            mask_input, unnorm_coords, labels, unnorm_box = self._prep_prompts(
+            prepared_mask_input, unnorm_coords, labels, unnorm_box = self._prep_prompts(
                 point_coords,
                 point_labels,
                 box,
@@ -276,7 +286,7 @@ class SAM3InteractiveImagePredictor(nn.Module):
                 unnorm_coords,
                 labels,
                 unnorm_box,
-                mask_input,
+                prepared_mask_input,
                 multimask_output,
                 return_logits=return_logits,
                 img_idx=img_idx,
@@ -302,7 +312,7 @@ class SAM3InteractiveImagePredictor(nn.Module):
             raise RuntimeError(
                 "An image must be set with .set_image(...) before mask prediction."
             )
-        mask_input, unnorm_coords, labels, unnorm_box = self._prep_prompts(
+        prepared_mask_input, unnorm_coords, labels, unnorm_box = self._prep_prompts(
             point_coords,
             point_labels,
             box,
@@ -313,7 +323,7 @@ class SAM3InteractiveImagePredictor(nn.Module):
             unnorm_coords,
             labels,
             unnorm_box,
-            mask_input,
+            prepared_mask_input,
             multimask_output,
             return_logits=return_logits,
         )
@@ -327,6 +337,8 @@ class SAM3InteractiveImagePredictor(nn.Module):
         self, point_coords, point_labels, box, mask_logits, normalize_coords, img_idx=-1
     ):
         unnorm_coords, labels, unnorm_box, mask_input = None, None, None, None
+        if self._orig_hw is None:
+            raise RuntimeError("Original image sizes are unavailable before set_image.")
         if point_coords is not None:
             if point_labels is None:
                 raise AssertionError(
@@ -370,9 +382,11 @@ class SAM3InteractiveImagePredictor(nn.Module):
                 "An image must be set with .set_image(...) before mask prediction."
             )
 
-        concat_points = (
-            (point_coords, point_labels) if point_coords is not None else None
-        )
+        concat_points: tuple[mx.array, mx.array] | None = None
+        if point_coords is not None:
+            if point_labels is None:
+                raise ValueError("point_labels are required when point_coords are set.")
+            concat_points = (point_coords, point_labels)
         if boxes is not None:
             box_coords = boxes.reshape(-1, 2, 2)
             box_labels = mx.broadcast_to(
@@ -392,11 +406,14 @@ class SAM3InteractiveImagePredictor(nn.Module):
             masks=mask_input,
         )
         batched_mode = concat_points is not None and concat_points[0].shape[0] > 1
+        features = self._features
+        if features is None or self._orig_hw is None:
+            raise RuntimeError("Predictor features are unavailable before set_image.")
         high_res_features = [
-            feat_level[img_idx][None] for feat_level in self._features["high_res_feats"]
+            feat_level[img_idx][None] for feat_level in features["high_res_feats"]
         ]
         low_res_masks, iou_predictions, _, _ = self.model.sam_mask_decoder(
-            image_embeddings=self._features["image_embed"][img_idx][None],
+            image_embeddings=features["image_embed"][img_idx][None],
             image_pe=self.model.sam_prompt_encoder.get_dense_pe(),
             sparse_prompt_embeddings=sparse_embeddings,
             dense_prompt_embeddings=dense_embeddings,

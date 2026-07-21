@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 import sam3_mlx
+import sam3_mlx.model.sam3_base_predictor as sam3_base_predictor
 from sam3_mlx import model_builder
 from sam3_mlx._unsupported import Sam3MlxUnsupportedError
 from sam3_mlx.model.geometry_encoders import SequenceGeometryEncoder
@@ -55,13 +56,23 @@ class _FakeImageProcessor:
 class _WarmUpModel:
     def __init__(self):
         self.calls = []
+        self._warm_up_complete = False
 
     def warm_up_compilation(self):
         self.calls.append(self._warm_up_complete)
 
 
 class _NoWarmHookModel:
-    pass
+    def __init__(self):
+        self._warm_up_complete = False
+
+
+class _SessionModel:
+    def init_state(self, **kwargs):
+        return {"resource_path": kwargs["resource_path"]}
+
+    def reset_state(self, state):
+        state["reset"] = True
 
 
 def test_public_package_exports_image_video_and_multiplex_builders():
@@ -94,6 +105,8 @@ def test_distribution_excludes_unsupported_source_surfaces():
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
     package_find = pyproject["tool"]["setuptools"]["packages"]["find"]
     package_data = pyproject["tool"]["setuptools"]["package-data"]["sam3_mlx"]
+    optional_dependencies = pyproject["project"]["optional-dependencies"]
+    dev_dependencies = pyproject["dependency-groups"]["dev"]
 
     assert package_find["include"] == ["sam3_mlx", "sam3_mlx.*"]
     assert set(package_find["exclude"]) == {
@@ -107,6 +120,36 @@ def test_distribution_excludes_unsupported_source_surfaces():
         "sam3_mlx.perflib.triton.*",
     }
     assert package_data == ["assets/*.txt.gz"]
+    assert optional_dependencies["video"] == ["opencv-python-headless>=4.12.0.88"]
+    assert {dependency.split(">=", 1)[0] for dependency in dev_dependencies} == {
+        "build",
+        "hydra-core",
+        "matplotlib",
+        "numba",
+        "omegaconf",
+        "pandas",
+        "pyright",
+        "pytest",
+        "ruff",
+        "scipy",
+        "twine",
+    }
+
+
+def test_repository_tracks_macos_ci_and_upstream_contract():
+    workflow = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+    upstream = REPO_ROOT / "UPSTREAM.md"
+
+    assert workflow.is_file()
+    workflow_text = workflow.read_text()
+    assert "runs-on: macos-14" in workflow_text
+    assert "uv sync --locked --group dev" in workflow_text
+    assert "branches: [main]" in workflow_text
+    assert "uv run ruff check" in workflow_text
+    assert "uv run pyright" in workflow_text
+    assert "uv run pytest" in workflow_text
+    assert "tools/verify_installed_wheel.py" in workflow_text
+    assert upstream.is_file()
 
 
 def test_image_builder_threads_checkpoint_free_architecture_toggles():
@@ -268,13 +311,36 @@ def test_multiplex_predictor_warm_up_without_hook_is_noop_marker():
     assert model._warm_up_complete is True
 
 
+def test_multiplex_sessions_expire_and_are_removed(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(sam3_base_predictor.time, "monotonic", lambda: now[0])
+    predictor = Sam3MultiplexVideoPredictor(
+        model=_SessionModel(),
+        session_expiration_sec=10,
+        async_loading_frames=False,
+    )
+    predictor.start_session("frames", session_id="expiring")
+
+    assert predictor._all_inference_states["expiring"]["expiration_sec"] == 10
+    now[0] = 110.01
+
+    with pytest.raises(RuntimeError, match="session expiring expired"):
+        predictor.reset_session("expiring")
+
+    assert "expiring" not in predictor._all_inference_states
+
+
+def test_multiplex_predictor_rejects_negative_session_expiration():
+    with pytest.raises(ValueError, match="session_expiration_sec must be non-negative"):
+        Sam3MultiplexVideoPredictor(
+            model=_SessionModel(),
+            session_expiration_sec=-1,
+        )
+
+
 @pytest.mark.parametrize(
     ("call", "feature_fragment"),
     [
-        (
-            lambda: sam3_mlx.build_sam3_predictor(),
-            "build_sam3_multiplex_video_predictor",
-        ),
         (
             sam3_mlx.build_sam3_multiplex_video_predictor,
             "build_sam3_multiplex_video_predictor",

@@ -41,6 +41,7 @@ def test_interactive_predictor_feature_sizes_follow_model_resolution():
 
     predictor._set_features_from_backbone(backbone_out)
 
+    assert predictor._features is not None
     assert predictor._features["high_res_feats"][0].shape == (1, 32, 16, 16)
     assert predictor._features["high_res_feats"][1].shape == (1, 64, 8, 8)
     assert predictor._features["image_embed"].shape == (1, 256, 4, 4)

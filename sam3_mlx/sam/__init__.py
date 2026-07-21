@@ -1,5 +1,18 @@
 """SAM1 helper modules ported for the MLX SAM3 runtime."""
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sam3_mlx.sam.common import (
+        Conv2dNCHW,
+        ConvTranspose2dNCHW,
+        LayerNorm2d,
+        MLPBlock,
+    )
+    from sam3_mlx.sam.mask_decoder import MaskDecoder
+    from sam3_mlx.sam.prompt_encoder import PositionEmbeddingRandom, PromptEncoder
+    from sam3_mlx.sam.transformer import Attention, RoPEAttention, TwoWayTransformer
+
 __all__ = [
     "Attention",
     "Conv2dNCHW",

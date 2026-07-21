@@ -15,6 +15,7 @@ from sam3_mlx.model.multiplex_utils import (
 from sam3_mlx.model.memory import SimpleMaskEncoder
 from sam3_mlx.model.video_tracking_multiplex import (
     NO_OBJ_SCORE,
+    StageOutput,
     VideoTrackingMultiplex,
     _append,
     _merge,
@@ -192,7 +193,7 @@ class _MemoryHarness:
         self.condition_as_mask_input = False
         self.condition_as_mask_input_fg = 1.0
         self.condition_as_mask_input_bg = 0.0
-        self.no_obj_embed_spatial = mx.array(
+        self.no_obj_embed_spatial: mx.array | None = mx.array(
             [[1.0, 10.0], [2.0, 20.0]],
             dtype=mx.float32,
         )
@@ -358,6 +359,7 @@ class _PropagationMaskDecoderStub:
 class _SamHeadsHarness:
     _forward_sam_heads = VideoTrackingMultiplex._forward_sam_heads
     _maybe_clone = VideoTrackingMultiplex._maybe_clone
+    _use_mask_as_output = VideoTrackingMultiplex._use_mask_as_output
 
     def __init__(self):
         self.sam_prompt_embed_dim = 2
@@ -386,6 +388,7 @@ class _SamHeadsHarness:
         self.interactive_sam_prompt_encoder = _PromptEncoderStub()
         self.interactive_sam_mask_decoder = _InteractiveMaskDecoderStub()
         self.sam_mask_decoder = _PropagationMaskDecoderStub()
+        self.interactive_mask_downsample = lambda value: value
 
     def get_propagation_dense_pe(self):
         return mx.zeros((1, 2, 2, 2), dtype=mx.float32)
@@ -493,7 +496,9 @@ class _MemoryConditioningHarness:
         self.use_maskmem_tpos_v2 = False
         self.maskmem_tpos_enc = mx.zeros((2, 1, 1, 2), dtype=mx.float32)
         self.obj_ptr_tpos_proj = _IdentityProjection()
-        self.transformer = _TransformerRecorder()
+        self.transformer: _TransformerRecorder | _DecoupledTransformerRecorder = (
+            _TransformerRecorder()
+        )
 
 
 class _TrackStepHarness:
@@ -534,6 +539,7 @@ class _TrackStepHarness:
         self.forward_calls = []
         self.add_mask_calls = []
         self.recondition_calls = []
+        self.sam_output_high_tail: tuple[int, int, int] = (1, 4, 4)
 
     def add_new_masks_to_existing_state(self, **kwargs):
         self.add_mask_calls.append(kwargs)
@@ -603,6 +609,8 @@ class _TrackStepHarness:
         if point_inputs is None and mask_inputs is None:
             values = [1.0, 2.0, 3.0][: multiplex_state.total_valid_entries]
         else:
+            if objects_to_interact is None:
+                raise ValueError("Interactive prompts require objects_to_interact.")
             values = [90.0] * len(objects_to_interact)
         rows = len(values)
         low_tail = getattr(self, "sam_output_low_tail", (1, 2, 2))
@@ -655,6 +663,7 @@ class _ForwardTrackingHarness:
         self.rng = np.random.default_rng(seed=42)
         self.add_all_frames_to_correct_as_cond = False
         self.add_all_transition_frames_as_cond = False
+        self.is_dynamic_vos_evaluation = False
         self.backbone = SimpleNamespace(forward_image=self._forward_image)
         self.multiplex_controller = SimpleNamespace(
             get_state=self._get_state,
@@ -1121,8 +1130,7 @@ def test_use_mask_as_output_reuses_singleton_features_for_object_pointers():
         )
     )
 
-    output = VideoTrackingMultiplex._use_mask_as_output(
-        model,
+    output = model._use_mask_as_output(
         backbone_features=mx.zeros((1, 2, 2, 2), dtype=mx.float32),
         high_res_features=[mx.zeros((1, 2, 4, 4), dtype=mx.float32)],
         mask_inputs=mask_inputs,
@@ -1138,6 +1146,7 @@ def test_use_mask_as_output_reuses_singleton_features_for_object_pointers():
     assert decoder_call["dense_prompt_embeddings"].shape == (2, 2, 2, 2)
     assert decoder_call["high_res_features"][0].shape == (1, 2, 4, 4)
     assert output["high_res_masks"].shape == (2, 1, 4, 4)
+    assert "obj_ptr" in output
     assert output["obj_ptr"].shape == (2, 2)
 
 
@@ -1175,6 +1184,7 @@ def test_forward_sam_heads_interactive_mask_path_returns_object_pointers():
         _to_numpy(output["object_score_logits"]),
         np.array([[1.0], [-1.0]], dtype=np.float32),
     )
+    assert "obj_ptr" in output
     np.testing.assert_array_equal(
         _to_numpy(output["obj_ptr"]),
         np.array([[1.0, 2.0], [203.0, 204.0]], dtype=np.float32),
@@ -1224,6 +1234,7 @@ def test_forward_sam_heads_propagation_path_demuxes_masks_and_object_pointers():
         _to_numpy(output["object_score_logits"]),
         np.array([1.0, -1.0, -1.0], dtype=np.float32),
     )
+    assert "obj_ptr" in output
     np.testing.assert_array_equal(
         _to_numpy(output["obj_ptr"]),
         np.array([[1.0, 2.0], [203.0, 204.0], [105.0, 106.0]], dtype=np.float32),
@@ -1476,6 +1487,10 @@ def test_track_step_mask_input_records_conditioning_output_and_memory():
         multiplex_state=multiplex_state,
     )
 
+    assert "object_score_logits" in out
+    assert "pred_masks" in out
+    assert "maskmem_features" in out
+    assert "multistep_pred_ious" in out
     assert out["conditioning_objects"] == {0, 1}
     np.testing.assert_array_equal(
         _to_numpy(out["object_score_logits"]),
@@ -1578,6 +1593,9 @@ def test_track_step_propagation_and_interaction_replaces_selected_rows():
         objects_to_interact=[1],
     )
 
+    assert "pred_masks" in out
+    assert "maskmem_features" in out
+    assert "maskmem_pos_enc" in out
     assert len(model.prepare_calls) == 1
     assert model.forward_calls[0]["point_inputs"] is None
     np.testing.assert_array_equal(
@@ -1616,6 +1634,13 @@ def test_track_step_correction_points_update_selected_rows_and_multistep_outputs
         objects_to_interact=[0],
     )
 
+    assert "pred_masks" in out
+    assert "multistep_pred_masks" in out
+    assert "multistep_pred_masks_high_res" in out
+    assert "multistep_pred_ious" in out
+    assert "multistep_point_inputs" in out
+    assert "maskmem_features" in out
+    assert "maskmem_pos_enc" in out
     assert len(model.forward_calls) == 1
     correction_call = model.forward_calls[0]
     assert correction_call["objects_to_interact"] == [0]
@@ -1633,7 +1658,9 @@ def test_track_step_correction_points_update_selected_rows_and_multistep_outputs
     assert out["multistep_pred_masks_high_res"].shape == (1, 2, 8, 8)
     assert len(out["multistep_pred_ious"]) == 2
     assert out["multistep_point_inputs"][0] is None
-    assert out["multistep_point_inputs"][1]["point_coords"].shape == (1, 1, 2)
+    second_point_inputs = out["multistep_point_inputs"][1]
+    assert second_point_inputs is not None
+    assert second_point_inputs["point_coords"].shape == (1, 1, 2)
     assert out["conditioning_objects"] == {0}
     assert out["maskmem_features"] is None
     assert out["maskmem_pos_enc"] is None
@@ -1707,7 +1734,7 @@ def test_trim_output_and_memory_compacts_current_output_for_eval_offload():
     model.offload_output_to_cpu_for_eval = True
     model.use_obj_ptrs_in_encoder = True
     model.save_image_features = True
-    current_out = {
+    current_out: StageOutput = {
         "conditioning_objects": {0},
         "pred_masks": mx.array([[1.0]], dtype=mx.float32),
         "pred_masks_high_res": mx.array([[2.0]], dtype=mx.float32),
@@ -1741,6 +1768,8 @@ def test_trim_output_and_memory_compacts_current_output_for_eval_offload():
         "image_features",
         "image_pos_enc",
     }
+    assert "maskmem_features" in trimmed
+    assert "image_features" in trimmed
     assert trimmed["maskmem_features"] is current_out["maskmem_features"]
     assert trimmed["image_features"] is current_out["image_features"]
 
@@ -2177,7 +2206,7 @@ def test_recondition_masks_in_existing_state_updates_rows_pointers_and_memory():
         [[10.0, 11.0], [20.0, 21.0], [30.0, 31.0]],
         dtype=mx.float32,
     )
-    prev_output = {
+    prev_output: StageOutput = {
         "conditioning_objects": {1},
         "pred_masks": _constant_rows([10.0, 20.0, 30.0], (1, 2, 2)),
         "pred_masks_high_res": _constant_rows([11.0, 22.0, 33.0], (1, 4, 4)),
@@ -2246,6 +2275,9 @@ def test_recondition_masks_in_existing_state_updates_rows_pointers_and_memory():
         _to_numpy(model.memory_calls[0]["pred_masks_high_res"]),
         _to_numpy(prev_output["pred_masks_high_res"]),
     )
+    assert "maskmem_features" in prev_output
+    assert "maskmem_pos_enc" in prev_output
+    assert prev_output["maskmem_pos_enc"] is not None
     np.testing.assert_array_equal(
         _to_numpy(prev_output["maskmem_features"]),
         np.array([[9.0, 9.5]], dtype=np.float32),
@@ -2268,7 +2300,7 @@ def test_add_new_masks_to_existing_state_appends_rows_pointers_and_memory():
         [[10.0, 11.0], [20.0, 21.0]],
         dtype=mx.float32,
     )
-    prev_output = {
+    prev_output: StageOutput = {
         "conditioning_objects": {1},
         "pred_masks": _constant_rows([10.0, 20.0], (1, 2, 2)),
         "pred_masks_high_res": _constant_rows([11.0, 22.0], (1, 2, 2)),
@@ -2335,6 +2367,9 @@ def test_add_new_masks_to_existing_state_appends_rows_pointers_and_memory():
         _to_numpy(model.memory_calls[0]["pred_masks_high_res"]),
         _to_numpy(prev_output["pred_masks_high_res"]),
     )
+    assert "maskmem_features" in prev_output
+    assert "maskmem_pos_enc" in prev_output
+    assert prev_output["maskmem_pos_enc"] is not None
     np.testing.assert_array_equal(
         _to_numpy(prev_output["maskmem_features"]),
         np.array([[9.0, 9.5]], dtype=np.float32),
@@ -2366,7 +2401,7 @@ def test_add_new_masks_to_existing_state_matches_official_packed_add_fixture():
         [[10.0, 11.0], [20.0, 21.0]],
         dtype=mx.float32,
     )
-    prev_output = {
+    prev_output: StageOutput = {
         "conditioning_objects": {1},
         "pred_masks": _constant_rows([10.0, 20.0], (1, 2, 2)),
         "pred_masks_high_res": _constant_rows([11.0, 22.0], (1, 2, 2)),
@@ -2428,6 +2463,9 @@ def test_add_new_masks_to_existing_state_matches_official_packed_add_fixture():
         "demux_obj_ptr",
         multiplex_state.demux(prev_output["obj_ptr"]),
     )
+    assert "maskmem_features" in prev_output
+    assert "maskmem_pos_enc" in prev_output
+    assert prev_output["maskmem_pos_enc"] is not None
     assert_matches_fixture("maskmem_features", prev_output["maskmem_features"])
     assert_matches_fixture("maskmem_pos_enc_0", prev_output["maskmem_pos_enc"][0])
 

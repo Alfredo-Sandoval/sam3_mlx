@@ -307,6 +307,7 @@ class MultiplexMaskDecoder(nn.Module):
 
         hs, src = self.transformer(src, pos_src, tokens)
 
+        obj_score_token_out: Any | None = None
         if self.decode_mask_attribute_with_shared_tokens:
             assert hs.shape[1] == self.num_mask_tokens, (
                 f"{hs.shape=}, {self.num_mask_tokens=}"
@@ -378,6 +379,7 @@ class MultiplexMaskDecoder(nn.Module):
         )
 
         if self.pred_obj_scores:
+            assert obj_score_token_out is not None
             if (
                 self.decode_mask_attribute_with_shared_tokens
                 and not self.decode_mask_with_shared_tokens

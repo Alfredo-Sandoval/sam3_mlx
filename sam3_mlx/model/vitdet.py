@@ -102,12 +102,12 @@ def window_partition(x: mx.array, window_size: int) -> Tuple[mx.array, Tuple[int
     if pad_h > 0 or pad_w > 0:
         x = mx.pad(
             x,
-            (
+            [
                 (0, 0),
                 (0, pad_h),
                 (0, pad_w),
                 (0, 0),
-            ),
+            ],
         )
     Hp, Wp = H + pad_h, W + pad_w
 
@@ -211,6 +211,7 @@ def get_abs_pos(
         assert has_cls_token
 
     h, w = hw
+    cls_pos: mx.array | None = None
     if has_cls_token:
         cls_pos = abs_pos[:, :1]
         abs_pos = abs_pos[:, 1:]
@@ -244,6 +245,7 @@ def get_abs_pos(
             return new_abs_pos.transpose(0, 2, 3, 1)
         else:
             assert has_cls_token
+            assert cls_pos is not None
             return mx.concat(
                 [cls_pos, new_abs_pos.transpose(0, 2, 3, 1).reshape(1, h * w, -1)],
                 axis=1,
@@ -253,6 +255,7 @@ def get_abs_pos(
             return abs_pos.reshape(1, h, w, -1)
         else:
             assert has_cls_token
+            assert cls_pos is not None
             return mx.concat([cls_pos, abs_pos], axis=1)
 
 
@@ -472,6 +475,7 @@ class Attention(nn.Module):
         # handle rope and pos embeddings
         q, k = self._apply_rope(q, k, spatial_size=(H, W))
         if self.use_rel_pos:
+            assert self.rel_pos_h is not None and self.rel_pos_w is not None
             q, k = concat_rel_pos(
                 q.reshape(-1, L, q.shape[-1]),
                 k.reshape(-1, L, k.shape[-1]),
@@ -561,6 +565,8 @@ class Block(nn.Module):
     def forward(self, x: mx.array) -> mx.array:
         shortcut = x
         x = self.norm1(x)
+        H = W = 0
+        pad_hw = (0, 0)
 
         if self.window_size > 0:
             H, W = x.shape[1], x.shape[2]
@@ -627,8 +633,8 @@ class ViT(nn.Module):
         window_block_indexes = [i for i in range(depth) if i not in global_att_blocks]
         self.full_attn_ids = list(global_att_blocks)
         self.rel_pos_blocks = [False] * depth
-        if isinstance(rel_pos_blocks, bool) and rel_pos_blocks:
-            self.rel_pos_blocks = [True] * depth
+        if isinstance(rel_pos_blocks, bool):
+            self.rel_pos_blocks = [rel_pos_blocks] * depth
         else:
             for i in rel_pos_blocks:
                 self.rel_pos_blocks[i] = True
@@ -794,7 +800,8 @@ class ViT(nn.Module):
                 if is_nested:
                     if mask is not None and masks is None:
                         masks = interpolate(
-                            mask[None].astype(mx.float32), size=feats.shape[-2:]
+                            mask[None].astype(mx.float32),
+                            size=(int(feats.shape[-2]), int(feats.shape[-1])),
                         ).astype(mx.bool_)[0]
                     outputs.append(NestedTensor(feats, masks))
                 else:

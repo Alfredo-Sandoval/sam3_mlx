@@ -4,20 +4,43 @@ from __future__ import annotations
 
 import numpy as np
 from PIL import Image
+from typing import Any, overload
 
 from sam3_mlx.agent.helpers.rle import rle_decode
 from sam3_mlx.agent.helpers.visualizer import Visualizer
 from sam3_mlx.agent.helpers.zoom_in import render_zoom_in
 
 
+@overload
 def visualize(
-    input_json: dict,
+    input_json: dict[str, Any],
+    zoom_in_index: None = None,
+    mask_alpha: float = 0.15,
+    label_mode: str = "1",
+    font_size_multiplier: float = 1.2,
+    boarder_width_multiplier: float = 0,
+) -> Image.Image: ...
+
+
+@overload
+def visualize(
+    input_json: dict[str, Any],
+    zoom_in_index: int,
+    mask_alpha: float = 0.15,
+    label_mode: str = "1",
+    font_size_multiplier: float = 1.2,
+    boarder_width_multiplier: float = 0,
+) -> tuple[Image.Image, Image.Image]: ...
+
+
+def visualize(
+    input_json: dict[str, Any],
     zoom_in_index: int | None = None,
     mask_alpha: float = 0.15,
     label_mode: str = "1",
     font_size_multiplier: float = 1.2,
     boarder_width_multiplier: float = 0,
-):
+) -> Image.Image | tuple[Image.Image, Image.Image]:
     """Render agent JSON predictions onto the original image."""
     orig_h = int(input_json["orig_img_h"])
     orig_w = int(input_json["orig_img_w"])

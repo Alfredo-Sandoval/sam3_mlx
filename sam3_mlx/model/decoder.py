@@ -1,6 +1,6 @@
 import math
 from functools import partial
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, NoReturn, Optional
 import mlx.core as mx
 import mlx.nn as nn
 
@@ -20,7 +20,7 @@ from sam3_mlx.model.model_misc import (
 )
 
 
-def _raise_decoder_unsupported(feature: str, *, reason: str, detail: str) -> None:
+def _raise_decoder_unsupported(feature: str, *, reason: str, detail: str) -> NoReturn:
     raise_unsupported(
         feature,
         reason=reason,
@@ -133,9 +133,14 @@ class TransformerDecoderLayer(nn.Module):
         identity=0.0,
         **kwargs,  # additional kwargs for compatibility
     ):
+        if tgt is None or memory is None:
+            raise ValueError("Decoder target and image memory are required.")
+        tgt_o2m: mx.array | None = None
         # self attention
         if self.self_attn is not None:
             if dac:
+                if tgt_query_pos is None:
+                    raise ValueError("DAC decoding requires target query positions.")
                 assert tgt.shape[0] % 2 == 0
                 num_o2o_queries = tgt.shape[0] // 2
                 tgt_o2o = tgt[:num_o2o_queries]
@@ -146,6 +151,10 @@ class TransformerDecoderLayer(nn.Module):
                 tgt_query_pos_o2o = tgt_query_pos
 
             if presence_token is not None:
+                if tgt_query_pos is None:
+                    raise ValueError(
+                        "Presence decoding requires target query positions."
+                    )
                 tgt_o2o = mx.concat([presence_token, tgt_o2o], axis=0)
                 tgt_query_pos_o2o = mx.concat(
                     [mx.zeros_like(presence_token), tgt_query_pos], axis=0
@@ -155,14 +164,17 @@ class TransformerDecoderLayer(nn.Module):
                 )
 
             q = k = self.with_pos_embed(tgt_o2o, tgt_query_pos_o2o).transpose(1, 0, 2)
-            tgt2 = self.self_attn(
-                q, k, tgt_o2o.transpose(1, 0, 2), attn_mask=self_attn_mask
+            tgt2 = _attention_output(
+                self.self_attn(
+                    q, k, tgt_o2o.transpose(1, 0, 2), attn_mask=self_attn_mask
+                )
             ).transpose(1, 0, 2)
             tgt_o2o = tgt_o2o + self.dropout2(tgt2)
             if dac:
+                assert tgt_o2m is not None
                 if not dac_use_selfatt_ln:
                     tgt_o2o = self.norm2(tgt_o2o)
-                tgt = mx.concat((tgt_o2o, tgt_o2m), axis=0)  # Recombine
+                tgt = mx.concat([tgt_o2o, tgt_o2m], axis=0)  # Recombine
                 if dac_use_selfatt_ln:
                     tgt = self.norm2(tgt)
             else:
@@ -170,17 +182,23 @@ class TransformerDecoderLayer(nn.Module):
                 tgt = self.norm2(tgt)
 
         if self.use_text_cross_attention:
+            if memory_text is None:
+                raise ValueError("Text cross-attention requires text memory.")
             memory_text = memory_text.transpose(1, 0, 2)
-            tgt2 = self.ca_text(
-                self.with_pos_embed(tgt, tgt_query_pos).transpose(1, 0, 2),
-                memory_text,
-                memory_text,
-                key_padding_mask=text_attention_mask,
+            tgt2 = _attention_output(
+                self.ca_text(
+                    self.with_pos_embed(tgt, tgt_query_pos).transpose(1, 0, 2),
+                    memory_text,
+                    memory_text,
+                    key_padding_mask=text_attention_mask,
+                )
             ).transpose(1, 0, 2)
             tgt = tgt + self.catext_dropout(tgt2)
             tgt = self.catext_norm(tgt)
 
         if presence_token is not None:
+            if cross_attn_mask is None:
+                raise ValueError("Presence decoding requires a cross-attention mask.")
             presence_token_mask = mx.zeros_like(cross_attn_mask[:, :1, :])
             cross_attn_mask = mx.concat(
                 [presence_token_mask, cross_attn_mask], axis=1
@@ -349,10 +367,13 @@ class TransformerDecoder(nn.Module):
         assert boxRPB in ["none", "log", "linear", "both"]
         self.boxRPB = boxRPB
         if boxRPB != "none":
-            try:
-                nheads = self.layers[0].cross_attn_image.num_heads
-            except AttributeError:
-                nheads = self.layers[0].cross_attn.num_heads
+            layer_zero = self.layers[0]
+            cross_attention = getattr(layer_zero, "cross_attn_image", None)
+            if cross_attention is None:
+                cross_attention = getattr(layer_zero, "cross_attn", None)
+            nheads = getattr(cross_attention, "num_heads", None)
+            if not isinstance(nheads, int):
+                raise ValueError("Box RPB requires attention with num_heads.")
 
             n_input = 4 if boxRPB == "both" else 2
             self.boxRPB_embed_x = MLP(n_input, d_model, nheads, 2)
@@ -371,7 +392,9 @@ class TransformerDecoder(nn.Module):
 
         self.frozen = frozen
 
-        self.presence_token = None
+        self.presence_token: nn.Embedding | None = None
+        self.presence_token_head: MLP | None = None
+        self.presence_token_out_norm: nn.LayerNorm | None = None
         self.clamp_presence_logits = clamp_presence_logits
         self.clamp_presence_logit_max_val = clamp_presence_logit_max_val
         if presence_token:
@@ -498,9 +521,11 @@ class TransformerDecoder(nn.Module):
 
         apply_dac = apply_dac if apply_dac is not None else self.dac
         if apply_dac:
+            instance_query_embed = self.instance_query_embed
             assert (tgt.shape[0] == self.num_queries) or (
                 self.use_instance_query
-                and (tgt.shape[0] == self.instance_query_embed.weight.shape[0])
+                and instance_query_embed is not None
+                and (tgt.shape[0] == instance_query_embed.weight.shape[0])
             )
 
             tgt = mx.repeat(tgt, repeats=2, axis=0)
@@ -509,16 +534,17 @@ class TransformerDecoder(nn.Module):
             if reference_boxes is not None:
                 assert (reference_boxes.shape[0] == self.num_queries) or (
                     self.use_instance_query
+                    and instance_query_embed is not None
                     and (
-                        reference_boxes.shape[0]
-                        == self.instance_query_embed.weight.shape[0]
+                        reference_boxes.shape[0] == instance_query_embed.weight.shape[0]
                     )
                 )
                 reference_boxes = mx.repeat(reference_boxes, repeats=2, axis=0)
 
         bs = tgt.shape[1]
-        intermediate = []
-        intermediate_presence_logits = []
+        intermediate: list[mx.array] = []
+        intermediate_presence_logits: list[mx.array] = []
+        intermediate_ref_boxes: list[mx.array]
         presence_feats = None
 
         if self.box_refine:
@@ -532,8 +558,11 @@ class TransformerDecoder(nn.Module):
                 reference_boxes = mx.sigmoid(reference_boxes)
             intermediate_ref_boxes = [reference_boxes]
         else:
-            reference_boxes = None
-            intermediate_ref_boxes = None
+            _raise_decoder_unsupported(
+                "sam3_mlx.model.decoder.TransformerDecoder(box_refine=False)",
+                reason="video-multiplex",
+                detail="The decoder requires iterative box refinement.",
+            )
 
         output = tgt
         presence_out = None
@@ -551,6 +580,8 @@ class TransformerDecoder(nn.Module):
             out_norm = self.instance_norm
 
         for layer_idx, layer in enumerate(self.layers):
+            if valid_ratios is None:
+                raise ValueError("Decoder valid_ratios are required.")
             reference_points_input = (
                 reference_boxes[:, :, None]
                 * mx.concat([valid_ratios, valid_ratios], -1)[None, :]
@@ -564,6 +595,8 @@ class TransformerDecoder(nn.Module):
             query_pos = self.ref_point_head(query_sine_embed)  # nq, bs, d_model
 
             if self.boxRPB != "none" and reference_boxes is not None:
+                if spatial_shapes is None:
+                    raise ValueError("Box RPB requires spatial_shapes.")
                 assert spatial_shapes.shape[0] == 1, (
                     "only single scale support implemented"
                 )
@@ -605,6 +638,11 @@ class TransformerDecoder(nn.Module):
                     else:
                         delta_unsig = box_head(out_norm(output))
                 else:
+                    if (
+                        decoder_extra_kwargs is None
+                        or "Q_det" not in decoder_extra_kwargs
+                    ):
+                        raise ValueError("Tracked box refinement requires Q_det.")
                     Q_det = decoder_extra_kwargs["Q_det"]
                     assert output.shape[0] >= Q_det
                     delta_unsig_det = self.bbox_embed(output[:Q_det])
@@ -625,6 +663,12 @@ class TransformerDecoder(nn.Module):
 
             intermediate.append(out_norm(output))
             if self.presence_token is not None and is_instance_prompt is False:
+                if (
+                    presence_out is None
+                    or self.presence_token_head is None
+                    or self.presence_token_out_norm is None
+                ):
+                    raise ValueError("Presence-token decoder state is incomplete.")
                 intermediate_layer_presence_logits = self.presence_token_head(
                     self.presence_token_out_norm(presence_out)
                 ).squeeze(-1)
@@ -933,7 +977,8 @@ class TransformerDecoderLayerv1(nn.Module):
         )
         tgt = tgt + self.dropout1(tgt2)
         if dac:
-            tgt = mx.concat((tgt, other_tgt), axis=0)
+            assert other_tgt is not None
+            tgt = mx.concat([tgt, other_tgt], axis=0)
 
         tgt2 = self.norm2(tgt)
         tgt2 = _call_short_or_mha_attention(
@@ -1022,7 +1067,7 @@ class TransformerDecoderLayerv2(TransformerDecoderLayerv1):
         self,
         tgt,
         memory,
-        dac: bool,
+        dac: bool = False,
         tgt_mask: Optional[mx.array] = None,
         memory_mask: Optional[mx.array] = None,
         tgt_key_padding_mask: Optional[mx.array] = None,
@@ -1031,7 +1076,9 @@ class TransformerDecoderLayerv2(TransformerDecoderLayerv1):
         query_pos: Optional[mx.array] = None,
         attn_bias: Optional[mx.array] = None,
         num_k_exclude_rope: int = 0,
+        **kwargs: Any,
     ):
+        del kwargs
         assert dac is False
         assert tgt_mask is None
         assert memory_mask is None
@@ -1074,7 +1121,7 @@ def functional_attention(
     use_fa3: bool = False,
     use_rope_real: bool = False,
     rope_k_repeat: bool,
-) -> Union[mx.array, tuple[mx.array, mx.array]]:
+) -> mx.array:
     if use_fa3:
         _raise_decoder_unsupported(
             "sam3_mlx.model.decoder.functional_attention(use_fa3=True)",
@@ -1110,6 +1157,8 @@ def functional_attention(
                     reason="video-multiplex",
                     detail="Real RoPE with all keys excluded is not ported.",
                 )
+            if freqs_cis_real is None or freqs_cis_imag is None:
+                raise ValueError("Real RoPE requires real and imaginary frequencies.")
             q, k_rope = apply_rotary_enc_real(
                 q,
                 k_rope,
@@ -1180,7 +1229,7 @@ class SimpleRoPEAttention(nn.Module):
         k: mx.array,
         v: mx.array,
         num_k_exclude_rope: int = 0,
-    ) -> Union[mx.array, tuple[mx.array, mx.array]]:
+    ) -> mx.array:
         side = int(math.sqrt(q.shape[-2]))
         if side * side != q.shape[-2]:
             raise ValueError("SimpleRoPEAttention expects square spatial query tokens.")
@@ -1361,7 +1410,7 @@ class DecoupledTransformerDecoderLayerv2(nn.Module):
         tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt2))))
         return image, tgt + self.dropout3(tgt2)
 
-    def forward(self, *args: Any, **kwds: Any) -> mx.array:
+    def forward(self, *args: Any, **kwds: Any) -> tuple[mx.array, mx.array]:
         if self.pre_norm:
             return self.forward_pre(*args, **kwds)
         _raise_decoder_unsupported(

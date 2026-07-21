@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, MutableMapping
 from copy import deepcopy
 
 try:
     from typing import NotRequired, Required, TypedDict
 except ImportError:
     from typing_extensions import NotRequired, Required, TypedDict
-from typing import Any
+from typing import Any, Callable, cast
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -14,6 +15,7 @@ import numpy as np
 
 from sam3_mlx.model.data_misc import NestedTensor, interpolate
 from sam3_mlx.model.memory import SimpleMaskEncoder
+from sam3_mlx.model.model_misc import TransformerWrapper
 from sam3_mlx.model.multiplex_mask_decoder import MLP, MultiplexMaskDecoder
 from sam3_mlx.model.multiplex_utils import (
     MultiplexController,
@@ -54,12 +56,12 @@ class StageOutput(TypedDict, total=False):
     conditioning_objects: Required[set[int]]
     pred_masks: Any
     pred_masks_high_res: Any
-    point_inputs: dict[str, Any]
+    point_inputs: dict[str, Any] | None
     mask_inputs: Any
     object_score_logits: Any
     obj_ptr: Any
     maskmem_features: Any
-    maskmem_pos_enc: list[Any]
+    maskmem_pos_enc: list[Any] | None
     image_features: Any
     image_pos_enc: Any
     iou_score: Any
@@ -69,8 +71,11 @@ class StageOutput(TypedDict, total=False):
     multistep_pred_multimasks: list[Any]
     multistep_pred_multimasks_high_res: list[Any]
     multistep_pred_ious: list[Any]
-    multistep_point_inputs: list[dict[str, Any]]
+    multistep_point_inputs: list[dict[str, Any] | None]
     multistep_object_score_logits: list[Any]
+    pred_masks_video_res: Any
+    local_obj_id_to_idx: Any
+    input_masks: Any
 
 
 def _is_mlx_array(value: Any) -> bool:
@@ -96,8 +101,8 @@ def concat_points(
 
 
 def _append(
-    d1: StageOutput,
-    d2: SAMOutput,
+    d1: StageOutput | MutableMapping[str, Any],
+    d2: SAMOutput | Mapping[str, Any],
     k1: str,
     k2: str,
     dim: int = 0,
@@ -120,8 +125,8 @@ def _to_numpy(value: Any) -> np.ndarray:
 
 
 def _merge(
-    d1: StageOutput,
-    d2: SAMOutput,
+    d1: StageOutput | MutableMapping[str, Any],
+    d2: SAMOutput | Mapping[str, Any],
     k1: str,
     k2: str,
     d2_idx: list[int],
@@ -211,11 +216,23 @@ def _replace_feature_tensor(feature_map: Any, tensor: Any) -> Any:
     return tensor
 
 
+def _require_stage_value(output: StageOutput, key: str) -> Any:
+    if key not in output:
+        raise ValueError(f"Tracking stage output is missing required key {key!r}.")
+    return output[key]
+
+
+def _require_obj_ptr(output: SAMOutput) -> Any:
+    if "obj_ptr" not in output:
+        raise ValueError("SAM output is missing object pointers.")
+    return output["obj_ptr"]
+
+
 class VideoTrackingMultiplex(nn.Module):
     def __init__(
         self,
-        backbone: nn.Module,
-        transformer: nn.Module,
+        backbone: nn.Module | None,
+        transformer: TransformerWrapper,
         maskmem_backbone: nn.Module,
         multiplex_controller: MultiplexController,
         num_maskmem: int = 7,
@@ -261,11 +278,9 @@ class VideoTrackingMultiplex(nn.Module):
 
         self.maskmem_backbone = maskmem_backbone
         self.mem_dim = self.hidden_dim
-        if hasattr(self.maskmem_backbone, "out_proj") and hasattr(
-            self.maskmem_backbone.out_proj,
-            "weight",
-        ):
-            mem_dim = self.maskmem_backbone.out_proj.weight.shape[0]
+        maskmem_out_proj = getattr(self.maskmem_backbone, "out_proj", None)
+        if maskmem_out_proj is not None and hasattr(maskmem_out_proj, "weight"):
+            mem_dim = maskmem_out_proj.weight.shape[0]
             assert mem_dim == self.hidden_dim, (
                 "there should be no compression of memory embeddings"
             )
@@ -569,16 +584,24 @@ class VideoTrackingMultiplex(nn.Module):
         need_propagation_out: bool = False,
     ) -> dict[str, Any]:
         """Run the image backbone and prepare SAM high-res features."""
-        if self.backbone is None or not hasattr(self.backbone, "forward_image"):
+        backbone = self.backbone
+        forward_image_candidate = (
+            getattr(backbone, "forward_image", None) if backbone is not None else None
+        )
+        if not callable(forward_image_candidate):
             raise_unsupported_multiplex_runtime(
                 "VideoTrackingMultiplex.forward_image(backbone)"
             )
+        forward_image = cast(
+            Callable[..., dict[str, Any]],
+            forward_image_candidate,
+        )
 
         if self.share_necks:
             need_propagation_out = need_interactive_out or need_propagation_out
             need_interactive_out = False
             try:
-                backbone_out = self.backbone.forward_image(
+                backbone_out = forward_image(
                     img_batch,
                     need_sam3_out=need_sam3_out,
                     need_sam2_out=need_propagation_out,
@@ -589,7 +612,7 @@ class VideoTrackingMultiplex(nn.Module):
                 )
             backbone_out["interactive"] = backbone_out["sam2_backbone_out"]
         else:
-            backbone_out = self.backbone.forward_image(
+            backbone_out = forward_image(
                 img_batch,
                 need_sam3_out=need_sam3_out,
                 need_interactive_out=need_interactive_out,
@@ -979,6 +1002,8 @@ class VideoTrackingMultiplex(nn.Module):
         pos_enc = mx.array(rel_pos_list, dtype=mx.float32) / t_diff_max
         tpos_dim = self.hidden_dim if self.proj_tpos_enc_in_obj_ptrs else self.mem_dim
         pos_enc = get_1d_sine_pe(pos_enc, dim=tpos_dim)
+        if not isinstance(pos_enc, mx.array):
+            pos_enc = mx.array(pos_enc)
         return self.obj_ptr_tpos_proj(pos_enc)
 
     def _get_interactive_pix_mem(
@@ -1276,6 +1301,9 @@ class VideoTrackingMultiplex(nn.Module):
 
         prompt = mx.concat(to_cat_prompt, axis=0)
         prompt_pos_embed = mx.concat(to_cat_prompt_pos_embed, axis=0)
+        encoder = self.transformer.encoder
+        if encoder is None:
+            raise ValueError("Tracking transformer requires an encoder.")
         if self.save_image_features:
             if vision_mask is not None:
                 raise ValueError(
@@ -1285,7 +1313,7 @@ class VideoTrackingMultiplex(nn.Module):
                 return vision_feat.transpose(1, 2, 0).reshape(B, C, H, W)
             image_feat = mx.concat(to_cat_image_feat, axis=0)
             image_pos_embed = mx.concat(to_cat_image_pos_embed, axis=0)
-            encoder_out = self.transformer.encoder(
+            encoder_out = encoder(
                 image=current_vision_feats[-1],
                 src=vision_feat,
                 memory_image=image_feat,
@@ -1297,7 +1325,7 @@ class VideoTrackingMultiplex(nn.Module):
                 num_obj_ptr_tokens=num_obj_ptr_tokens,
             )
         else:
-            encoder_out = self.transformer.encoder(
+            encoder_out = encoder(
                 src=vision_feat,
                 src_key_padding_mask=vision_mask,
                 src_pos=vision_pos_embed,
@@ -1389,6 +1417,7 @@ class VideoTrackingMultiplex(nn.Module):
         else:
             mask_for_mem = pred_masks_high_res
 
+        unconditioning_objects: list[int] = []
         if self.add_object_conditional_embeddings or self.condition_as_mask_input:
             if conditioning_objects is None:
                 conditioning_objects = set()
@@ -1591,7 +1620,7 @@ class VideoTrackingMultiplex(nn.Module):
                 objects_to_interact=objects_in_mask,
                 multiplex_state=multiplex_state,
             )
-            obj_ptr = sam_outputs["obj_ptr"]
+            obj_ptr = _require_obj_ptr(sam_outputs)
 
             if self.pred_obj_scores and self.use_no_obj_ptr:
                 if self.use_linear_no_obj_ptr:
@@ -1964,10 +1993,12 @@ class VideoTrackingMultiplex(nn.Module):
             )
             sam_outputs = self._use_mask_as_output(
                 backbone_features=interactive_pix_feat,
-                high_res_features=interactive_high_res_features,
+                high_res_features=interactive_high_res_features or [],
                 mask_inputs=mask_inputs,
                 multiplex_state=multiplex_state,
             )
+            if mask_inputs is None:
+                raise ValueError("mask-as-output mode requires mask inputs")
             current_out["conditioning_objects"].update(range(mask_inputs.shape[0]))
         else:
             propagation_out = None
@@ -2072,7 +2103,6 @@ class VideoTrackingMultiplex(nn.Module):
                     "high_res_masks",
                     "ious",
                     "object_score_logits",
-                    "obj_ptr",
                 ):
                     if key in sam_outputs and key in interaction_out:
                         sam_outputs[key] = _replace_rows(
@@ -2080,6 +2110,12 @@ class VideoTrackingMultiplex(nn.Module):
                             objects_to_interact,
                             interaction_out[key],
                         )
+                if "obj_ptr" in sam_outputs and "obj_ptr" in interaction_out:
+                    sam_outputs["obj_ptr"] = _replace_rows(
+                        _require_obj_ptr(sam_outputs),
+                        objects_to_interact,
+                        _require_obj_ptr(interaction_out),
+                    )
 
         low_res_multimasks = sam_outputs["low_res_multimasks"]
         high_res_multimasks = sam_outputs["high_res_multimasks"]
@@ -2087,7 +2123,9 @@ class VideoTrackingMultiplex(nn.Module):
         low_res_masks = sam_outputs["low_res_masks"]
         high_res_masks = sam_outputs["high_res_masks"]
         object_score_logits = sam_outputs["object_score_logits"]
-        obj_ptr = sam_outputs["obj_ptr"] if self.use_obj_ptrs_in_encoder else None
+        obj_ptr = (
+            _require_obj_ptr(sam_outputs) if self.use_obj_ptrs_in_encoder else None
+        )
 
         current_out["multistep_pred_masks"] = low_res_masks
         current_out["multistep_pred_masks_high_res"] = high_res_masks
@@ -2190,7 +2228,7 @@ class VideoTrackingMultiplex(nn.Module):
                     obj_ptr = _replace_rows(
                         obj_ptr,
                         objects_to_interact,
-                        correction_outputs["obj_ptr"],
+                        _require_obj_ptr(correction_outputs),
                     )
 
                 all_pred_masks.append(low_res_masks)
@@ -2288,32 +2326,48 @@ class VideoTrackingMultiplex(nn.Module):
         if self.offload_output_to_cpu_for_eval and not getattr(self, "training", False):
             trimmed_out: StageOutput = {
                 "conditioning_objects": current_out["conditioning_objects"],
-                "pred_masks": current_out["pred_masks"],
-                "pred_masks_high_res": current_out["pred_masks_high_res"],
-                "object_score_logits": current_out["object_score_logits"],
-                "multistep_point_inputs": current_out["multistep_point_inputs"],
+                "pred_masks": _require_stage_value(current_out, "pred_masks"),
+                "pred_masks_high_res": _require_stage_value(
+                    current_out, "pred_masks_high_res"
+                ),
+                "object_score_logits": _require_stage_value(
+                    current_out, "object_score_logits"
+                ),
+                "multistep_point_inputs": _require_stage_value(
+                    current_out, "multistep_point_inputs"
+                ),
             }
             if self.use_obj_ptrs_in_encoder:
-                trimmed_out["obj_ptr"] = current_out["obj_ptr"]
+                trimmed_out["obj_ptr"] = _require_stage_value(current_out, "obj_ptr")
             if memory_encoder_was_used and self.num_maskmem > 0:
-                trimmed_out["maskmem_features"] = current_out["maskmem_features"]
-                trimmed_out["maskmem_pos_enc"] = current_out["maskmem_pos_enc"]
+                trimmed_out["maskmem_features"] = _require_stage_value(
+                    current_out, "maskmem_features"
+                )
+                trimmed_out["maskmem_pos_enc"] = _require_stage_value(
+                    current_out, "maskmem_pos_enc"
+                )
             if self.save_image_features:
-                trimmed_out["image_features"] = current_out["image_features"]
-                trimmed_out["image_pos_enc"] = current_out["image_pos_enc"]
+                trimmed_out["image_features"] = _require_stage_value(
+                    current_out, "image_features"
+                )
+                trimmed_out["image_pos_enc"] = _require_stage_value(
+                    current_out, "image_pos_enc"
+                )
             current_out = trimmed_out
 
-        def _trim_past_out(past_out: StageOutput | None) -> StageOutput | None:
-            if past_out is None:
-                return None
+        def _trim_past_out(past_out: StageOutput) -> StageOutput:
             trimmed_past_out: StageOutput = {
                 "conditioning_objects": past_out["conditioning_objects"],
-                "pred_masks": past_out["pred_masks"],
-                "object_score_logits": past_out["object_score_logits"],
-                "multistep_point_inputs": past_out["multistep_point_inputs"],
+                "pred_masks": _require_stage_value(past_out, "pred_masks"),
+                "object_score_logits": _require_stage_value(
+                    past_out, "object_score_logits"
+                ),
+                "multistep_point_inputs": _require_stage_value(
+                    past_out, "multistep_point_inputs"
+                ),
             }
             if self.use_obj_ptrs_in_encoder:
-                trimmed_past_out["obj_ptr"] = past_out["obj_ptr"]
+                trimmed_past_out["obj_ptr"] = _require_stage_value(past_out, "obj_ptr")
             return trimmed_past_out
 
         if self.trim_past_non_cond_mem_for_eval and not getattr(
@@ -2486,13 +2540,13 @@ class VideoTrackingMultiplex(nn.Module):
 
     def add_new_masks(
         self,
-        *,
         inference_state: dict[str, Any],
         frame_idx: int,
         obj_ids: Any,
         masks: Any,
         add_mask_to_memory: bool = True,
         are_masks_from_pts: bool = False,
+        reconditioning: bool = False,
     ) -> tuple[int, list[int], None, None]:
         """Official-shaped adapter for adding detector masks to packed MLX state."""
         frame_idx = int(frame_idx)
@@ -2530,7 +2584,7 @@ class VideoTrackingMultiplex(nn.Module):
         interactive = backbone_features["interactive"]
         interactive_vision_feats = interactive["vision_feats"]
         interactive_feat_sizes = interactive["feat_sizes"]
-        interactive_high_res_features = None
+        interactive_high_res_features: list[Any] = []
         if len(interactive_vision_feats) > 1:
             interactive_high_res_features = [
                 x.transpose(1, 2, 0).reshape(x.shape[1], x.shape[2], *s)
@@ -2555,7 +2609,12 @@ class VideoTrackingMultiplex(nn.Module):
                 "add_mask_to_memory=True."
             )
 
-        self.add_new_masks_to_existing_state(
+        edit_method = (
+            self.recondition_masks_in_existing_state
+            if reconditioning
+            else self.add_new_masks_to_existing_state
+        )
+        edit_method(
             interactive_pix_feat=interactive_pix_feat,
             interactive_high_res_features=interactive_high_res_features,
             propagation_vision_feats=propagation_vision_feats,
@@ -2617,7 +2676,7 @@ class VideoTrackingMultiplex(nn.Module):
 
         cond_frame_outputs: dict[int, StageOutput] = {}
         non_cond_frame_outputs: dict[int, StageOutput] = {}
-        output_dict = {
+        output_dict: dict[str, Any] = {
             "cond_frame_outputs": cond_frame_outputs,
             "non_cond_frame_outputs": non_cond_frame_outputs,
         }
@@ -2762,13 +2821,17 @@ class VideoTrackingMultiplex(nn.Module):
             ]
             for idx, obj_id in enumerate(object_appearance_order):
                 inverse_object_appearance_order[int(obj_id)] = idx
-            if any(idx is None for idx in inverse_object_appearance_order):
-                raise ValueError("object_appearance_order must be a dense remapping.")
             if len(inverse_object_appearance_order) < num_objects:
                 inverse_object_appearance_order.extend(
                     range(len(inverse_object_appearance_order), num_objects)
                 )
-            row_order = [int(idx) for idx in inverse_object_appearance_order]
+            row_order: list[int] = []
+            for idx in inverse_object_appearance_order:
+                if idx is None:
+                    raise ValueError(
+                        "object_appearance_order must be a dense remapping."
+                    )
+                row_order.append(idx)
 
             last_output = frame_outputs[-1]
             if last_output is None:
@@ -2853,7 +2916,9 @@ class VideoTrackingMultiplex(nn.Module):
 
         existing_pointers = None
         if self.use_obj_ptrs_in_encoder:
-            existing_pointers = multiplex_state.demux(prev_output["obj_ptr"])
+            existing_pointers = multiplex_state.demux(
+                _require_stage_value(prev_output, "obj_ptr")
+            )
 
         new_object_idx = multiplex_state.find_next_batch_of_available_indices(
             num_objects=num_new_objects,
@@ -2945,17 +3010,21 @@ class VideoTrackingMultiplex(nn.Module):
 
         if self.use_obj_ptrs_in_encoder:
             assert existing_pointers is not None
-            new_pointers = mask_output["obj_ptr"].astype(existing_pointers.dtype)
+            new_pointers = _require_obj_ptr(mask_output).astype(existing_pointers.dtype)
             combined_pointers = _concat([existing_pointers, new_pointers], axis=0)
             prev_output["obj_ptr"] = multiplex_state.mux(combined_pointers)
 
         prev_output["conditioning_objects"].update(new_object_idx)
 
         if add_mask_to_memory:
-            if (
-                prev_output["pred_masks_high_res"].shape[0]
-                != multiplex_state.total_valid_entries
-            ):
+            if propagation_vision_feats is None or propagation_feat_sizes is None:
+                raise ValueError(
+                    "Propagation features are required when adding masks to memory."
+                )
+            pred_masks_high_res = _require_stage_value(
+                prev_output, "pred_masks_high_res"
+            )
+            if pred_masks_high_res.shape[0] != multiplex_state.total_valid_entries:
                 raise ValueError(
                     "pred_masks_high_res must have one row per valid multiplex "
                     "entry before memory encoding"
@@ -2964,8 +3033,10 @@ class VideoTrackingMultiplex(nn.Module):
                 image=None,
                 current_vision_feats=propagation_vision_feats,
                 feat_sizes=propagation_feat_sizes,
-                pred_masks_high_res=prev_output["pred_masks_high_res"],
-                object_score_logits=prev_output["object_score_logits"],
+                pred_masks_high_res=pred_masks_high_res,
+                object_score_logits=_require_stage_value(
+                    prev_output, "object_score_logits"
+                ),
                 conditioning_objects=prev_output["conditioning_objects"],
                 is_mask_from_pts=are_masks_from_pts,
                 multiplex_state=multiplex_state,
@@ -3019,7 +3090,9 @@ class VideoTrackingMultiplex(nn.Module):
 
         existing_pointers = None
         if self.use_obj_ptrs_in_encoder:
-            existing_pointers = multiplex_state.demux(prev_output["obj_ptr"])
+            existing_pointers = multiplex_state.demux(
+                _require_stage_value(prev_output, "obj_ptr")
+            )
 
         mask_output = self._use_mask_as_output(
             backbone_features=interactive_pix_feat,
@@ -3029,7 +3102,7 @@ class VideoTrackingMultiplex(nn.Module):
             objects_in_mask=obj_idxs_in_mask,
         )
 
-        h, w = prev_output["pred_masks"].shape[-2:]
+        h, w = _require_stage_value(prev_output, "pred_masks").shape[-2:]
         mask_output["low_res_masks"] = interpolate(
             mask_output["low_res_masks"],
             size=(h, w),
@@ -3077,7 +3150,7 @@ class VideoTrackingMultiplex(nn.Module):
 
         if self.use_obj_ptrs_in_encoder:
             assert existing_pointers is not None
-            new_pointers = mask_output["obj_ptr"].astype(existing_pointers.dtype)
+            new_pointers = _require_obj_ptr(mask_output).astype(existing_pointers.dtype)
             existing_pointers = _replace_rows(
                 existing_pointers,
                 obj_idxs_in_mask,
@@ -3088,10 +3161,14 @@ class VideoTrackingMultiplex(nn.Module):
         prev_output["conditioning_objects"].update(obj_idxs_in_mask)
 
         if add_mask_to_memory:
-            if (
-                prev_output["pred_masks_high_res"].shape[0]
-                != multiplex_state.total_valid_entries
-            ):
+            if propagation_vision_feats is None or propagation_feat_sizes is None:
+                raise ValueError(
+                    "Propagation features are required when reconditioning memory."
+                )
+            pred_masks_high_res = _require_stage_value(
+                prev_output, "pred_masks_high_res"
+            )
+            if pred_masks_high_res.shape[0] != multiplex_state.total_valid_entries:
                 raise ValueError(
                     "pred_masks_high_res must have one row per valid multiplex "
                     "entry before memory encoding"
@@ -3100,8 +3177,10 @@ class VideoTrackingMultiplex(nn.Module):
                 image=None,
                 current_vision_feats=propagation_vision_feats,
                 feat_sizes=propagation_feat_sizes,
-                pred_masks_high_res=prev_output["pred_masks_high_res"],
-                object_score_logits=prev_output["object_score_logits"],
+                pred_masks_high_res=pred_masks_high_res,
+                object_score_logits=_require_stage_value(
+                    prev_output, "object_score_logits"
+                ),
                 conditioning_objects=prev_output["conditioning_objects"],
                 is_mask_from_pts=are_masks_from_pts,
                 multiplex_state=multiplex_state,

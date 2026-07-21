@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from sam3_mlx.model.sam3_base_predictor import Sam3BasePredictor
 
 
@@ -20,6 +22,12 @@ class Sam3MultiplexVideoPredictor(Sam3BasePredictor):
         warm_up=False,
     ):
         super().__init__()
+        if isinstance(session_expiration_sec, bool) or not isinstance(
+            session_expiration_sec, (int, float)
+        ):
+            raise TypeError("session_expiration_sec must be a number of seconds.")
+        if not math.isfinite(session_expiration_sec) or session_expiration_sec < 0:
+            raise ValueError("session_expiration_sec must be non-negative and finite.")
         self.model = model
         self.session_expiration_sec = session_expiration_sec
         self.default_output_prob_thresh = default_output_prob_thresh
@@ -36,8 +44,3 @@ class Sam3MultiplexVideoPredictor(Sam3BasePredictor):
         if warm_up_compilation is not None:
             warm_up_compilation()
         self.model._warm_up_complete = True
-
-    def _extend_expiration_time(self, session):
-        super()._extend_expiration_time(session)
-        if self.session_expiration_sec:
-            session["expiration_sec"] = self.session_expiration_sec

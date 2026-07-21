@@ -145,17 +145,18 @@ class MultiplexState:
         assert (object_ids is None) == (self.object_ids is None), (
             "object_ids must either be always given or always omitted"
         )
+        pending_object_ids: list[int] | None = None
         if object_ids is not None:
             assert len(object_ids) == len(object_indices), (
                 "object_ids must have the same length as object_indices"
             )
-            object_ids = object_ids.copy()
+            pending_object_ids = object_ids.copy()
 
         num_new_objects = len(object_indices)
         assert object_indices == sorted(object_indices), "object_indices must be sorted"
         object_indices.reverse()
-        if object_ids is not None:
-            object_ids.reverse()
+        if pending_object_ids is not None:
+            pending_object_ids.reverse()
 
         if prefer_new_buckets:
             assert allow_new_buckets, "prefer_new_buckets requires allow_new_buckets"
@@ -165,8 +166,9 @@ class MultiplexState:
 
         def _pop_next() -> int:
             idx = object_indices.pop()
-            if object_ids is not None and self.object_ids is not None:
-                self.object_ids.append(object_ids.pop())
+            if pending_object_ids is not None:
+                assert self.object_ids is not None
+                self.object_ids.append(pending_object_ids.pop())
             return idx
 
         if not prefer_new_buckets:
@@ -239,9 +241,13 @@ class MultiplexState:
             del self.assignments[bucket_idx]
 
         if len(buckets_to_keep) == 0:
-            self.assignments = None
+            self.assignments = []
+            self.num_buckets = 0
+            self.total_valid_entries = 0
+            self.total_non_padding_entries = 0
             if self.object_ids is not None:
                 self.object_ids = []
+            self._precompute_transition_matrices(self.device, self.dtype)
             return buckets_to_keep
 
         all_positive_ids = {
@@ -256,11 +262,7 @@ class MultiplexState:
                     bucket[slot_idx] = id_mapping[obj_id]
 
         if self.object_ids is not None:
-            new_object_ids = [None] * len(sorted_ids)
-            for old_idx, new_idx in id_mapping.items():
-                new_object_ids[new_idx] = self.object_ids[old_idx]
-            assert not any(obj_id is None for obj_id in new_object_ids)
-            self.object_ids = new_object_ids
+            self.object_ids = [self.object_ids[old_idx] for old_idx in sorted_ids]
 
         self._initialize_assignments(self.assignments, object_ids=self.object_ids)
         return buckets_to_keep

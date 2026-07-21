@@ -86,20 +86,9 @@ def _restore_image(pil_image: PILImage.Image, like, chw: bool | None = None):
 
 def _crop_image(image, top: int, left: int, height: int, width: int):
     if isinstance(image, PILImage.Image):
-        return ImageOps.crop(
-            image,
-            border=(left, top, image.width - left - width, image.height - top - height),
-        )
+        return image.crop((left, top, left + width, top + height))
     pil_image, chw = _pil_from_array_image(image)
-    cropped = ImageOps.crop(
-        pil_image,
-        border=(
-            left,
-            top,
-            pil_image.width - left - width,
-            pil_image.height - top - height,
-        ),
-    )
+    cropped = pil_image.crop((left, top, left + width, top + height))
     return _restore_image(cropped, image, chw)
 
 

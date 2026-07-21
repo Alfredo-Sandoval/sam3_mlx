@@ -51,11 +51,11 @@ def _image_hw(image) -> tuple[int, int]:
         width, height = data.size
         return height, width
     if isinstance(data, mx.array):
-        return data.shape[-2:]
+        return data.shape[-2], data.shape[-1]
     if isinstance(data, np.ndarray):
         if data.ndim == 3 and data.shape[0] in (1, 3, 4):
             return data.shape[-2:]
-        return data.shape[:2]
+        return data.shape[0], data.shape[1]
     raise RuntimeError(f"Unexpected image type {type(data)!r}")
 
 
@@ -78,8 +78,17 @@ class InstanceToSemantic:
                 ]
                 if len(all_segs) > 0:
                     merged = np.zeros((height, width), dtype=np.uint8)
+                    first_seg = all_segs[0]
+                    if not isinstance(first_seg, dict):
+                        raise TypeError(
+                            "RLE semantic conversion requires RLE dictionaries."
+                        )
                     for seg in all_segs:
-                        if seg["size"] != all_segs[0]["size"]:
+                        if not isinstance(seg, dict):
+                            raise TypeError(
+                                "RLE semantic conversion requires RLE dictionaries."
+                            )
+                        if seg["size"] != first_seg["size"]:
                             raise AssertionError(
                                 "Instance segments have inconsistent RLE sizes."
                             )
@@ -115,6 +124,10 @@ class RecomputeBoxesFromMasks:
             for obj in image.objects:
                 if obj.segment is None:
                     raise ValueError("RecomputeBoxesFromMasks requires obj.segment.")
+                if isinstance(obj.segment, dict):
+                    raise TypeError(
+                        "RecomputeBoxesFromMasks requires decoded masks; call DecodeRle first."
+                    )
                 mask = mx.array(obj.segment, dtype=mx.bool_)
                 if mask.ndim == 2:
                     mask = mask[None, :, :]

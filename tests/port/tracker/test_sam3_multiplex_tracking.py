@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TypedDict
 
 import mlx.core as mx
 import numpy as np
@@ -302,6 +303,8 @@ class _PointPromptTracker(_LowResDummyTracker):
         self.remove_calls = []
         self.mask_calls = []
         self.clear_calls = []
+        self.per_obj_inference = False
+        self.use_obj_ptrs_in_encoder = False
 
     def init_state(self, **kwargs):
         self.init_calls.append(kwargs)
@@ -475,6 +478,8 @@ class _ImageOnlyDetector:
         self.logits = mx.array(logits, dtype=mx.float32)
         self.masks = mx.array(masks, dtype=mx.float32)
         self.calls = []
+        self.rank = 0
+        self.world_size = 1
 
     def forward_video_grounding(
         self,
@@ -740,9 +745,14 @@ def _forward_datapoint(*, raw_images=None, prompts=None, category_ids=None):
 
 @dataclass
 class RecursivePayload:
-    tensor: object
-    nested: object
+    tensor: mx.array
+    nested: "RecursiveNested"
     label: str
+
+
+class RecursiveNested(TypedDict):
+    list: list[mx.array | np.ndarray]
+    tuple: tuple[mx.array, str]
 
 
 def test_recursive_to_casts_mlx_arrays_inside_dataclasses_and_nested_containers():
@@ -894,6 +904,9 @@ def test_multiplex_tracking_get_visual_prompt_builds_box_prompt():
         np.array([[0.5, 0.5, 0.25, 0.25]], dtype=np.float32),
     )
     np.testing.assert_array_equal(_to_numpy(labels), np.array([1]))
+    assert prompt.box_embeddings is not None
+    assert prompt.box_mask is not None
+    assert prompt.box_labels is not None
     assert prompt.box_embeddings.shape == (1, 1, 4)
     assert prompt.box_mask.shape == (1, 1)
     assert prompt.box_labels.shape == (1, 1)
@@ -2094,6 +2107,7 @@ def test_multiplex_tracking_remove_object_updates_public_local_sam2_states():
         11: [9, 10],
     }
     assert sorted(state["cached_frame_outputs"][0]) == [7, 11]
+    assert isinstance(output, dict)
     np.testing.assert_array_equal(output["out_obj_ids"], np.array([7]))
     np.testing.assert_allclose(output["out_probs"], np.array([0.7]))
 
@@ -2135,6 +2149,7 @@ def test_multiplex_tracking_remove_object_updates_public_packed_sam2_state():
     frame_idx, output = tracking.remove_object(state, obj_id=9, frame_idx=0)
 
     assert frame_idx == 0
+    assert isinstance(output, dict)
     np.testing.assert_array_equal(output["out_obj_ids"], np.zeros(0, dtype=np.int64))
     assert state["sam2_inference_states"] == [
         {
@@ -2318,7 +2333,7 @@ def test_multiplex_tracking_interactivity_helper_primitives_match_official_state
     )
     assert tracking._get_mask_input(state, frame_idx=1, obj_id=7) is None
 
-    converted = tracking._convert_low_res_mask_to_video_res(
+    converted = tracking._convert_low_res_mask_to_video_res_from_state(
         mx.ones((1, 1), dtype=mx.float32),
         state,
     )
@@ -2328,9 +2343,9 @@ def test_multiplex_tracking_interactivity_helper_primitives_match_official_state
         _to_numpy(converted),
         np.ones((1, 3, 4), dtype=bool),
     )
-    assert tracking._convert_low_res_mask_to_video_res(None, state) is None
+    assert tracking._convert_low_res_mask_to_video_res_from_state(None, state) is None
     with pytest.raises(ValueError, match="low_res_mask must have shape"):
-        tracking._convert_low_res_mask_to_video_res(
+        tracking._convert_low_res_mask_to_video_res_from_state(
             mx.ones((1, 1, 1), dtype=mx.float32),
             state,
         )

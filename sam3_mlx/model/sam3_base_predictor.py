@@ -13,7 +13,9 @@ class Sam3BasePredictor:
     """Torch-free request dispatcher matching the official SAM3 video API."""
 
     def __init__(self) -> None:
-        self.model = None
+        self.model: Any = None
+        self.async_loading_frames: bool | None = None
+        self.video_loader_type: str | None = None
         self._all_inference_states: dict[str, dict[str, Any]] = {}
 
     def handle_request(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -93,20 +95,25 @@ class Sam3BasePredictor:
             "offload_video_to_cpu": offload_video_to_cpu,
             "offload_state_to_cpu": offload_state_to_cpu,
         }
-        if hasattr(self, "async_loading_frames"):
+        if self.async_loading_frames is not None:
             init_kwargs["async_loading_frames"] = self.async_loading_frames
-        if hasattr(self, "video_loader_type"):
+        if self.video_loader_type is not None:
             init_kwargs["video_loader_type"] = self.video_loader_type
         inference_state = self.model.init_state(**init_kwargs)
 
         if session_id is None:
             session_id = str(uuid.uuid4())
-        self._all_inference_states[session_id] = {
+        now = time.monotonic()
+        session = {
             "state": inference_state,
             "session_id": session_id,
-            "start_time": time.time(),
-            "last_use_time": time.time(),
+            "start_time": now,
+            "last_use_time": now,
         }
+        expiration_sec = getattr(self, "session_expiration_sec", 0)
+        if expiration_sec:
+            session["expiration_sec"] = expiration_sec
+        self._all_inference_states[session_id] = session
         return {"session_id": session_id}
 
     def add_prompt(
@@ -261,10 +268,17 @@ class Sam3BasePredictor:
             raise RuntimeError(
                 f"Cannot find session {session_id}; it might have expired"
             )
+        expiration_sec = session.get("expiration_sec")
+        if (
+            expiration_sec is not None
+            and time.monotonic() - session["last_use_time"] > expiration_sec
+        ):
+            self.close_session(session_id, run_gc_collect=False)
+            raise RuntimeError(f"session {session_id} expired")
         return session
 
     def _extend_expiration_time(self, session: dict[str, Any]) -> None:
-        session["last_use_time"] = time.time()
+        session["last_use_time"] = time.monotonic()
 
     def shutdown(self) -> None:
         self._all_inference_states.clear()

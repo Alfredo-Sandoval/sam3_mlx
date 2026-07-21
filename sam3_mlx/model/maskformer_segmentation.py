@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 import math
 import mlx.core as mx
@@ -9,13 +9,19 @@ from sam3_mlx.model.data_misc import NestedTensor
 from sam3_mlx.model.model_misc import MLP
 
 
-class LinearPresenceHead(nn.Sequential):
+class LinearPresenceHead(nn.Module):
     def __init__(self, d_model):
+        super().__init__()
         # a hack to make `LinearPresenceHead` compatible with old checkpoints
-        super().__init__(nn.Identity(), nn.Identity(), nn.Linear(d_model, 1))
+        setattr(self, "0", nn.Identity())
+        setattr(self, "1", nn.Identity())
+        setattr(self, "2", nn.Linear(d_model, 1))
 
     def forward(self, hs, prompt, prompt_mask):
-        return super().__call__(hs)
+        del prompt, prompt_mask
+        for index in range(3):
+            hs = getattr(self, str(index))(hs)
+        return hs
 
     def __call__(self, hs, prompt, prompt_mask):
         return self.forward(hs, prompt, prompt_mask)
@@ -148,7 +154,7 @@ class SegmentationHead(nn.Module):
         image_ids,
         encoder_hidden_states: Optional[mx.array] = None,
         **kwargs,
-    ) -> Dict[str, mx.array]:
+    ) -> Dict[str, mx.array | None]:
         if self.use_encoder_inputs:
             assert encoder_hidden_states is not None
 
@@ -158,7 +164,7 @@ class SegmentationHead(nn.Module):
             encoder_hidden_states=encoder_hidden_states,
         )
 
-        if self.no_dec:
+        if isinstance(self.mask_predictor, nn.Conv2d):
             mask_pred = self.mask_predictor(
                 pixel_embed.transpose(0, 2, 3, 1)
             ).transpose(0, 3, 1, 2)
@@ -176,7 +182,7 @@ class SegmentationHead(nn.Module):
         image_ids,
         encoder_hidden_states: Optional[mx.array] = None,
         **kwargs,
-    ) -> Dict[str, mx.array]:
+    ) -> Dict[str, mx.array | None]:
         return self.forward(
             backbone_feats=backbone_feats,
             obj_queries=obj_queries,
@@ -191,7 +197,7 @@ class PixelDecoder(nn.Module):
         self,
         hidden_dim,
         num_upsampling_stages,
-        interpolation_mode="nearest",
+        interpolation_mode: Literal["nearest", "linear", "cubic"] = "nearest",
         shared_conv=False,
         compile_mode=None,
     ):
@@ -204,7 +210,9 @@ class PixelDecoder(nn.Module):
             )
         self.hidden_dim = hidden_dim
         self.num_upsampling_stages = num_upsampling_stages
-        self.interpolation_mode = interpolation_mode
+        self.interpolation_mode: Literal["nearest", "linear", "cubic"] = (
+            interpolation_mode
+        )
         conv_layers = []
         norms = []
         num_convs = 1 if shared_conv else num_upsampling_stages
@@ -310,10 +318,12 @@ class UniversalSegmentationHead(SegmentationHead):
         **kwargs,
     ) -> Dict[str, Optional[mx.array]]:
         assert encoder_hidden_states is not None
-        bs = encoder_hidden_states.shape[1]
+        encoded = encoder_hidden_states
+        bs = encoded.shape[1]
 
         if self.cross_attend_prompt is not None:
-            t_encoder_hidden_states = encoder_hidden_states.transpose(1, 0, 2)
+            assert prompt is not None
+            t_encoder_hidden_states = encoded.transpose(1, 0, 2)
             t_prompt = prompt.transpose(1, 0, 2)
 
             tgt2 = self.cross_attn_norm(t_encoder_hidden_states)
@@ -323,11 +333,11 @@ class UniversalSegmentationHead(SegmentationHead):
                 values=t_prompt,
                 key_padding_mask=prompt_mask,
             ).transpose(1, 0, 2)
-            encoder_hidden_states = tgt2 + encoder_hidden_states
+            encoded = tgt2 + encoded
 
         presence_logit = None
         if self.presence_head is not None:
-            pooled_enc = encoder_hidden_states.mean(0)
+            pooled_enc = encoded.mean(0)
             presence_logit = (
                 self.presence_head(
                     pooled_enc.reshape(1, bs, 1, self.d_model),
@@ -341,14 +351,14 @@ class UniversalSegmentationHead(SegmentationHead):
         pixel_embed = self._embed_pixels(
             backbone_feats=backbone_feats,
             image_ids=image_ids,
-            encoder_hidden_states=encoder_hidden_states,
+            encoder_hidden_states=encoded,
         )
 
         instance_embeds = self.instance_seg_head(
             pixel_embed.transpose(0, 2, 3, 1)
         ).transpose(0, 3, 1, 2)
 
-        if self.no_dec:
+        if isinstance(self.mask_predictor, nn.Conv2d):
             mask_pred = self.mask_predictor(instance_embeds)
         elif self.aux_masks:
             mask_pred = self.mask_predictor(obj_queries, instance_embeds)

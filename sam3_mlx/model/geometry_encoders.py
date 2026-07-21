@@ -1,4 +1,5 @@
-from typing import Tuple
+from collections.abc import Callable
+from typing import Literal, Tuple, cast, overload
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -24,7 +25,33 @@ def is_right_padded(mask):
     return mx.all(mask_int == sorted_mask)
 
 
-def concat_padded_sequences(seq1, mask1, seq2, mask2, return_index: bool = False):
+@overload
+def concat_padded_sequences(
+    seq1: mx.array,
+    mask1: mx.array,
+    seq2: mx.array,
+    mask2: mx.array,
+    return_index: Literal[False] = False,
+) -> tuple[mx.array, mx.array]: ...
+
+
+@overload
+def concat_padded_sequences(
+    seq1: mx.array,
+    mask1: mx.array,
+    seq2: mx.array,
+    mask2: mx.array,
+    return_index: Literal[True],
+) -> tuple[mx.array, mx.array, mx.array]: ...
+
+
+def concat_padded_sequences(
+    seq1: mx.array,
+    mask1: mx.array,
+    seq2: mx.array,
+    mask2: mx.array,
+    return_index: bool = False,
+):
     """
     Concatenates two right-padded sequences, such that the resulting sequence
     is contiguous and also right-padded.
@@ -155,37 +182,43 @@ class Prompt:
         )
 
         # Dimension checks
-        assert box_embeddings is not None and list(box_embeddings.shape[:2]) == [
+        assert box_embeddings is not None
+        assert list(box_embeddings.shape[:2]) == [
             box_seq_len,
             bs,
         ], (
             f"Wrong dimension for box embeddings. Expected [{box_seq_len}, {bs}, *] got {box_embeddings.shape}"
         )
-        assert box_mask is not None and list(box_mask.shape) == [
+        assert box_mask is not None
+        assert list(box_mask.shape) == [
             bs,
             box_seq_len,
         ], (
             f"Wrong dimension for box mask. Expected [{bs}, {box_seq_len}] got {box_mask.shape}"
         )
-        assert point_embeddings is not None and list(point_embeddings.shape[:2]) == [
+        assert point_embeddings is not None
+        assert list(point_embeddings.shape[:2]) == [
             point_seq_len,
             bs,
         ], (
             f"Wrong dimension for point embeddings. Expected [{point_seq_len}, {bs}, *] got {point_embeddings.shape}"
         )
-        assert point_mask is not None and list(point_mask.shape) == [
+        assert point_mask is not None
+        assert list(point_mask.shape) == [
             bs,
             point_seq_len,
         ], (
             f"Wrong dimension for point mask. Expected [{bs}, {point_seq_len}] got {point_mask.shape}"
         )
-        assert box_labels is not None and list(box_labels.shape) == [
+        assert box_labels is not None
+        assert list(box_labels.shape) == [
             box_seq_len,
             bs,
         ], (
             f"Wrong dimension for box labels. Expected [{box_seq_len}, {bs}] got {box_labels.shape}"
         )
-        assert point_labels is not None and list(point_labels.shape) == [
+        assert point_labels is not None
+        assert list(point_labels.shape) == [
             point_seq_len,
             bs,
         ], (
@@ -320,6 +353,7 @@ class Prompt:
         assert list(boxes.shape[:2]) == list(labels.shape[:2])
         if mask is None:
             mask = mx.zeros((bs, boxes.shape[0]), dtype=mx.bool_)
+        assert self.box_labels is not None and self.box_mask is not None
 
         self.box_labels, _ = concat_padded_sequences(
             self.box_labels[..., None], self.box_mask, labels[..., None], mask
@@ -341,6 +375,7 @@ class Prompt:
         assert list(points.shape[:2]) == list(labels.shape[:2])
         if mask is None:
             mask = mx.zeros((bs, points.shape[0]), dtype=mx.bool_)
+        assert self.point_labels is not None and self.point_mask is not None
 
         self.point_labels, _ = concat_padded_sequences(
             self.point_labels[..., None], self.point_mask, labels[..., None], mask
@@ -480,11 +515,11 @@ class SequenceGeometryEncoder(nn.Module):
         d_model: int,
         pos_enc,
         num_layers: int,
-        layer: nn.Module,
+        layer: nn.Module | Callable[[], nn.Module] | None,
         roi_size: int = 7,  # for boxes pool
         add_cls: bool = True,
         add_post_encode_proj: bool = True,
-        mask_encoder: MaskEncoder = None,
+        mask_encoder: MaskEncoder | None = None,
         add_mask_label: bool = False,
         use_act_ckpt: bool = False,
     ):
@@ -551,6 +586,10 @@ class SequenceGeometryEncoder(nn.Module):
             assert add_cls, (
                 "It's currently highly recommended to add a CLS when using a transformer"
             )
+            if layer is None:
+                raise ValueError(
+                    "layer is required when num_layers is greater than zero."
+                )
             self.encode = get_clones(layer, num_layers)
             self.encode_norm = nn.LayerNorm(self.d_model)
 
@@ -580,7 +619,7 @@ class SequenceGeometryEncoder(nn.Module):
             grid = points.transpose(1, 0, 2)[:, :, None]
             grid = (grid * 2) - 1
             img_feats_nhwc = img_feats.transpose(0, 2, 3, 1)
-            sampled_nhwc = grid_sample(img_feats_nhwc, grid)
+            sampled_nhwc = cast(mx.array, grid_sample(img_feats_nhwc, grid))
             sampled = sampled_nhwc.transpose(0, 3, 1, 2)
             assert list(sampled.shape) == [bs, self.d_model, n_points, 1]
             sampled = sampled.squeeze(-1).transpose(2, 0, 1)
@@ -604,6 +643,7 @@ class SequenceGeometryEncoder(nn.Module):
                 points_embed = points_embed + proj
 
         type_embed = self.label_embed(points_labels.astype(mx.int64))
+        assert points_embed is not None
         return type_embed + points_embed, points_mask
 
     def _encode_boxes(self, boxes, boxes_mask, boxes_labels, img_feats):
@@ -663,6 +703,7 @@ class SequenceGeometryEncoder(nn.Module):
                 boxes_embed = boxes_embed + proj
 
         type_embed = self.label_embed(boxes_labels.astype(mx.int64))
+        assert boxes_embed is not None
         return type_embed + boxes_embed, boxes_mask
 
     def _encode_masks(
@@ -670,7 +711,7 @@ class SequenceGeometryEncoder(nn.Module):
         masks: mx.array,
         attn_mask: mx.array,
         mask_labels: mx.array,
-        img_feats: mx.array = None,
+        img_feats: mx.array | None = None,
     ):
         n_masks, bs = masks.shape[:2]
         assert n_masks == 1, (
@@ -682,6 +723,8 @@ class SequenceGeometryEncoder(nn.Module):
         ], (
             f"Expected attn_mask to be of shape {bs}x{n_masks}. Got {list(attn_mask.shape)}."
         )
+        if self.mask_encoder is None or img_feats is None:
+            raise ValueError("Mask encoding requires mask_encoder and image features.")
         masks, pos = self.mask_encoder(
             masks=masks.reshape(-1, *masks.shape[2:]).astype(mx.float32),
             pix_feat=img_feats,
@@ -711,6 +754,10 @@ class SequenceGeometryEncoder(nn.Module):
         masks = geo_prompt.mask_embeddings
         masks_mask = geo_prompt.mask_mask
         masks_labels = geo_prompt.mask_labels
+        if points is None or points_mask is None or points_labels is None:
+            raise ValueError("Point prompt tensors must be initialized.")
+        if boxes is None or boxes_mask is None or boxes_labels is None:
+            raise ValueError("Box prompt tensors must be initialized.")
         seq_first_img_feats = img_feats[-1]  # [H*W, B, C]
         seq_first_img_pos_embeds = (
             img_pos_embeds[-1]
@@ -731,16 +778,13 @@ class SequenceGeometryEncoder(nn.Module):
             img_feats = cur_img_feat
 
         if self.encode_boxes_as_points:
-            assert boxes is not None
-            assert geo_prompt.box_mask is not None
-            assert geo_prompt.box_labels is not None
             assert boxes.shape[-1] == 4
 
             boxes_xyxy = box_cxcywh_to_xyxy(boxes)
             top_left, bottom_right = mx.split(boxes_xyxy, 2, axis=-1)
 
-            labels_tl = geo_prompt.box_labels + 2
-            labels_br = geo_prompt.box_labels + 4
+            labels_tl = boxes_labels + 2
+            labels_br = boxes_labels + 4
 
             # Append to the existing points
             points, _ = concat_padded_sequences(
@@ -784,13 +828,18 @@ class SequenceGeometryEncoder(nn.Module):
                 final_embeds, final_mask, boxes_embeds, boxes_mask
             )
 
+        masks_embed: mx.array | None = None
+        encoded_masks_mask: mx.array | None = None
         if masks is not None and self.mask_encoder is not None:
+            if masks_mask is None or masks_labels is None:
+                raise ValueError("Mask prompt metadata must be initialized.")
             masks_embed, masks_mask = self._encode_masks(
                 masks=masks,
                 attn_mask=masks_mask,
                 mask_labels=masks_labels,
                 img_feats=img_feats,
             )
+            encoded_masks_mask = masks_mask
             if points.shape[0] == boxes.shape[0] == 0:
                 return masks_embed, masks_mask
         bs = final_embeds.shape[1]
@@ -815,9 +864,9 @@ class SequenceGeometryEncoder(nn.Module):
                 ).transpose(1, 0, 2)
             final_embeds = self.encode_norm(final_embeds)
         # Finally, concat mask embeddings if any
-        if masks is not None:
+        if masks_embed is not None and encoded_masks_mask is not None:
             final_embeds, final_mask = concat_padded_sequences(
-                final_embeds, final_mask, masks_embed, masks_mask
+                final_embeds, final_mask, masks_embed, encoded_masks_mask
             )
         return final_embeds, final_mask
 

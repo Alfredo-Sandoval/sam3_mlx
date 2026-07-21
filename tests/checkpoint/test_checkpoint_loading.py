@@ -1,17 +1,17 @@
-import numpy as np
-import pytest
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
+import pytest
 from mlx.utils import tree_flatten
 
 from sam3_mlx._unsupported import Sam3MlxUnsupportedError
 from sam3_mlx.model_builder import (
-    build_tracker,
     _audit_sam3_image_checkpoint_load,
     _load_checkpoint,
     _load_multiplex_checkpoint,
     _load_multiplex_tracker_checkpoint,
     _load_tracker_checkpoint,
+    build_tracker,
 )
 
 
@@ -21,6 +21,15 @@ class _TinyCheckpointModel(nn.Module):
         self.inst_interactive_predictor = None
         self.head = nn.Linear(3, 2)
         self.scale = mx.ones((1,))
+
+
+class _TinyRuntimeCacheModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.inst_interactive_predictor = None
+        self.weight = mx.zeros((1,))
+        self.freqs_cis = mx.zeros((2, 2))
+        self.attn_mask = mx.triu(mx.full((2, 2), -float("inf")), k=1)
 
 
 class _WeightLeaf(nn.Module):
@@ -97,8 +106,15 @@ class _TinyMultiplexTrackerCheckpointModel(nn.Module):
         self.output_valid_embed = mx.zeros((2, 2))
 
 
-def _flat_parameters(model):
-    return tree_flatten(model.parameters(), destination={})
+def _flat_parameters(model: nn.Module) -> dict[str, mx.array]:
+    flattened = tree_flatten(model.parameters(), destination={})
+    items = flattened.items() if isinstance(flattened, dict) else flattened
+    result: dict[str, mx.array] = {}
+    for key, value in items:
+        if not isinstance(key, str) or not isinstance(value, mx.array):
+            raise TypeError("Flattened MLX parameters must be named MLX arrays.")
+        result[key] = value
+    return result
 
 
 def test_checkpoint_audit_reports_loaded_missing_extra_and_shape_mismatch():
@@ -121,9 +137,10 @@ def test_checkpoint_audit_reports_loaded_missing_extra_and_shape_mismatch():
     assert mismatch.checkpoint_shape == (3,)
 
 
-def test_load_checkpoint_returns_report_for_partial_compatible_checkpoint(tmp_path):
+def test_load_checkpoint_rejects_partial_checkpoint_without_mutating_model(tmp_path):
     model = _TinyCheckpointModel()
     checkpoint_path = tmp_path / "partial.safetensors"
+    original_weight = np.asarray(_flat_parameters(model)["head.weight"]).copy()
     replacement = mx.arange(6).reshape(2, 3).astype(mx.float32)
     mx.save_safetensors(
         str(checkpoint_path),
@@ -133,15 +150,55 @@ def test_load_checkpoint_returns_report_for_partial_compatible_checkpoint(tmp_pa
         },
     )
 
+    with pytest.raises(ValueError, match="did not cover required model weights"):
+        _load_checkpoint(model, checkpoint_path)
+
+    np.testing.assert_array_equal(
+        np.asarray(_flat_parameters(model)["head.weight"]),
+        original_weight,
+    )
+
+
+def test_load_checkpoint_accepts_complete_checkpoint_with_extra_metadata(tmp_path):
+    model = _TinyCheckpointModel()
+    checkpoint_path = tmp_path / "complete.safetensors"
+    replacement = mx.arange(6).reshape(2, 3).astype(mx.float32)
+    mx.save_safetensors(
+        str(checkpoint_path),
+        {
+            "head.weight": replacement,
+            "head.bias": mx.array([4.0, 5.0], dtype=mx.float32),
+            "scale": mx.array([6.0], dtype=mx.float32),
+            "extra.weight": mx.ones((1,)),
+        },
+    )
+
     report = _load_checkpoint(model, checkpoint_path)
 
-    assert report.loaded == ("head.weight",)
-    assert report.missing == ("head.bias", "scale")
+    assert report.loaded == ("head.bias", "head.weight", "scale")
+    assert report.missing == ()
     assert report.extra == ("extra.weight",)
-    assert report.shape_mismatched == ()
     np.testing.assert_array_equal(
         np.asarray(_flat_parameters(model)["head.weight"]),
         np.asarray(replacement),
+    )
+
+
+def test_load_checkpoint_allows_deterministic_runtime_cache_to_be_missing(tmp_path):
+    model = _TinyRuntimeCacheModel()
+    checkpoint_path = tmp_path / "runtime-cache.safetensors"
+    mx.save_safetensors(
+        str(checkpoint_path),
+        {"weight": mx.array([9.0], dtype=mx.float32)},
+    )
+
+    report = _load_checkpoint(model, checkpoint_path)
+
+    assert report.loaded == ("weight",)
+    assert report.missing == ("attn_mask", "freqs_cis")
+    np.testing.assert_array_equal(
+        np.asarray(_flat_parameters(model)["weight"]),
+        np.array([9.0], dtype=np.float32),
     )
 
 
@@ -170,13 +227,20 @@ def test_load_checkpoint_rejects_shape_mismatch_without_partial_load(tmp_path):
 def test_load_checkpoint_normalizes_known_conv_layout_before_audit(tmp_path):
     model = _TinyConvLayoutModel()
     checkpoint_path = tmp_path / "conv-layout.safetensors"
+    companion_key = "backbone.vision_backbone.sam2_convs.0.dconv_2x2.weight"
     key = "backbone.vision_backbone.sam2_convs.1.dconv_2x2.weight"
     torch_layout = mx.arange(4 * 3 * 2 * 2).reshape(4, 3, 2, 2).astype(mx.float32)
-    mx.save_safetensors(str(checkpoint_path), {key: torch_layout})
+    mx.save_safetensors(
+        str(checkpoint_path),
+        {
+            companion_key: mx.ones((1, 1, 1, 1)),
+            key: torch_layout,
+        },
+    )
 
     report = _load_checkpoint(model, checkpoint_path)
 
-    assert report.loaded == (key,)
+    assert report.loaded == (companion_key, key)
     assert report.shape_mismatched == ()
     np.testing.assert_array_equal(
         np.asarray(_flat_parameters(model)[key]),
@@ -406,6 +470,22 @@ def test_load_multiplex_checkpoint_requires_text_resizer_weights(tmp_path):
     )
 
     with pytest.raises(ValueError, match="required VE text resizer weights"):
+        _load_multiplex_checkpoint(model, checkpoint_path)
+
+
+def test_load_multiplex_checkpoint_rejects_other_missing_model_weights(tmp_path):
+    model = _TinyMultiplexCheckpointModel()
+    checkpoint_path = tmp_path / "multiplex-partial.safetensors"
+    mx.save_safetensors(
+        str(checkpoint_path),
+        {
+            "detector_model.text_projection.weight": mx.ones((2, 1), dtype=mx.float32),
+            "detector_model.text_projection.bias": mx.ones((2,), dtype=mx.float32),
+            "tracker_model.output_valid_embed": mx.ones((2, 2), dtype=mx.float32),
+        },
+    )
+
+    with pytest.raises(ValueError, match="did not cover required model weights"):
         _load_multiplex_checkpoint(model, checkpoint_path)
 
 

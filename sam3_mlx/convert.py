@@ -1,15 +1,22 @@
+from __future__ import annotations
+
 import argparse
 import json
 from collections.abc import Mapping
+from importlib import import_module
 from pathlib import Path
-from typing import Dict, Union, Optional
 
 import mlx.core as mx
 from huggingface_hub import snapshot_download
 
-
 MLX_COMMUNITY_REPO = "mlx-community/sam3-image"
+MLX_COMMUNITY_REVISION = "b72a14d8127e17e6f2a3d2e075bbbf4307ba146e"
 PYTORCH_REPO = "facebook/sam3"
+PYTORCH_REVISION = "3c879f39826c281e95690f02c7821c4de09afae7"
+SAM31_REPO = "facebook/sam3.1"
+SAM31_REVISION = "daa63191845a41281374e725f4c9e51c7a824460"
+CONVERSION_METADATA_NAME = "conversion.json"
+CONVERSION_FORMAT_VERSION = 1
 
 SAM3_IMAGE_CONV_TRANSPOSE2D_WEIGHTS = frozenset(
     {
@@ -75,7 +82,8 @@ def normalize_sam3_image_weight_layout(key: str, value):
 
 def load_from_hub(
     hf_repo: str = MLX_COMMUNITY_REPO,
-    local_dir: Optional[str] = None,
+    local_dir: str | None = None,
+    revision: str | None = None,
 ) -> Path:
     download_kwargs = {
         "repo_id": hf_repo,
@@ -84,6 +92,10 @@ def load_from_hub(
 
     if local_dir:
         download_kwargs["local_dir"] = local_dir
+    if revision is None and hf_repo == MLX_COMMUNITY_REPO:
+        revision = MLX_COMMUNITY_REVISION
+    if revision is not None:
+        download_kwargs["revision"] = revision
 
     model_path = Path(snapshot_download(**download_kwargs))
     weights_file = model_path / "model.safetensors"
@@ -94,7 +106,7 @@ def load_from_hub(
     return weights_file
 
 
-def save_weights(save_path: Union[str, Path], weights: Dict[str, mx.array]) -> None:
+def save_weights(save_path: str | Path, weights: dict[str, mx.array]) -> None:
     if isinstance(save_path, str):
         save_path = Path(save_path)
     save_path.mkdir(parents=True, exist_ok=True)
@@ -116,13 +128,16 @@ def save_weights(save_path: Union[str, Path], weights: Dict[str, mx.array]) -> N
         json.dump(index_data, f, indent=4)
 
 
-def download(hf_repo):
-    return Path(
-        snapshot_download(
-            repo_id=hf_repo,
-            allow_patterns=["*.pt", "*.json"],
-        )
-    )
+def download(hf_repo, revision: str | None = None):
+    download_kwargs = {
+        "repo_id": hf_repo,
+        "allow_patterns": ["*.pt", "*.json"],
+    }
+    if revision is None and hf_repo == PYTORCH_REPO:
+        revision = PYTORCH_REVISION
+    if revision is not None:
+        download_kwargs["revision"] = revision
+    return Path(snapshot_download(**download_kwargs))
 
 
 def update_attn_keys(key, mlx_weights):
@@ -175,7 +190,7 @@ def _remap_official_checkpoint_keys(weights):
 
 
 def convert(model_path):
-    import torch
+    torch = import_module("torch")
 
     weight_file = str(model_path / "sam3.pt")
     weights = torch.load(weight_file, map_location="cpu", weights_only=True)
@@ -231,23 +246,66 @@ def convert(model_path):
 
 def download_and_convert(
     hf_repo: str = PYTORCH_REPO,
-    mlx_path: Union[str, Path] = "sam3-mod-weights",
+    mlx_path: str | Path = "sam3-mod-weights",
     force: bool = False,
+    revision: str | None = None,
 ) -> Path:
+    if revision is None:
+        if hf_repo != PYTORCH_REPO:
+            raise ValueError(
+                "revision is required for custom PyTorch checkpoint repositories."
+            )
+        revision = PYTORCH_REVISION
+
     mlx_path = Path(mlx_path)
     weights_file = mlx_path / "model.safetensors"
     index_file = mlx_path / "model.safetensors.index.json"
+    metadata_file = mlx_path / CONVERSION_METADATA_NAME
+    expected_metadata = {
+        "format_version": CONVERSION_FORMAT_VERSION,
+        "source_repo": hf_repo,
+        "source_revision": revision,
+    }
 
-    if weights_file.exists() and index_file.exists() and not force:
+    if not force and (
+        weights_file.exists() or index_file.exists() or metadata_file.exists()
+    ):
+        if not weights_file.exists() or not index_file.exists():
+            raise ValueError(
+                f"Conversion cache at {mlx_path} is incomplete. Pass force=True "
+                "to rebuild it or choose a different mlx_path."
+            )
+        if not metadata_file.exists():
+            raise ValueError(
+                f"Conversion cache at {mlx_path} has no conversion provenance. "
+                "Pass force=True to rebuild it or choose a different mlx_path."
+            )
+        try:
+            cached_metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Conversion provenance is not valid JSON: {metadata_file}. "
+                "Pass force=True to rebuild it."
+            ) from exc
+        if cached_metadata != expected_metadata:
+            raise ValueError(
+                f"Conversion cache at {mlx_path} does not match the requested "
+                f"source {hf_repo}@{revision}. Pass force=True to rebuild it or "
+                "choose a different mlx_path."
+            )
         return weights_file
 
     print(f"Downloading and converting weights from {hf_repo}...")
-    model_path = download(hf_repo)
+    model_path = download(hf_repo, revision=revision)
 
     mlx_path.mkdir(parents=True, exist_ok=True)
 
     mlx_weights = convert(model_path)
     save_weights(mlx_path, mlx_weights)
+    metadata_file.write_text(
+        json.dumps(expected_metadata, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
     return weights_file
 
@@ -275,6 +333,15 @@ if __name__ == "__main__":
         help="Local path to save/cache the MLX Model weights.",
     )
     parser.add_argument(
+        "--pytorch-revision",
+        type=str,
+        default=None,
+        help=(
+            "Immutable PyTorch repository revision. Required with a custom "
+            "--pytorch-repo; the official repository defaults to the pinned revision."
+        ),
+    )
+    parser.add_argument(
         "--convert",
         action="store_true",
         help="Convert from PyTorch weights instead of loading pre-converted MLX weights",
@@ -283,15 +350,12 @@ if __name__ == "__main__":
 
     if args.convert:
         mlx_path = args.mlx_path or "sam3-mod-weights"
-        print(f"Converting PyTorch weights from {args.pytorch_repo}...")
-        model_path = download(args.pytorch_repo)
-
-        mlx_path = Path(mlx_path)
-        mlx_path.mkdir(parents=True, exist_ok=True)
-
-        mlx_weights = convert(model_path)
-        save_weights(mlx_path, mlx_weights)
-        print(f"Converted weights saved to {mlx_path}")
+        weights_path = download_and_convert(
+            hf_repo=args.pytorch_repo,
+            mlx_path=mlx_path,
+            revision=args.pytorch_revision,
+        )
+        print(f"Converted weights saved to {weights_path.parent}")
     else:
         print(f"Downloading MLX weights from {args.mlx_repo}...")
         weights_path = load_from_hub(args.mlx_repo, args.mlx_path)

@@ -1,4 +1,4 @@
-from typing import Callable, List, Optional, Tuple, Union
+from typing import Callable, List, Optional, Tuple, TypedDict, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -79,12 +79,9 @@ class ResidualAttentionBlock(nn.Module):
         v_x: Optional[mx.array] = None,
         attn_mask: Optional[mx.array] = None,
     ) -> mx.array:
-        k_x = (
-            self.ln_1_kv(k_x) if hasattr(self, "ln_1_kv") and k_x is not None else None
-        )
-        v_x = (
-            self.ln_1_kv(v_x) if hasattr(self, "ln_1_kv") and v_x is not None else None
-        )
+        ln_1_kv = getattr(self, "ln_1_kv", None)
+        k_x = ln_1_kv(k_x) if ln_1_kv is not None and k_x is not None else None
+        v_x = ln_1_kv(v_x) if ln_1_kv is not None and v_x is not None else None
         x = q_x + self.ls_1(
             self.attention(q_x=self.ln_1(q_x), k_x=k_x, v_x=v_x, attn_mask=attn_mask)
         )
@@ -241,6 +238,10 @@ class TextTransformer(nn.Module):
         return pooled
 
 
+class EncodedTextPayload(TypedDict):
+    inputs_embeds: mx.array
+
+
 class VETextEncoder(nn.Module):
     def __init__(
         self,
@@ -282,10 +283,10 @@ class VETextEncoder(nn.Module):
 
     def __call__(
         self,
-        text: Union[List[str], Tuple[mx.array, mx.array, dict]],
+        text: Union[List[str], Tuple[mx.array, mx.array, EncodedTextPayload]],
         input_boxes: Optional[List] = None,
     ) -> Tuple[mx.array, mx.array, mx.array]:
-        if isinstance(text[0], str):
+        if isinstance(text, list):
             # no use case for this
             assert input_boxes is None or len(input_boxes) == 0, "not supported"
 

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 import mlx.core as mx
+import numpy as np
 from PIL import Image as PILImage
 
 from sam3_mlx.model.box_ops import box_xywh_to_xyxy
@@ -52,7 +53,7 @@ class FindQuery:
     input_bbox: Optional[mx.array] = None
     input_bbox_label: Optional[mx.array] = None
     input_points: Optional[mx.array] = None
-    semantic_target: Optional[mx.array] = None
+    semantic_target: mx.array | dict[str, Any] | None = None
     is_pixel_exhaustive: Optional[bool] = None
 
 
@@ -74,7 +75,7 @@ class Object:
 
 @dataclass
 class Image:
-    data: Union[mx.array, PILImage.Image]
+    data: Union[mx.array, np.ndarray, PILImage.Image]
     objects: List[Object]
     size: Tuple[int, int]
     blurring_mask: Optional[Dict[str, Any]] = None
@@ -116,7 +117,7 @@ class CustomCocoDetectionAPI:
         zstd_dict_path=None,
         filter_query=None,
         coco_json_loader: Callable = COCO_FROM_JSON,
-        limit_ids: int = None,
+        limit_ids: int | None = None,
         is_sharded_annotation_dir: bool = False,
     ) -> None:
         if use_caching is not True:
@@ -145,7 +146,10 @@ class CustomCocoDetectionAPI:
     ) -> Tuple[List[Tuple[int, PILImage.Image]], List[Dict[str, Any]]]:
         all_images = []
         all_img_metadata = []
-        for current_meta in self.coco.loadImagesFromDatapoint(datapoint_id):
+        coco = self.coco
+        if coco is None:
+            raise RuntimeError("Dataset annotations have not been initialized.")
+        for current_meta in coco.loadImagesFromDatapoint(datapoint_id):
             img_id = current_meta["id"]
             if img_ids_to_load is not None and img_id not in img_ids_to_load:
                 continue
@@ -205,9 +209,10 @@ class CustomCocoDetectionAPI:
     def _load_datapoint(self, index: int) -> Datapoint:
         datapoint_id = self.ids[index]
         pil_images, img_metadata = self._load_images(datapoint_id)
-        queries, annotations = self.coco.loadQueriesAndAnnotationsFromDatapoint(
-            datapoint_id
-        )
+        coco = self.coco
+        if coco is None:
+            raise RuntimeError("Dataset annotations have not been initialized.")
+        queries, annotations = coco.loadQueriesAndAnnotationsFromDatapoint(datapoint_id)
         return self.load_queries(pil_images, annotations, queries, img_metadata)
 
     def load_queries(self, pil_images, annotations, queries, img_metadata):
@@ -370,7 +375,7 @@ class Sam3ImageDataset(CustomCocoDetectionAPI):
         zstd_dict_path=None,
         filter_query=None,
         coco_json_loader: Callable = COCO_FROM_JSON,
-        limit_ids: int = None,
+        limit_ids: int | None = None,
     ):
         super().__init__(
             img_folder,

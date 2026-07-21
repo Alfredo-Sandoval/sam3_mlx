@@ -1,4 +1,5 @@
 from copy import copy
+from typing import cast
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -28,7 +29,7 @@ def _feature_mask(feature):
 class SAM3VLBackbone(nn.Module):
     def __init__(
         self,
-        visual: Sam3DualViTDetNeck,
+        visual: nn.Module,
         text,
         compile_visual: bool = False,
         act_ckpt_whole_vision_backbone: bool = False,
@@ -43,7 +44,7 @@ class SAM3VLBackbone(nn.Module):
                 alternative="compile_visual=False",
             )
 
-        self.vision_backbone: Sam3DualViTDetNeck = visual
+        self.vision_backbone = visual
         self.language_backbone = text
         self.scalp = scalp
         self.act_ckpt_whole_vision_backbone = act_ckpt_whole_vision_backbone
@@ -66,7 +67,10 @@ class SAM3VLBackbone(nn.Module):
         )
 
     def _forward_image_no_act_ckpt(self, samples):
-        sam3_features, sam3_pos, sam2_features, sam2_pos = self.vision_backbone.forward(
+        vision_backbone = self.vision_backbone
+        if not isinstance(vision_backbone, Sam3DualViTDetNeck):
+            raise TypeError("SAM3VLBackbone requires Sam3DualViTDetNeck.")
+        sam3_features, sam3_pos, sam2_features, sam2_pos = vision_backbone.forward(
             samples
         )
 
@@ -150,7 +154,7 @@ class SAM3VLBackbone(nn.Module):
 
 
 class SAM3VLBackboneTri(SAM3VLBackbone):
-    def __init__(self, visual, text, compile_visual=False, scalp=0):
+    def __init__(self, visual: Sam3TriViTDetNeck, text, compile_visual=False, scalp=0):
         super().__init__(
             visual=visual,
             text=text,
@@ -162,6 +166,7 @@ class SAM3VLBackboneTri(SAM3VLBackbone):
                 "SAM3VLBackboneTri requires Sam3TriViTDetNeck, got "
                 f"{type(self.vision_backbone)!r}."
             )
+        self.vision_backbone = visual
 
     def forward_image(
         self,
@@ -346,7 +351,7 @@ class TriHeadVisionOnly(VisionOnly):
         need_propagation_out: bool = True,
     ):
         return SAM3VLBackboneTri._forward_image_tri_no_act_ckpt(
-            self,
+            cast(SAM3VLBackboneTri, self),
             samples=samples,
             need_sam3_out=need_sam3_out,
             need_interactive_out=need_interactive_out,

@@ -7,7 +7,6 @@ import numpy as np
 from sam3_mlx._unsupported import raise_unsupported
 from sam3_mlx.model.io_utils import load_resource_as_video_frames, masks_to_boxes_xyxy
 
-
 MLX_PORT_BASE_COMMIT = "ac306ca0fb1c757c00d3c3b2f737ef2f99b45bc3"
 
 
@@ -74,6 +73,30 @@ class Sam3VideoInference:
         async_loading_frames: bool = False,
         video_loader_type: str = "cv2",
     ) -> dict[str, Any]:
+        if offload_video_to_cpu:
+            raise_unsupported(
+                "sam3_mlx.model.sam3_video_inference.Sam3VideoInference.init_state"
+                "(offload_video_to_cpu=True)",
+                reason="video-offload",
+                detail="MLX video frames already use unified memory; CPU offload is not implemented.",
+                alternative="offload_video_to_cpu=False",
+            )
+        if offload_state_to_cpu:
+            raise_unsupported(
+                "sam3_mlx.model.sam3_video_inference.Sam3VideoInference.init_state"
+                "(offload_state_to_cpu=True)",
+                reason="video-offload",
+                detail="Selected-frame MLX inference does not implement state offload.",
+                alternative="offload_state_to_cpu=False",
+            )
+        if async_loading_frames:
+            raise_unsupported(
+                "sam3_mlx.model.sam3_video_inference.Sam3VideoInference.init_state"
+                "(async_loading_frames=True)",
+                reason="video-async-loading",
+                detail="Selected-frame MLX inference decodes frames on demand.",
+                alternative="async_loading_frames=False",
+            )
         frames = load_resource_as_video_frames(
             resource_path=resource_path,
             image_size=self.image_size,
@@ -82,6 +105,7 @@ class Sam3VideoInference:
             img_std=self.image_std,
             async_loading_frames=async_loading_frames,
             video_loader_type=video_loader_type,
+            materialize_images=False,
         )
         return {
             "image_size": self.image_size,
@@ -289,11 +313,13 @@ class Sam3VideoInference:
             start_frame_idx = min(
                 t for t, out in enumerate(previous_stages_out) if out is not None
             )
+        assert start_frame_idx is not None
         self._assert_frame_idx(
             inference_state, start_frame_idx, name="start_frame_index"
         )
         if max_frame_num_to_track is None:
             max_frame_num_to_track = num_frames
+        assert max_frame_num_to_track is not None
         if max_frame_num_to_track < 0:
             raise ValueError("max_frame_num_to_track must be non-negative.")
         if reverse:

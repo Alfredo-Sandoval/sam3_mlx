@@ -64,6 +64,25 @@ def _ensure_image_array(value: Any) -> mx.array:
     return value
 
 
+def _require_mutable_list(value: object, field_name: str) -> list[Any]:
+    if not isinstance(value, list):
+        raise TypeError(f"{field_name} must be a list while building a batch.")
+    return value
+
+
+def _require_array_list(value: object, field_name: str) -> list[mx.array]:
+    items = _require_mutable_list(value, field_name)
+    if not all(isinstance(item, mx.array) for item in items):
+        raise TypeError(f"{field_name} must contain only MLX arrays.")
+    return items
+
+
+def _require_array(value: object, field_name: str) -> mx.array:
+    if not isinstance(value, mx.array):
+        raise TypeError(f"{field_name} was not converted to an MLX array.")
+    return value
+
+
 def convert_my_tensors(obj):
     """Official collator API shim over the shared MLX dataclass converter."""
 
@@ -233,10 +252,14 @@ def collate_fn_api(
                     f"{len(data.images)} image(s)."
                 )
             stage_id = q.query_processing_order
-            stages[stage_id].img_ids.append(q.image_id + offset_img_id)
+            _require_mutable_list(stages[stage_id].img_ids, "img_ids").append(
+                q.image_id + offset_img_id
+            )
             if q.query_text not in text_batch:
                 text_batch.append(q.query_text)
-            stages[stage_id].text_ids.append(text_batch.index(q.query_text))
+            _require_mutable_list(stages[stage_id].text_ids, "text_ids").append(
+                text_batch.index(q.query_text)
+            )
 
             if q.inference_metadata is None:
                 raise ValueError(
@@ -261,19 +284,25 @@ def collate_fn_api(
                 input_bbox_label = _as_array(q.input_bbox_label)
                 if _numel(input_bbox_label) != nb_boxes:
                     raise ValueError("input_bbox_label length must match input_bbox")
-                stages[stage_id].input_boxes.append(input_bbox.reshape(nb_boxes, 4))
-                stages[stage_id].input_boxes_label.append(
-                    input_bbox_label.reshape(nb_boxes)
-                )
-                stages[stage_id].input_boxes_mask.append(
-                    mx.zeros((nb_boxes,), dtype=mx.bool_)
-                )
+                _require_mutable_list(
+                    stages[stage_id].input_boxes, "input_boxes"
+                ).append(input_bbox.reshape(nb_boxes, 4))
+                _require_mutable_list(
+                    stages[stage_id].input_boxes_label, "input_boxes_label"
+                ).append(input_bbox_label.reshape(nb_boxes))
+                _require_mutable_list(
+                    stages[stage_id].input_boxes_mask, "input_boxes_mask"
+                ).append(mx.zeros((nb_boxes,), dtype=mx.bool_))
             else:
-                stages[stage_id].input_boxes.append(mx.zeros((0, 4), dtype=mx.float32))
-                stages[stage_id].input_boxes_label.append(
-                    mx.zeros((0,), dtype=mx.int64)
-                )
-                stages[stage_id].input_boxes_mask.append(mx.ones((0,), dtype=mx.bool_))
+                _require_mutable_list(
+                    stages[stage_id].input_boxes, "input_boxes"
+                ).append(mx.zeros((0, 4), dtype=mx.float32))
+                _require_mutable_list(
+                    stages[stage_id].input_boxes_label, "input_boxes_label"
+                ).append(mx.zeros((0,), dtype=mx.int64))
+                _require_mutable_list(
+                    stages[stage_id].input_boxes_mask, "input_boxes_mask"
+                ).append(mx.ones((0,), dtype=mx.bool_))
 
             if q.input_points is not None:
                 input_points = _as_array(q.input_points)
@@ -283,19 +312,28 @@ def collate_fn_api(
                     raise ValueError(
                         "input_points must be raw point prompts with shape (N, 3)"
                     )
-                stages[stage_id].input_points.append(input_points)
-                stages[stage_id].input_points_mask.append(
-                    mx.zeros((input_points.shape[0],), dtype=mx.bool_)
-                )
+                _require_mutable_list(
+                    stages[stage_id].input_points, "input_points"
+                ).append(input_points)
+                _require_mutable_list(
+                    stages[stage_id].input_points_mask, "input_points_mask"
+                ).append(mx.zeros((input_points.shape[0],), dtype=mx.bool_))
             else:
-                stages[stage_id].input_points.append(mx.zeros((0, 3), dtype=mx.float32))
-                stages[stage_id].input_points_mask.append(
-                    mx.zeros((0,), dtype=mx.bool_)
-                )
+                _require_mutable_list(
+                    stages[stage_id].input_points, "input_points"
+                ).append(mx.zeros((0, 3), dtype=mx.float32))
+                _require_mutable_list(
+                    stages[stage_id].input_points_mask, "input_points_mask"
+                ).append(mx.zeros((0,), dtype=mx.bool_))
 
             current_out_boxes = []
             current_out_object_ids = []
-            stages[stage_id].object_ids.append(q.object_ids_output)
+            stage_object_ids = stages[stage_id].object_ids
+            if stage_object_ids is None:
+                raise TypeError(
+                    "object_ids must be initialized while building a batch."
+                )
+            stage_object_ids.append(q.object_ids_output)
             for object_id in q.object_ids_output:
                 if object_id < 0 or object_id >= len(data.images[q.image_id].objects):
                     raise IndexError(
@@ -307,13 +345,23 @@ def collate_fn_api(
                     _as_array(data.images[q.image_id].objects[object_id].bbox)
                 )
                 current_out_object_ids.append(object_id)
-            find_targets[stage_id].boxes.extend(current_out_boxes)
-            find_targets[stage_id].object_ids.extend(current_out_object_ids)
+            _require_mutable_list(find_targets[stage_id].boxes, "boxes").extend(
+                current_out_boxes
+            )
+            _require_mutable_list(
+                find_targets[stage_id].object_ids, "object_ids"
+            ).extend(current_out_object_ids)
             if repeats > 0:
                 for _ in range(repeats):
-                    find_targets[stage_id].repeated_boxes.extend(current_out_boxes)
-            find_targets[stage_id].num_boxes.append(len(current_out_boxes))
-            find_targets[stage_id].is_exhaustive.append(q.is_exhaustive)
+                    _require_mutable_list(
+                        find_targets[stage_id].repeated_boxes, "repeated_boxes"
+                    ).extend(current_out_boxes)
+            _require_mutable_list(find_targets[stage_id].num_boxes, "num_boxes").append(
+                len(current_out_boxes)
+            )
+            _require_mutable_list(
+                find_targets[stage_id].is_exhaustive, "is_exhaustive"
+            ).append(q.is_exhaustive)
 
             if with_seg_masks:
                 current_seg_mask = []
@@ -324,49 +372,66 @@ def collate_fn_api(
                         current_seg_mask.append(_as_array(seg_mask))
                         current_is_valid_segment.append(1)
                     else:
-                        dummy_mask = mx.zeros(
-                            data.images[q.image_id].data.shape[-2:], dtype=mx.bool_
-                        )
+                        image_array = _ensure_image_array(data.images[q.image_id].data)
+                        dummy_mask = mx.zeros(image_array.shape[-2:], dtype=mx.bool_)
                         current_seg_mask.append(dummy_mask)
                         current_is_valid_segment.append(0)
-                find_targets[stage_id].segments.extend(current_seg_mask)
-                find_targets[stage_id].is_valid_segment.extend(current_is_valid_segment)
+                _require_mutable_list(
+                    find_targets[stage_id].segments, "segments"
+                ).extend(current_seg_mask)
+                _require_mutable_list(
+                    find_targets[stage_id].is_valid_segment, "is_valid_segment"
+                ).extend(current_is_valid_segment)
             else:
                 find_targets[stage_id].segments = None
                 find_targets[stage_id].is_valid_segment = None
 
             if q.semantic_target is not None:
-                find_targets[stage_id].semantic_segments.append(
-                    _as_array(q.semantic_target)
-                )
+                _require_mutable_list(
+                    find_targets[stage_id].semantic_segments, "semantic_segments"
+                ).append(_as_array(q.semantic_target))
 
         offset_img_id += len(data.images)
 
     for i in range(len(stages)):
         stages[i].input_points = pad_tensor_list_to_longest(
-            stages[i].input_points, dim=0, pad_val=0
+            _require_array_list(stages[i].input_points, "input_points"),
+            dim=0,
+            pad_val=0,
         )
         stages[i].input_points_mask = pad_tensor_list_to_longest(
-            stages[i].input_points_mask, dim=0, pad_val=1
+            _require_array_list(stages[i].input_points_mask, "input_points_mask"),
+            dim=0,
+            pad_val=1,
         )
 
     for i in range(len(stages)):
         stages[i].input_boxes = pad_tensor_list_to_longest(
-            stages[i].input_boxes, dim=0, pad_val=0
+            _require_array_list(stages[i].input_boxes, "input_boxes"),
+            dim=0,
+            pad_val=0,
         )
         stages[i].input_boxes_label = pad_tensor_list_to_longest(
-            stages[i].input_boxes_label, dim=0, pad_val=0
+            _require_array_list(stages[i].input_boxes_label, "input_boxes_label"),
+            dim=0,
+            pad_val=0,
         )
         stages[i].input_boxes_mask = pad_tensor_list_to_longest(
-            stages[i].input_boxes_mask, dim=0, pad_val=1
+            _require_array_list(stages[i].input_boxes_mask, "input_boxes_mask"),
+            dim=0,
+            pad_val=1,
         )
 
     for i in range(len(stages)):
         stages[i] = convert_my_tensors(stages[i])
         find_targets[i] = convert_my_tensors(find_targets[i])
         find_metadatas[i] = convert_my_tensors(find_metadatas[i])
-        find_targets[i].boxes = find_targets[i].boxes.reshape(-1, 4)
-        find_targets[i].repeated_boxes = find_targets[i].repeated_boxes.reshape(-1, 4)
+        find_targets[i].boxes = _require_array(find_targets[i].boxes, "boxes").reshape(
+            -1, 4
+        )
+        find_targets[i].repeated_boxes = _require_array(
+            find_targets[i].repeated_boxes, "repeated_boxes"
+        ).reshape(-1, 4)
         find_targets[i].boxes_padded = packed_to_padded_naive(
             find_targets[i].boxes, find_targets[i].num_boxes
         )

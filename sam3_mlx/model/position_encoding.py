@@ -48,16 +48,16 @@ class PositionEmbeddingSine(nn.Module):
         pos_x = x_embed[:, None] / dim_t
         pos_y = y_embed[:, None] / dim_t
         pos_x = mx.stack(
-            (mx.sin(pos_x[:, 0::2]), mx.cos(pos_x[:, 1::2])), axis=2
+            [mx.sin(pos_x[:, 0::2]), mx.cos(pos_x[:, 1::2])], axis=2
         ).flatten(1)
         pos_y = mx.stack(
-            (mx.sin(pos_y[:, 0::2]), mx.cos(pos_y[:, 1::2])), axis=2
+            [mx.sin(pos_y[:, 0::2]), mx.cos(pos_y[:, 1::2])], axis=2
         ).flatten(1)
         return pos_x, pos_y
 
     def encode_boxes(self, x, y, w, h):
         pos_x, pos_y = self._encode_xy(x, y)
-        pos = mx.concat((pos_y, pos_x, h[:, None], w[:, None]), axis=1)
+        pos = mx.concat([pos_y, pos_x, h[:, None], w[:, None]], axis=1)
         return mx.stop_gradient(pos)
 
     encode = encode_boxes
@@ -67,7 +67,7 @@ class PositionEmbeddingSine(nn.Module):
         assert bx == by and nx == ny and bx == bl and nx == nl
         pos_x, pos_y = self._encode_xy(x.flatten(), y.flatten())
         pos_x, pos_y = pos_x.reshape(bx, nx, -1), pos_y.reshape(by, ny, -1)
-        pos = mx.concat((pos_y, pos_x, labels[:, :, None]), axis=2)
+        pos = mx.concat([pos_y, pos_x, labels[:, :, None]], axis=2)
         return mx.stop_gradient(pos)
 
     def __call__(self, x: mx.array | tuple) -> mx.array:
@@ -100,12 +100,12 @@ class PositionEmbeddingSine(nn.Module):
         pos_x = x_embed[:, :, :, None] / dim_t
         pos_y = y_embed[:, :, :, None] / dim_t
         pos_x = mx.stack(
-            (mx.sin(pos_x[:, :, :, 0::2]), mx.cos(pos_x[:, :, :, 1::2])), axis=4
+            [mx.sin(pos_x[:, :, :, 0::2]), mx.cos(pos_x[:, :, :, 1::2])], axis=4
         ).flatten(3)
         pos_y = mx.stack(
-            (mx.sin(pos_y[:, :, :, 0::2]), mx.cos(pos_y[:, :, :, 1::2])), axis=4
+            [mx.sin(pos_y[:, :, :, 0::2]), mx.cos(pos_y[:, :, :, 1::2])], axis=4
         ).flatten(3)
-        pos = mx.concat((pos_y, pos_x), axis=3).transpose(0, 3, 1, 2)
+        pos = mx.concat([pos_y, pos_x], axis=3).transpose(0, 3, 1, 2)
         if cache_key is not None:
             self.cache[cache_key] = pos[0]
         return mx.stop_gradient(pos)

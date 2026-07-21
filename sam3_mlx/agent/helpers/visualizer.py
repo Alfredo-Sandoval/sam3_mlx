@@ -41,6 +41,8 @@ class GenericMask:
         if self._mask is None:
             from .masks import polygons_to_bitmask
 
+            if self._polygons is None:
+                raise ValueError("GenericMask has neither a mask nor polygons.")
             self._mask = polygons_to_bitmask(
                 [np.asarray(p) for p in self._polygons], self.height, self.width
             )
@@ -128,11 +130,15 @@ def _as_rgb_tuple(color) -> tuple[int, int, int]:
     if color is None:
         return (0, 255, 0)
     if isinstance(color, str):
-        return ImageColor.getrgb(color)
+        rgb = ImageColor.getrgb(color)
+        return (rgb[0], rgb[1], rgb[2])
     arr = np.asarray(color, dtype=float)
     if arr.max() <= 1:
         arr = arr * 255
-    return tuple(int(np.clip(v, 0, 255)) for v in arr[:3])
+    values = [int(np.clip(v, 0, 255)) for v in arr[:3]]
+    if len(values) != 3:
+        raise ValueError("RGB colors require three channels.")
+    return (values[0], values[1], values[2])
 
 
 class Visualizer:

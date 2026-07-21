@@ -1,13 +1,37 @@
+from collections.abc import Callable, Sequence
+from typing import cast
+
 import mlx.core as mx
 
 
-_METAL_KERNEL_CACHE = {}
+_METAL_KERNEL_CACHE: dict[str, Callable[..., list[mx.array]]] = {}
 
 
-def _cached_metal_kernel(cache_key: str, **kwargs):
+def _cached_metal_kernel(
+    cache_key: str,
+    *,
+    name: str,
+    input_names: Sequence[str],
+    output_names: Sequence[str],
+    source: str,
+    header: str = "",
+    ensure_row_contiguous: bool = True,
+    atomic_outputs: bool = False,
+) -> Callable[..., list[mx.array]]:
     kernel = _METAL_KERNEL_CACHE.get(cache_key)
     if kernel is None:
-        kernel = mx.fast.metal_kernel(**kwargs)
+        kernel = cast(
+            Callable[..., list[mx.array]],
+            mx.fast.metal_kernel(
+                name=name,
+                input_names=input_names,
+                output_names=output_names,
+                source=source,
+                header=header,
+                ensure_row_contiguous=ensure_row_contiguous,
+                atomic_outputs=atomic_outputs,
+            ),
+        )
         _METAL_KERNEL_CACHE[cache_key] = kernel
     return kernel
 

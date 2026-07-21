@@ -15,6 +15,7 @@ non-persistent buffers and therefore omits from its state_dict.
 
 import json
 
+import mlx.core as mx
 import pytest
 from mlx.utils import tree_flatten
 
@@ -77,7 +78,12 @@ def mlx_state():
             "dynamic_multimask_stability_thresh": 0.98,
         },
     )
-    return {k: tuple(v.shape) for k, v in tree_flatten(base.parameters())}
+    shapes = {}
+    for key, value in tree_flatten(base.parameters()):
+        if not isinstance(value, mx.array):
+            raise TypeError("Tracker parameters must flatten to MLX arrays.")
+        shapes[key] = tuple(value.shape)
+    return shapes
 
 
 def test_every_official_param_is_covered(official_state, mlx_state):

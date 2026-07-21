@@ -84,6 +84,9 @@ def test_prompt_append_points_and_masks_follow_official_prompt_contract():
         mx.array([[False, False]]),
     )
 
+    assert prompt.point_embeddings is not None
+    assert prompt.point_labels is not None
+    assert prompt.point_mask is not None
     assert prompt.point_embeddings.tolist() == [
         [[1.0, 1.0]],
         [[2.0, 2.0]],
@@ -97,6 +100,9 @@ def test_prompt_append_points_and_masks_follow_official_prompt_contract():
     masks = mx.zeros((1, 2, 1, 4, 4), dtype=mx.float32)
     null_prompt.append_masks(masks)
 
+    assert null_prompt.mask_embeddings is not None
+    assert null_prompt.mask_labels is not None
+    assert null_prompt.mask_mask is not None
     assert null_prompt.mask_embeddings.shape == (1, 2, 1, 4, 4)
     assert null_prompt.mask_labels.tolist() == [[1, 1]]
     assert null_prompt.mask_mask.tolist() == [[False], [False]]
@@ -123,6 +129,18 @@ def test_prompt_clone_preserves_box_and_point_fields_independently():
     clone = prompt.clone()
 
     assert clone is not prompt
+    assert clone.box_embeddings is not None
+    assert prompt.box_embeddings is not None
+    assert clone.box_mask is not None
+    assert prompt.box_mask is not None
+    assert clone.box_labels is not None
+    assert prompt.box_labels is not None
+    assert clone.point_embeddings is not None
+    assert prompt.point_embeddings is not None
+    assert clone.point_mask is not None
+    assert prompt.point_mask is not None
+    assert clone.point_labels is not None
+    assert prompt.point_labels is not None
     assert clone.box_embeddings.tolist() == prompt.box_embeddings.tolist()
     assert clone.box_mask.tolist() == prompt.box_mask.tolist()
     assert clone.box_labels.tolist() == prompt.box_labels.tolist()

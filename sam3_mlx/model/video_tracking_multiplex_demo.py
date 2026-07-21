@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Mapping
 from typing import Any
 
 import mlx.core as mx
@@ -14,8 +15,10 @@ from sam3_mlx.model.multiplex_utils import (
 from sam3_mlx.model.sam3_tracker_utils import fill_holes_in_mask_scores
 from sam3_mlx.model.video_tracking_multiplex import (
     NO_OBJ_SCORE,
+    StageOutput,
     VideoTrackingDynamicMultiplex,
     _is_mlx_array,
+    _require_stage_value,
     concat_points,
 )
 
@@ -437,7 +440,7 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
         self,
         *,
         inference_state: dict[str, Any],
-        output_dict: dict[str, dict[int, Any]],
+        output_dict: dict[str, dict[int, StageOutput]],
         frame_idx: int,
         batch_size: int,
         is_init_cond_frame: bool,
@@ -455,7 +458,7 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
         prefer_new_buckets: bool = False,
         reconditioning: bool = False,
         objects_to_interact: list[int] | None = None,
-    ) -> tuple[dict[str, Any], Any]:
+    ) -> tuple[StageOutput, Any]:
         image, backbone_features = self._get_image_feature(
             inference_state,
             frame_idx,
@@ -573,7 +576,7 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
                 prefer_new_buckets=prefer_new_buckets,
                 reconditioning=reconditioning,
             )
-        pred_masks = current_out["pred_masks"]
+        pred_masks = _require_stage_value(current_out, "pred_masks")
         _eval_tree(current_out, pred_masks)
         return current_out, pred_masks
 
@@ -607,11 +610,16 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
         self,
         inference_state: dict[str, Any],
         frame_idx: int,
-        current_out: dict[str, Any],
+        current_out: Mapping[str, Any],
         storage_key: str,
     ) -> None:
         for obj_idx, obj_output_dict in inference_state["output_dict_per_obj"].items():
             obj_slice = slice(obj_idx, obj_idx + 1)
+            if (
+                "pred_masks" not in current_out
+                or "object_score_logits" not in current_out
+            ):
+                raise ValueError("Per-object output requires masks and object scores.")
             obj_out = {
                 "pred_masks": current_out["pred_masks"][obj_slice],
                 "object_score_logits": current_out["object_score_logits"][obj_slice],
@@ -846,7 +854,7 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
         )
         _, video_res_masks = self._get_orig_video_res_output(
             inference_state,
-            current_out["pred_masks"],
+            _require_stage_value(current_out, "pred_masks"),
         )
         current_out["pred_masks_video_res"] = video_res_masks
         current_out["local_obj_id_to_idx"] = OrderedDict(
@@ -884,9 +892,10 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
         obj_ids: Any,
         masks: Any,
         add_mask_to_memory: bool = False,
+        are_masks_from_pts: bool = False,
         reconditioning: bool = False,
     ) -> tuple[int, list[Any], None, Any]:
-        del add_mask_to_memory
+        del add_mask_to_memory, are_masks_from_pts
         obj_ids = _coerce_obj_id_list(obj_ids)
         if len(obj_ids) == 0:
             raise ValueError("obj_ids must contain at least one object id.")
@@ -989,7 +998,7 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
 
         _, video_res_masks = self._get_orig_video_res_output(
             inference_state,
-            current_out["pred_masks"],
+            _require_stage_value(current_out, "pred_masks"),
         )
         direct_logits = mx.where(
             mask_inputs_video_res,
@@ -1422,16 +1431,17 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
 class Sam3VideoTrackingMultiplexDemo(VideoTrackingMultiplexDemo):
     def init_state(
         self,
+        video_path: Any = None,
+        offload_video_to_cpu: bool = False,
+        offload_state_to_cpu: bool = False,
+        async_loading_frames: bool = False,
+        use_torchcodec: bool = False,
+        use_cv2: bool = False,
+        *,
         video_height: int | None = None,
         video_width: int | None = None,
         num_frames: int | None = None,
         cached_features: Any = None,
-        offload_video_to_cpu: bool = False,
-        offload_state_to_cpu: bool = False,
-        video_path: Any = None,
-        async_loading_frames: bool = False,
-        use_torchcodec: bool = False,
-        use_cv2: bool = False,
     ) -> Any:
         if video_path is not None:
             return _load_multiplex_demo_state_from_resource(

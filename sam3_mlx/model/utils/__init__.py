@@ -2,6 +2,18 @@
 
 """Model utility helpers ported from the official SAM3 ``sam3/model/utils``."""
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sam3_mlx.model.utils.misc import copy_data_to_device
+    from sam3_mlx.model.utils.sam1_utils import SAM2Transforms
+    from sam3_mlx.model.utils.sam2_utils import (
+        AsyncVideoFrameLoader,
+        load_video_frames,
+        load_video_frames_from_jpg_images,
+        load_video_frames_from_video_file,
+    )
+
 __all__ = [
     "AsyncVideoFrameLoader",
     "SAM2Transforms",

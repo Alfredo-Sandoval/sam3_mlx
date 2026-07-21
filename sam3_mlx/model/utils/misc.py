@@ -7,7 +7,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import fields, is_dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, TypeGuard, runtime_checkable
 
 from sam3_mlx._unsupported import raise_unsupported
 
@@ -20,7 +20,11 @@ def _is_named_tuple(value) -> bool:
     )
 
 
-def _is_mlx_array(value) -> bool:
+class _MlxArray(Protocol):
+    def astype(self, dtype: object) -> object: ...
+
+
+def _is_mlx_array(value: object) -> TypeGuard[_MlxArray]:
     return type(value).__module__.startswith("mlx.")
 
 
@@ -62,9 +66,11 @@ def copy_data_to_device(data, device=None, *args: Any, **kwargs: Any):
             detail="Only the dtype kwarg is supported on the MLX port.",
         )
     if _is_named_tuple(data):
-        return type(data)(
-            **copy_data_to_device(data._asdict(), device, *args, **kwargs)
-        )
+        copied_fields = {
+            key: copy_data_to_device(value, device, *args, **kwargs)
+            for key, value in data._asdict().items()
+        }
+        return type(data)(**copied_fields)
     if isinstance(data, (list, tuple)):
         return type(data)(copy_data_to_device(v, device, *args, **kwargs) for v in data)
     if isinstance(data, defaultdict):
@@ -76,12 +82,9 @@ def copy_data_to_device(data, device=None, *args: Any, **kwargs: Any):
             },
         )
     if isinstance(data, Mapping):
-        return type(data)(
-            {
-                k: copy_data_to_device(v, device, *args, **kwargs)
-                for k, v in data.items()
-            }
-        )
+        return {
+            k: copy_data_to_device(v, device, *args, **kwargs) for k, v in data.items()
+        }
     if is_dataclass(data) and not isinstance(data, type):
         copied = type(data)(
             **{

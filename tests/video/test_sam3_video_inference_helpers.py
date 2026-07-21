@@ -22,6 +22,7 @@ def test_coerce_boxes_converts_absolute_xywh_to_normalized_cxcywh_and_labels():
         orig_width=200,
     )
 
+    assert boxes is not None
     np.testing.assert_allclose(
         boxes,
         np.array([[0.125, 0.4, 0.15, 0.4]], dtype=np.float32),
@@ -58,6 +59,7 @@ def test_coerce_points_converts_absolute_xy_to_normalized_points_and_labels():
         orig_width=200,
     )
 
+    assert points is not None
     np.testing.assert_allclose(
         points,
         np.array([[0.25, 0.25], [0.5, 0.75]], dtype=np.float32),

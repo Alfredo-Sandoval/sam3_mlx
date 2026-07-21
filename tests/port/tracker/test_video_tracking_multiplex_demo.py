@@ -272,7 +272,7 @@ def test_demo_add_new_masks_initializes_state_and_committed_outputs():
         current_out["obj_ptr"] = mx.zeros((1, 2, 1), dtype=mx.float32)
         return current_out, current_out["pred_masks"]
 
-    model._run_single_frame_inference = fake_run_single_frame
+    setattr(model, "_run_single_frame_inference", fake_run_single_frame)
 
     frame_idx, obj_ids, low_res_masks, video_res_masks = model.add_new_masks(
         state,
@@ -319,7 +319,7 @@ def test_demo_add_new_masks_state_can_propagate_seeded_frame():
         current_out["obj_ptr"] = mx.zeros((1, 2, 1), dtype=mx.float32)
         return current_out, current_out["pred_masks"]
 
-    model._run_single_frame_inference = fake_run_single_frame
+    setattr(model, "_run_single_frame_inference", fake_run_single_frame)
     model.add_new_masks(
         state,
         frame_idx=0,
@@ -367,7 +367,7 @@ def test_demo_add_new_masks_marks_existing_state_for_dynamic_mask_insert():
         current_out["obj_ptr"] = mx.zeros((2, 2, 1), dtype=mx.float32)
         return current_out, current_out["pred_masks"]
 
-    model._run_single_frame_inference = fake_run_single_frame
+    setattr(model, "_run_single_frame_inference", fake_run_single_frame)
 
     frame_idx, obj_ids, low_res_masks, video_res_masks = model.add_new_masks(
         state,
@@ -403,7 +403,7 @@ def test_demo_add_new_masks_reconditions_existing_state_object():
         current_out["obj_ptr"] = mx.zeros((1, 2, 1), dtype=mx.float32)
         return current_out, current_out["pred_masks"]
 
-    model._run_single_frame_inference = fake_run_single_frame
+    setattr(model, "_run_single_frame_inference", fake_run_single_frame)
 
     frame_idx, obj_ids, low_res_masks, video_res_masks = model.add_new_masks(
         state,
@@ -494,10 +494,14 @@ def test_demo_run_single_frame_adds_point_masks_to_existing_state():
         )
         kwargs["prev_output"]["conditioning_objects"].update(kwargs["obj_idxs_in_mask"])
 
-    model._get_image_feature = fake_get_image_feature
-    model._get_interactive_pix_mem = fake_get_interactive_pix_mem
-    model._forward_sam_heads = fake_forward_sam_heads
-    model.add_new_masks_to_existing_state = fake_add_new_masks_to_existing_state
+    setattr(model, "_get_image_feature", fake_get_image_feature)
+    setattr(model, "_get_interactive_pix_mem", fake_get_interactive_pix_mem)
+    setattr(model, "_forward_sam_heads", fake_forward_sam_heads)
+    setattr(
+        model,
+        "add_new_masks_to_existing_state",
+        fake_add_new_masks_to_existing_state,
+    )
 
     current_out, pred_masks = model._run_single_frame_inference(
         inference_state=state,
@@ -603,10 +607,14 @@ def test_demo_run_single_frame_reconditions_point_masks_in_existing_state():
         )
         kwargs["prev_output"]["conditioning_objects"].update(kwargs["obj_idxs_in_mask"])
 
-    model._get_image_feature = fake_get_image_feature
-    model._get_interactive_pix_mem = fake_get_interactive_pix_mem
-    model._forward_sam_heads = fake_forward_sam_heads
-    model.recondition_masks_in_existing_state = fake_recondition_masks_in_existing_state
+    setattr(model, "_get_image_feature", fake_get_image_feature)
+    setattr(model, "_get_interactive_pix_mem", fake_get_interactive_pix_mem)
+    setattr(model, "_forward_sam_heads", fake_forward_sam_heads)
+    setattr(
+        model,
+        "recondition_masks_in_existing_state",
+        fake_recondition_masks_in_existing_state,
+    )
 
     current_out, pred_masks = model._run_single_frame_inference(
         inference_state=state,
@@ -659,7 +667,7 @@ def test_demo_add_new_points_initializes_state_and_committed_outputs():
         current_out["obj_ptr"] = mx.zeros((1, 1, 1), dtype=mx.float32)
         return current_out, current_out["pred_masks"]
 
-    model._run_single_frame_inference = fake_run_single_frame
+    setattr(model, "_run_single_frame_inference", fake_run_single_frame)
 
     frame_idx, obj_ids, low_res_masks, video_res_masks = model.add_new_points(
         state,
@@ -713,7 +721,7 @@ def test_demo_add_new_points_accumulates_before_tracking_starts():
         current_out["obj_ptr"] = mx.zeros((1, 1, 1), dtype=mx.float32)
         return current_out, current_out["pred_masks"]
 
-    model._run_single_frame_inference = fake_run_single_frame
+    setattr(model, "_run_single_frame_inference", fake_run_single_frame)
     model.add_new_points(
         state,
         frame_idx=0,
@@ -781,7 +789,7 @@ def test_demo_add_new_points_adds_dynamic_object_to_existing_state():
         current_out["obj_ptr"] = mx.zeros((2, 2, 1), dtype=mx.float32)
         return current_out, current_out["pred_masks"]
 
-    model._run_single_frame_inference = fake_run_single_frame
+    setattr(model, "_run_single_frame_inference", fake_run_single_frame)
 
     frame_idx, obj_ids, low_res_masks, video_res_masks = model.add_new_points(
         state,
@@ -840,7 +848,7 @@ def test_demo_add_new_points_refines_existing_multi_object_state():
         )
         return current_out, current_out["pred_masks"]
 
-    model._run_single_frame_inference = fake_run_single_frame
+    setattr(model, "_run_single_frame_inference", fake_run_single_frame)
     multi_state = _empty_state(num_frames=1)
     model.add_new_masks(
         multi_state,
@@ -917,7 +925,7 @@ def test_demo_add_new_points_gap_fills_existing_multi_object_state():
         )
         return current_out, current_out["pred_masks"]
 
-    model._run_single_frame_inference = fake_run_single_frame
+    setattr(model, "_run_single_frame_inference", fake_run_single_frame)
     state = _empty_state(num_frames=2)
     model.add_new_masks(
         state,
@@ -977,7 +985,7 @@ def test_demo_add_new_points_state_can_propagate_seeded_frame():
         current_out["obj_ptr"] = mx.zeros((1, 1, 1), dtype=mx.float32)
         return current_out, current_out["pred_masks"]
 
-    model._run_single_frame_inference = fake_run_single_frame
+    setattr(model, "_run_single_frame_inference", fake_run_single_frame)
     model.add_new_points(
         state,
         frame_idx=0,
@@ -1021,7 +1029,7 @@ def test_demo_add_new_points_refines_tracked_single_object_frame():
         current_out["obj_ptr"] = mx.zeros((1, 1, 1), dtype=mx.float32)
         return current_out, current_out["pred_masks"]
 
-    model._run_single_frame_inference = fake_run_single_frame
+    setattr(model, "_run_single_frame_inference", fake_run_single_frame)
     model.add_new_points(
         state,
         frame_idx=0,
@@ -1302,7 +1310,7 @@ def test_demo_remove_objects_ignores_missing_non_strict_and_errors_strict():
 
 def test_demo_get_image_feature_computes_and_caches_loader_backed_frame():
     model = _demo_model()
-    model.backbone = object()
+    setattr(model, "backbone", SimpleNamespace())
     image_stack = mx.ones((2, 3, 4, 4), dtype=mx.float32)
     state = _state(num_frames=2)
     state["images"] = image_stack
@@ -1326,8 +1334,8 @@ def test_demo_get_image_feature_computes_and_caches_loader_backed_frame():
         assert backbone_out == {"raw": "backbone"}
         return prepared_features
 
-    model.forward_image = fake_forward_image
-    model._prepare_backbone_features = fake_prepare
+    setattr(model, "forward_image", fake_forward_image)
+    setattr(model, "_prepare_backbone_features", fake_prepare)
 
     image, features = model._get_image_feature(state, frame_idx=1, batch_size=2)
 

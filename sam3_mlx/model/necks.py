@@ -121,7 +121,10 @@ class Sam3DualViTDetNeck(nn.Module):
 
         self.scale_factors = scale_factors
         use_bias = True
-        dim: int = self.trunk.channel_list[-1]
+        channel_list = getattr(self.trunk, "channel_list", None)
+        if not isinstance(channel_list, (list, tuple)) or not channel_list:
+            raise TypeError("trunk.channel_list must be a non-empty sequence.")
+        dim = int(channel_list[-1])
 
         self.convs = self._build_convs(dim, d_model, scale_factors, use_bias)
 
@@ -129,7 +132,8 @@ class Sam3DualViTDetNeck(nn.Module):
         if add_sam2_neck:
             self.sam2_convs = self._build_convs(dim, d_model, scale_factors, use_bias)
 
-    def _build_convs(self, dim, d_model, scale_factors, use_bias):
+    @staticmethod
+    def _build_convs(dim, d_model, scale_factors, use_bias):
         convs = []
         for _, scale in enumerate(scale_factors):
             if scale == 4.0:
@@ -167,8 +171,10 @@ class Sam3DualViTDetNeck(nn.Module):
     ]:
         xs = self.trunk(x_list)
         sam3_out, sam3_pos = [], []
-        sam2_out, sam2_pos = None, None
-        if self.sam2_convs is not None:
+        sam2_out: list[mx.array] | None = None
+        sam2_pos: list[mx.array] | None = None
+        sam2_convs = self.sam2_convs
+        if sam2_convs is not None:
             sam2_out, sam2_pos = [], []
         x = xs[-1]
         if isinstance(x, NestedTensor):
@@ -185,8 +191,9 @@ class Sam3DualViTDetNeck(nn.Module):
             sam3_out.append(sam3_x_out.transpose(0, 3, 1, 2))
             sam3_pos.append(self.position_encoding(nchw_shape).astype(sam3_x_out.dtype))
 
-            if self.sam2_convs is not None:
-                sam2_x_out = self.sam2_convs[i](x)
+            if sam2_convs is not None:
+                assert sam2_out is not None and sam2_pos is not None
+                sam2_x_out = sam2_convs[i](x)
                 nchw_shape = (
                     sam2_x_out.shape[0],
                     sam2_x_out.shape[3],
@@ -225,7 +232,10 @@ class Sam3TriViTDetNeck(nn.Module):
         self.position_encoding = position_encoding
         self.scale_factors = scale_factors
         use_bias = neck_norm is None
-        dim: int = self.trunk.channel_list[-1]
+        channel_list = getattr(self.trunk, "channel_list", None)
+        if not isinstance(channel_list, (list, tuple)) or not channel_list:
+            raise TypeError("trunk.channel_list must be a non-empty sequence.")
+        dim = int(channel_list[-1])
 
         self.convs = self._build_convs(dim, d_model, scale_factors, use_bias)
         self.interactive_convs = deepcopy(self.convs)
@@ -233,7 +243,6 @@ class Sam3TriViTDetNeck(nn.Module):
 
     def _build_convs(self, dim, d_model, scale_factors, use_bias):
         return Sam3DualViTDetNeck._build_convs(
-            self,
             dim=dim,
             d_model=d_model,
             scale_factors=scale_factors,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from functools import wraps
+from collections.abc import Callable, Iterable
+from functools import update_wrapper, wraps
+from typing import Any
 
 import numpy as np
 
@@ -65,7 +67,13 @@ def compile_wrapper(
 
     @wraps(fn)
     def wrapped(*args, **kwargs):
-        result = fn(*recursive_contiguous(args), **recursive_contiguous(kwargs))
+        contiguous_args = recursive_contiguous(args)
+        contiguous_kwargs = recursive_contiguous(kwargs)
+        if not isinstance(contiguous_args, tuple):
+            raise TypeError("recursive_contiguous(args) must preserve tuple shape.")
+        if not isinstance(contiguous_kwargs, dict):
+            raise TypeError("recursive_contiguous(kwargs) must preserve mapping shape.")
+        result = fn(*contiguous_args, **contiguous_kwargs)
         if mode in {"max-autotune", "reduce-overhead"}:
             return recursive_clone(result)
         return result
@@ -73,35 +81,51 @@ def compile_wrapper(
     return wrapped
 
 
-def shape_logging_wrapper(fn, keep_kwargs, enable_logging=False):
-    keep_kwargs = set(keep_kwargs or [])
-    seen_shapes = set()
+class _ShapeLoggingWrapper:
+    def __init__(
+        self,
+        fn: Callable[..., Any],
+        keep_kwargs: Iterable[str] | None,
+        enable_logging: bool,
+    ) -> None:
+        self.fn = fn
+        self.keep_kwargs = set(keep_kwargs or ())
+        self.enable_logging = enable_logging
+        self.seen_shapes: set[tuple[Any, ...]] = set()
+        update_wrapper(self, fn)
 
-    def get_shape(obj):
+    def _get_shape(self, obj: Any) -> Any:
         if hasattr(obj, "shape"):
             return tuple(obj.shape)
         if isinstance(obj, (list, tuple)):
-            return tuple(get_shape(v) for v in obj)
+            return tuple(self._get_shape(value) for value in obj)
         if isinstance(obj, dict):
-            return tuple(sorted((k, get_shape(v)) for k, v in obj.items()))
+            return tuple(
+                sorted((key, self._get_shape(value)) for key, value in obj.items())
+            )
         return type(obj).__name__
 
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        shapes = tuple(get_shape(arg) for arg in args) + tuple(
-            (k, get_shape(v)) for k, v in kwargs.items() if k in keep_kwargs
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        shapes = tuple(self._get_shape(arg) for arg in args) + tuple(
+            (key, self._get_shape(value))
+            for key, value in kwargs.items()
+            if key in self.keep_kwargs
         )
-        if shapes not in seen_shapes:
-            seen_shapes.add(shapes)
-            if enable_logging:
-                print(f"[ShapeLogger] New input shapes for {fn.__qualname__}: {shapes}")
-        return fn(*args, **kwargs)
+        if shapes not in self.seen_shapes:
+            self.seen_shapes.add(shapes)
+            if self.enable_logging:
+                print(
+                    f"[ShapeLogger] New input shapes for {self.fn.__qualname__}: {shapes}"
+                )
+        return self.fn(*args, **kwargs)
 
-    def set_logging(enabled=False):
-        nonlocal enable_logging
-        enable_logging = enabled
-        wrapper.enable_logging = enabled
+    def set_logging(self, enabled: bool = False) -> None:
+        self.enable_logging = enabled
 
-    wrapper.enable_logging = enable_logging
-    wrapper.set_logging = set_logging
-    return wrapper
+
+def shape_logging_wrapper(
+    fn: Callable[..., Any],
+    keep_kwargs: Iterable[str] | None,
+    enable_logging: bool = False,
+) -> _ShapeLoggingWrapper:
+    return _ShapeLoggingWrapper(fn, keep_kwargs, enable_logging)

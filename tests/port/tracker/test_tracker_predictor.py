@@ -7,6 +7,7 @@ machine without invoking the unported image backbone.
 """
 
 import json
+from typing import TypedDict
 
 import mlx.core as mx
 import numpy as np
@@ -17,16 +18,27 @@ from sam3_mlx.model.sam3_tracking_predictor import Sam3TrackerPredictor
 from tests._paths import PORT_TRACKER_FIXTURE_ROOT, REPO_ROOT
 
 
-PREDICTOR_KWARGS = dict(
-    image_size=28,
-    num_maskmem=2,
-    backbone_stride=14,
-    max_cond_frames_in_attn=1,
-    multimask_output_in_sam=True,
-    multimask_output_for_tracking=True,
-    multimask_min_pt_num=0,
-    multimask_max_pt_num=1,
-)
+class _PredictorKwargs(TypedDict):
+    image_size: int
+    num_maskmem: int
+    backbone_stride: int
+    max_cond_frames_in_attn: int
+    multimask_output_in_sam: bool
+    multimask_output_for_tracking: bool
+    multimask_min_pt_num: int
+    multimask_max_pt_num: int
+
+
+PREDICTOR_KWARGS: _PredictorKwargs = {
+    "image_size": 28,
+    "num_maskmem": 2,
+    "backbone_stride": 14,
+    "max_cond_frames_in_attn": 1,
+    "multimask_output_in_sam": True,
+    "multimask_output_for_tracking": True,
+    "multimask_min_pt_num": 0,
+    "multimask_max_pt_num": 1,
+}
 
 
 def _to_numpy(value):

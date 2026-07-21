@@ -5,8 +5,6 @@
 from __future__ import annotations
 
 import math
-from typing import Tuple
-
 import mlx.core as mx
 import mlx.nn as nn
 
@@ -46,7 +44,7 @@ class SimpleMaskDownSampler(nn.Module):
         padding=0,
         total_stride=16,
         activation=nn.GELU,
-        interpol_size=None,
+        interpol_size: list[int] | tuple[int, int] | None = None,
         multiplex_count: int = 1,
         starting_out_chan: int = 1,
         input_channel_multiplier: int = 1,
@@ -82,14 +80,14 @@ class SimpleMaskDownSampler(nn.Module):
                     f"Unsupported type {type(self.interpol_size)}. "
                     "Should be a list or tuple."
                 )
-            self.interpol_size = list(interpol_size)
+            self.interpol_size = list(self.interpol_size)
             assert len(self.interpol_size) == 2
 
     def forward(self, x: mx.array) -> mx.array:
         if self.interpol_size is not None and self.interpol_size != list(x.shape[-2:]):
             x = interpolate(
                 x.astype(mx.float32),
-                size=self.interpol_size,
+                size=(self.interpol_size[0], self.interpol_size[1]),
                 align_corners=False,
                 mode="bilinear",
             )
@@ -192,7 +190,7 @@ class SimpleMaskEncoder(nn.Module):
         pix_feat: mx.array,
         masks: mx.array,
         skip_mask_sigmoid: bool = False,
-    ) -> Tuple[mx.array, mx.array]:
+    ) -> dict[str, mx.array | list[mx.array]]:
         if not skip_mask_sigmoid:
             masks = mx.sigmoid(masks)
         masks = self.mask_downsampler(masks)
