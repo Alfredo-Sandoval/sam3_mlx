@@ -36,8 +36,3 @@ class Sam3MultiplexVideoPredictor(Sam3BasePredictor):
         if warm_up_compilation is not None:
             warm_up_compilation()
         self.model._warm_up_complete = True
-
-    def _extend_expiration_time(self, session):
-        super()._extend_expiration_time(session)
-        if self.session_expiration_sec:
-            session["expiration_sec"] = self.session_expiration_sec

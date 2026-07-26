@@ -12,6 +12,7 @@ from sam3_mlx.model_builder import (
     _load_multiplex_checkpoint,
     _load_multiplex_tracker_checkpoint,
     _load_tracker_checkpoint,
+    _is_generated_checkpoint_key,
 )
 
 
@@ -121,28 +122,64 @@ def test_checkpoint_audit_reports_loaded_missing_extra_and_shape_mismatch():
     assert mismatch.checkpoint_shape == (3,)
 
 
-def test_load_checkpoint_returns_report_for_partial_compatible_checkpoint(tmp_path):
+def test_generated_checkpoint_allowlist_is_exact():
+    assert _is_generated_checkpoint_key(
+        "backbone.language_backbone.encoder.attn_mask"
+    )
+    assert not _is_generated_checkpoint_key("detector.attn_mask")
+
+
+def test_load_checkpoint_rejects_partial_checkpoint_without_mutating_model(tmp_path):
     model = _TinyCheckpointModel()
     checkpoint_path = tmp_path / "partial.safetensors"
+    original = np.asarray(_flat_parameters(model)["head.weight"]).copy()
     replacement = mx.arange(6).reshape(2, 3).astype(mx.float32)
     mx.save_safetensors(
         str(checkpoint_path),
-        {
-            "head.weight": replacement,
-            "extra.weight": mx.ones((1,)),
-        },
+        {"head.weight": replacement},
     )
 
-    report = _load_checkpoint(model, checkpoint_path)
+    with pytest.raises(ValueError, match="missing_required=2"):
+        _load_checkpoint(model, checkpoint_path)
+
+    np.testing.assert_array_equal(
+        np.asarray(_flat_parameters(model)["head.weight"]),
+        original,
+    )
+
+
+def test_load_checkpoint_allows_explicit_development_partial_load(tmp_path):
+    model = _TinyCheckpointModel()
+    checkpoint_path = tmp_path / "partial-development.safetensors"
+    replacement = mx.arange(6).reshape(2, 3).astype(mx.float32)
+    mx.save_safetensors(str(checkpoint_path), {"head.weight": replacement})
+
+    report = _load_checkpoint(model, checkpoint_path, strict=False)
 
     assert report.loaded == ("head.weight",)
     assert report.missing == ("head.bias", "scale")
-    assert report.extra == ("extra.weight",)
-    assert report.shape_mismatched == ()
+    assert model.checkpoint_load_report is report
     np.testing.assert_array_equal(
         np.asarray(_flat_parameters(model)["head.weight"]),
         np.asarray(replacement),
     )
+
+
+def test_load_checkpoint_rejects_unreviewed_source_weight(tmp_path):
+    model = _TinyCheckpointModel()
+    checkpoint_path = tmp_path / "unexpected.safetensors"
+    mx.save_safetensors(
+        str(checkpoint_path),
+        {
+            "head.weight": mx.ones((2, 3)),
+            "head.bias": mx.ones((2,)),
+            "scale": mx.ones((1,)),
+            "unexpected.weight": mx.ones((1,)),
+        },
+    )
+
+    with pytest.raises(ValueError, match="without a reviewed model mapping"):
+        _load_checkpoint(model, checkpoint_path)
 
 
 def test_load_checkpoint_rejects_shape_mismatch_without_partial_load(tmp_path):
@@ -174,7 +211,7 @@ def test_load_checkpoint_normalizes_known_conv_layout_before_audit(tmp_path):
     torch_layout = mx.arange(4 * 3 * 2 * 2).reshape(4, 3, 2, 2).astype(mx.float32)
     mx.save_safetensors(str(checkpoint_path), {key: torch_layout})
 
-    report = _load_checkpoint(model, checkpoint_path)
+    report = _load_checkpoint(model, checkpoint_path, strict=False)
 
     assert report.loaded == (key,)
     assert report.shape_mismatched == ()

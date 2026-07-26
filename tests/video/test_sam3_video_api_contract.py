@@ -49,6 +49,25 @@ def test_pil_sequence_loads_as_video_frames_without_frame_paths():
     assert np.isfinite(to_numpy(frames.images)).all()
 
 
+def test_image_folder_rejects_mixed_frame_dimensions(tmp_path):
+    Image.new("RGB", (8, 6), "red").save(tmp_path / "1.jpg")
+    Image.new("RGB", (4, 3), "blue").save(tmp_path / "2.jpg")
+
+    with pytest.raises(ValueError, match="mixed frame dimensions"):
+        load_resource_as_video_frames(tmp_path, image_size=14)
+
+
+def test_pil_sequence_rejects_mixed_frame_dimensions():
+    with pytest.raises(ValueError, match="mixed frame dimensions"):
+        load_resource_as_video_frames(
+            [
+                Image.new("RGB", (8, 6), "red"),
+                Image.new("RGB", (4, 3), "blue"),
+            ],
+            image_size=14,
+        )
+
+
 def test_pil_sequence_preserves_normalized_rgb_channel_values():
     frames = load_resource_as_video_frames(
         [Image.new("RGB", (1, 1), (255, 128, 0))],

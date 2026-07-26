@@ -2169,6 +2169,16 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
                 rel_coordinates=rel_coordinates,
                 use_prev_mem_frame=self.use_prev_mem_frame,
             )
+        if obj_id is not None:
+            raise_unsupported(
+                "Sam3MultiplexTrackingWithInteractivity.add_prompt(obj_id)",
+                reason="video-multiplex",
+                detail=(
+                    "Text and box prompts create detector-managed identities; a "
+                    "caller-supplied object ID is not supported on this branch."
+                ),
+                alternative="Omit obj_id or use the point-prompt branch.",
+            )
         orig_use_batched_grounding = self.use_batched_grounding
         self.use_batched_grounding = False
         try:

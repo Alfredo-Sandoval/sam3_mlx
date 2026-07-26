@@ -3919,7 +3919,7 @@ def test_multiplex_tracking_add_prompt_runs_text_prompted_image_frame():
     assert sorted(state["cached_frame_outputs"][0]) == [0]
 
 
-def test_multiplex_predictor_request_add_prompt_filters_by_model_signature():
+def test_multiplex_predictor_rejects_text_prompt_obj_id_instead_of_dropping_it():
     masks = np.zeros((1, 1, 4, 5), dtype=np.float32)
     masks[0, 0, 2, 3] = 1.0
     detector = _ImageOnlyDetector(
@@ -3945,22 +3945,19 @@ def test_multiplex_predictor_request_add_prompt_filters_by_model_signature():
         }
     )
 
-    add = predictor.handle_request(
-        {
-            "type": "add_prompt",
-            "session_id": start["session_id"],
-            "frame_index": 0,
-            "text": "shoe",
-            "obj_id": 99,
-            "rel_coordinates": False,
-        }
-    )
+    with pytest.raises(Sam3MlxUnsupportedError, match="add_prompt\\(obj_id\\)"):
+        predictor.handle_request(
+            {
+                "type": "add_prompt",
+                "session_id": start["session_id"],
+                "frame_index": 0,
+                "text": "shoe",
+                "obj_id": 99,
+                "rel_coordinates": False,
+            }
+        )
 
-    assert add["frame_index"] == 0
-    assert detector.backbone.text_calls == [(("shoe", "visual", "geometric"), "mlx")]
-    np.testing.assert_array_equal(add["outputs"]["out_obj_ids"], np.array([0]))
-    assert add["outputs"]["out_binary_masks"].shape == (1, 480, 640)
-    assert add["outputs"]["out_binary_masks"].any()
+    assert detector.backbone.text_calls == []
 
 
 def test_multiplex_predictor_request_preserves_clear_old_box_flag():

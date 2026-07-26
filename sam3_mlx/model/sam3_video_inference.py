@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from typing import Any
 
 import numpy as np
@@ -31,6 +32,7 @@ class Sam3VideoInference:
         compile_model: bool = False,
         confidence_threshold: float = 0.5,
         processor_factory=None,
+        frame_feature_cache_size: int = 4,
         **kwargs,
     ) -> None:
         if kwargs:
@@ -49,6 +51,13 @@ class Sam3VideoInference:
         self.compile_model = compile_model
         self.confidence_threshold = confidence_threshold
         self.processor_factory = processor_factory
+        if (
+            isinstance(frame_feature_cache_size, bool)
+            or not isinstance(frame_feature_cache_size, int)
+            or frame_feature_cache_size <= 0
+        ):
+            raise ValueError("frame_feature_cache_size must be a positive integer.")
+        self.frame_feature_cache_size = frame_feature_cache_size
 
     def eval(self):
         if hasattr(self.image_model, "eval"):
@@ -74,6 +83,26 @@ class Sam3VideoInference:
         async_loading_frames: bool = False,
         video_loader_type: str = "cv2",
     ) -> dict[str, Any]:
+        if offload_video_to_cpu:
+            raise_unsupported(
+                "Sam3VideoInference.init_state(offload_video_to_cpu=True)",
+                reason="port-gap",
+                detail=(
+                    "The selected-frame MLX path does not maintain a separate device "
+                    "video tensor store that can be offloaded."
+                ),
+                alternative="offload_video_to_cpu=False",
+            )
+        if offload_state_to_cpu:
+            raise_unsupported(
+                "Sam3VideoInference.init_state(offload_state_to_cpu=True)",
+                reason="port-gap",
+                detail=(
+                    "MLX unified memory has no separate CPU state-offload contract "
+                    "matching the upstream Torch implementation."
+                ),
+                alternative="offload_state_to_cpu=False",
+            )
         frames = load_resource_as_video_frames(
             resource_path=resource_path,
             image_size=self.image_size,
@@ -82,6 +111,7 @@ class Sam3VideoInference:
             img_std=self.image_std,
             async_loading_frames=async_loading_frames,
             video_loader_type=video_loader_type,
+            materialize_mlx_frames=False,
         )
         return {
             "image_size": self.image_size,
@@ -94,6 +124,8 @@ class Sam3VideoInference:
             "tracker_inference_states": [],
             "tracker_metadata": {},
             "feature_cache": {},
+            "frame_feature_cache": OrderedDict(),
+            "text_feature_cache": OrderedDict(),
             "cached_frame_outputs": {},
             "action_history": [],
             "text_prompt": None,
@@ -228,6 +260,9 @@ class Sam3VideoInference:
             "framewise_mlx": True,
         }
         for frame_idx in processing_order:
+            cancel_event = inference_state.get("_cancel_event")
+            if cancel_event is not None and cancel_event.is_set():
+                break
             outputs = self._run_frame_prompt(
                 inference_state=inference_state,
                 frame_idx=frame_idx,
@@ -246,26 +281,15 @@ class Sam3VideoInference:
         frame_idx: int = 0,
         is_user_action: bool = True,
     ):
-        del is_user_action
-        inference_state["removed_obj_ids"].add(int(obj_id))
-        inference_state["action_history"].append(
-            {"type": "remove", "frame_idx": frame_idx, "obj_ids": [int(obj_id)]}
-        )
-        for cached_frame_idx, outputs in list(
-            inference_state["cached_frame_outputs"].items()
-        ):
-            inference_state["cached_frame_outputs"][cached_frame_idx] = (
-                _filter_outputs_by_removed_obj_ids(
-                    outputs,
-                    removed_obj_ids=inference_state["removed_obj_ids"],
-                )
-            )
-        return inference_state["cached_frame_outputs"].get(
-            frame_idx,
-            _empty_video_outputs(
-                orig_height=inference_state["orig_height"],
-                orig_width=inference_state["orig_width"],
+        del inference_state, obj_id, frame_idx, is_user_action
+        raise_unsupported(
+            "Sam3VideoInference.remove_object",
+            reason="video-tracker",
+            detail=(
+                "Selected-frame outputs use frame-local detection IDs, not stable "
+                "cross-frame object identities."
             ),
+            alternative="Reset the session and submit a new frame-local prompt.",
         )
 
     def cancel_propagation(self, inference_state: dict[str, Any]) -> None:
@@ -312,14 +336,32 @@ class Sam3VideoInference:
         frame_idx: int,
         output_prob_thresh: float | None,
     ) -> dict[str, np.ndarray]:
-        frame = inference_state["frames"][frame_idx]
         processor = self._make_processor(output_prob_thresh)
-        frame_state = processor.set_image(frame)
+        frame_state = self._get_frame_image_state(
+            inference_state,
+            frame_idx=frame_idx,
+            processor=processor,
+        )
         text_prompt = inference_state["text_prompt"]
         if text_prompt is not None:
+            text_feature_cache = inference_state["text_feature_cache"]
+            text_outputs = text_feature_cache.pop(text_prompt, None)
             frame_state = processor.set_text_prompt(
-                prompt=text_prompt, state=frame_state
+                prompt=text_prompt,
+                state=frame_state,
+                run_grounding=False,
+                text_outputs=text_outputs,
             )
+            if text_outputs is None and "backbone_out" in frame_state:
+                text_outputs = {
+                    key: value
+                    for key, value in frame_state["backbone_out"].items()
+                    if key.startswith("language_")
+                }
+            if text_outputs:
+                text_feature_cache[text_prompt] = text_outputs
+                while len(text_feature_cache) > 8:
+                    text_feature_cache.popitem(last=False)
         boxes_cxcywh = inference_state["box_prompt"]
         box_labels = inference_state["box_labels"]
         if boxes_cxcywh is not None:
@@ -328,6 +370,7 @@ class Sam3VideoInference:
                     box=box.tolist(),
                     label=bool(label),
                     state=frame_state,
+                    run_grounding=False,
                 )
         points = inference_state["point_prompt"]
         point_labels = inference_state["point_labels"]
@@ -337,7 +380,9 @@ class Sam3VideoInference:
                     point=point.tolist(),
                     label=bool(label),
                     state=frame_state,
+                    run_grounding=False,
                 )
+        frame_state = processor.run_grounding(frame_state)
         outputs = _state_to_video_outputs(
             frame_state,
             obj_id=inference_state["obj_id"],
@@ -348,6 +393,23 @@ class Sam3VideoInference:
             outputs,
             removed_obj_ids=inference_state["removed_obj_ids"],
         )
+
+    def _get_frame_image_state(self, inference_state, *, frame_idx, processor):
+        cache = inference_state["frame_feature_cache"]
+        cached_state = cache.pop(frame_idx, None)
+        if cached_state is None:
+            frame = inference_state["frames"][frame_idx]
+            encoded_state = processor.set_image(frame)
+            cached_state = dict(encoded_state)
+            if "backbone_out" in cached_state:
+                cached_state["backbone_out"] = dict(cached_state["backbone_out"])
+        cache[frame_idx] = cached_state
+        while len(cache) > self.frame_feature_cache_size:
+            cache.popitem(last=False)
+        frame_state = dict(cached_state)
+        if "backbone_out" in frame_state:
+            frame_state["backbone_out"] = dict(frame_state["backbone_out"])
+        return frame_state
 
     def _make_processor(self, output_prob_thresh: float | None):
         factory = self.processor_factory
@@ -411,6 +473,16 @@ class Sam3VideoInferenceWithInstanceInteractivity(Sam3VideoInference):
                 labels=point_labels,
                 rel_coordinates=rel_coordinates,
                 output_prob_thresh=output_prob_thresh,
+            )
+        if obj_id is not None:
+            raise_unsupported(
+                "Sam3VideoInference.add_prompt(obj_id)",
+                reason="video-tracker",
+                detail=(
+                    "Text and box results have frame-local detection IDs; assigning "
+                    "a persistent object ID would imply unsupported temporal identity."
+                ),
+                alternative="Omit obj_id.",
             )
         return super().add_prompt(
             inference_state=inference_state,

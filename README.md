@@ -23,8 +23,8 @@ framework.
 
 ## Features
 
-- **Image segmentation runtime** for SAM 3 / SAM 3.1 on Apple Silicon, with
-  output validated against the official SAM 3 image model.
+- **Image segmentation runtime** for SAM 3 on Apple Silicon, with exact
+  synthetic preprocessing comparisons against TorchVision.
 - **Selected-frame video API** backed by the image runtime.
 - **Clear errors on unsupported paths.** Unported surfaces (training,
   evaluation, multiplex video, Triton) raise `Sam3MlxUnsupportedError`.
@@ -74,7 +74,9 @@ uv sync --extra viz
 
 Checkpoint conversion helpers are included for advanced use, but PyTorch is not
 installed by a `sam3-mlx` extra in this release. Use a separate compatible
-PyTorch environment before running `sam3_mlx.convert`.
+PyTorch environment before running `sam3_mlx.convert`. Conversion requires an
+immutable 40-character Hugging Face commit via `--source-revision` and writes
+`conversion-manifest.json` with source/output hashes, key counts, and dtypes.
 
 Verify the install:
 
@@ -116,16 +118,23 @@ from sam3_mlx import build_sam3_predictor
 predictor = build_sam3_predictor(version="sam3")
 ```
 
-`build_sam3_predictor()` defaults to `version="sam3.1"` to match the official
-SAM3 API shape. That path routes to the SAM 3.1 multiplex predictor, which runs
-on MLX with a locally converted checkpoint
-(`checkpoint_path=..., load_from_HF=False`); automatic checkpoint download and
-conversion are not wired up yet, so the default `load_from_HF=True` raises
-`Sam3MlxUnsupportedError(reason="video-multiplex")`. Use `version="sam3"` for
-the selected-frame video slice with automatic weights.
+`build_sam3_predictor()` defaults to the working `version="sam3"` selected-frame
+path. Request `version="sam3.1"` explicitly for the experimental multiplex
+predictor; that path requires a locally converted checkpoint
+(`checkpoint_path=..., load_from_HF=False`). Automatic SAM 3.1 checkpoint
+download and conversion are not wired up yet.
 
 The video slice accepts image paths, image folders, PIL image sequences, and
-OpenCV-decodable video files.
+OpenCV-decodable video files. It performs independent framewise inference:
+`out_obj_ids` are frame-local detection IDs, not persistent identities.
+Cross-frame `remove_object` behavior is rejected until temporal association is
+implemented. Mixed-resolution frame collections and unsupported CPU-offload
+controls fail explicitly.
+
+Checkpoint loading requires complete model coverage by default. For controlled
+development experiments only, `build_sam3_image_model` accepts
+`strict_checkpoint_loading=False`; the returned model exposes the audit as
+`model.checkpoint_load_report`.
 
 ## Limitations
 
@@ -140,6 +149,10 @@ Unsupported paths raise `Sam3MlxUnsupportedError`:
   multi-GPU video, and TorchCodec decoding are unavailable.
 - **Training is currently not supported.** Training loops, autograd, distributed
   execution, and the official eval toolkit are not available yet.
+- **No release-grade model parity claim yet.** The repository has preprocessing
+  and component parity tests, but no checked-in end-to-end image-model evidence
+  artifact with pinned weights, prompts, IoU/error metrics, latency, and memory.
+  See [`PARITY.md`](PARITY.md).
 
 ## Attribution
 

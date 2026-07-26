@@ -1889,6 +1889,32 @@ def _validate_checkpoint_component_coverage(
     report: Sam3CheckpointLoadReport,
     checkpoint_path: Path | str,
 ) -> None:
+    unexpected_source = tuple(
+        key
+        for key in report.extra
+        if not key.startswith("backbone.vision_backbone.sam2_convs.")
+    )
+    if unexpected_source:
+        example = unexpected_source[0]
+        raise ValueError(
+            "SAM3 checkpoint contains source weights without a reviewed model "
+            f"mapping: {checkpoint_path}. unexpected={len(unexpected_source)}. "
+            f"First unexpected key: {example}."
+        )
+    missing_required = tuple(
+        key for key in report.missing if not _is_generated_checkpoint_key(key)
+    )
+    if missing_required:
+        example = missing_required[0]
+        raise ValueError(
+            "SAM3 checkpoint did not cover all required model weights: "
+            f"{checkpoint_path}. loaded={len(report.loaded)}, "
+            f"missing_required={len(missing_required)}. "
+            f"First missing key: {example}. Pass "
+            "strict_checkpoint_loading=False only for explicit development-time "
+            "partial loading."
+        )
+
     if isinstance(model, Sam3Image):
         loaded_image = tuple(
             key
@@ -1927,10 +1953,15 @@ def _validate_checkpoint_component_coverage(
     )
 
 
-def _is_allowed_missing_tracker_key(key: str) -> bool:
-    if "freqs_cis" in key:
+def _is_generated_checkpoint_key(key: str) -> bool:
+    """Return whether a model value is deterministically generated at construction."""
+    if key == "backbone.language_backbone.encoder.attn_mask":
         return True
-    if ".position_encoding.cache." in key:
+    return "freqs_cis" in key or ".position_encoding.cache." in key
+
+
+def _is_allowed_missing_tracker_key(key: str) -> bool:
+    if _is_generated_checkpoint_key(key):
         return True
     if key.startswith("backbone."):
         return True
@@ -1984,9 +2015,19 @@ def _validate_sam31_multiplex_checkpoint_coverage(
             "SAM 3.1 multiplex checkpoint did not cover required VE text "
             f"resizer weights: {checkpoint_path}. First missing key: {example}."
         )
+    missing_required = [
+        key for key in report.missing if not _is_generated_checkpoint_key(key)
+    ]
+    if missing_required:
+        example = missing_required[0]
+        raise ValueError(
+            "SAM 3.1 multiplex checkpoint did not cover all required model "
+            f"weights: {checkpoint_path}. loaded={len(report.loaded)}, "
+            f"missing_required={len(missing_required)}. First missing key: {example}."
+        )
 
 
-def _load_multiplex_tracker_checkpoint(model, checkpoint_path):
+def _load_multiplex_tracker_checkpoint(model, checkpoint_path, *, strict=True):
     checkpoint_path = Path(checkpoint_path)
     if checkpoint_path.suffix in {".pt", ".pth"}:
         raise ValueError(
@@ -2010,17 +2051,20 @@ def _load_multiplex_tracker_checkpoint(model, checkpoint_path):
             f"shape_mismatched={len(report.shape_mismatched)}. "
             f"{mismatch_details}"
         )
-    if not report.loaded:
+    if strict:
+        _validate_tracker_checkpoint_coverage(report, checkpoint_path)
+    elif not report.loaded:
         raise ValueError(
             f"SAM 3.1 multiplex tracker checkpoint did not load any weights: "
             f"{checkpoint_path}."
         )
     model.load_weights([(key, weights[key]) for key in report.loaded], strict=False)
     mx.eval(model.parameters())
+    model.checkpoint_load_report = report
     return report
 
 
-def _load_multiplex_checkpoint(model, checkpoint_path):
+def _load_multiplex_checkpoint(model, checkpoint_path, *, strict=True):
     checkpoint_path = Path(checkpoint_path)
     if checkpoint_path.suffix in {".pt", ".pth"}:
         raise ValueError(
@@ -2044,9 +2088,15 @@ def _load_multiplex_checkpoint(model, checkpoint_path):
             f"shape_mismatched={len(report.shape_mismatched)}. "
             f"{mismatch_details}"
         )
-    _validate_sam31_multiplex_checkpoint_coverage(report, checkpoint_path)
+    if strict:
+        _validate_sam31_multiplex_checkpoint_coverage(report, checkpoint_path)
+    elif not report.loaded:
+        raise ValueError(
+            f"SAM 3.1 multiplex checkpoint did not load any weights: {checkpoint_path}."
+        )
     model.load_weights([(key, weights[key]) for key in report.loaded], strict=False)
     mx.eval(model.parameters())
+    model.checkpoint_load_report = report
     return report
 
 
@@ -2074,10 +2124,17 @@ def _load_tracker_checkpoint(model, checkpoint_path):
     _validate_tracker_checkpoint_coverage(report, checkpoint_path)
     model.load_weights([(key, weights[key]) for key in report.loaded], strict=False)
     mx.eval(model.parameters())
+    model.checkpoint_load_report = report
     return report
 
 
-def _load_checkpoint(model, checkpoint_path, *, interactive_checkpoint_path=None):
+def _load_checkpoint(
+    model,
+    checkpoint_path,
+    *,
+    interactive_checkpoint_path=None,
+    strict=True,
+):
     checkpoint_path = Path(checkpoint_path)
     if checkpoint_path.suffix in {".pt", ".pth"}:
         raise ValueError(
@@ -2125,9 +2182,13 @@ def _load_checkpoint(model, checkpoint_path, *, interactive_checkpoint_path=None
             f"shape_mismatched={len(report.shape_mismatched)}. "
             f"{mismatch_details}"
         )
-    _validate_checkpoint_component_coverage(model, report, checkpoint_label)
+    if strict:
+        _validate_checkpoint_component_coverage(model, report, checkpoint_label)
+    elif not report.loaded:
+        raise ValueError(f"SAM3 checkpoint did not load any weights: {checkpoint_label}.")
     model.load_weights([(key, weights[key]) for key in report.loaded], strict=False)
     mx.eval(model.parameters())
+    model.checkpoint_load_report = report
     return report
 
 
@@ -2161,6 +2222,8 @@ def build_sam3_image_model(
     local_weights_dir=None,
     convert_from_pytorch=False,
     interactive_checkpoint_path=None,
+    strict_checkpoint_loading=True,
+    conversion_source_revision=None,
 ):
     if compile:
         _raise_compile_unsupported(
@@ -2169,6 +2232,11 @@ def build_sam3_image_model(
     _validate_mlx_device(device)
     if checkpoint_path is None and convert_from_pytorch and not load_from_HF:
         raise ValueError("convert_from_pytorch=True requires load_from_HF=True.")
+    if convert_from_pytorch and not conversion_source_revision:
+        raise ValueError(
+            "convert_from_pytorch=True requires conversion_source_revision to be "
+            "an immutable Hugging Face commit."
+        )
     if bpe_path is None:
         bpe_path = _default_bpe_path()
 
@@ -2205,6 +2273,7 @@ def build_sam3_image_model(
             checkpoint_path = download_and_convert(
                 hf_repo="facebook/sam3",
                 mlx_path=local_weights_dir or "sam3-mod-weights",
+                source_revision=conversion_source_revision,
             )
         else:
             checkpoint_path = load_from_hub(
@@ -2217,6 +2286,7 @@ def build_sam3_image_model(
             model,
             f"{checkpoint_path}",
             interactive_checkpoint_path=interactive_checkpoint_path,
+            strict=strict_checkpoint_loading,
         )
 
     return _setup_device_and_mode(model, device, eval_mode)
@@ -2259,6 +2329,8 @@ def build_sam3_video_model(
     convert_from_pytorch=False,
     enable_segmentation=True,
     processor_factory=None,
+    frame_feature_cache_size=4,
+    conversion_source_revision=None,
 ):
     _validate_sam3_video_runtime_options(
         "sam3_mlx.model_builder.build_sam3_video_model",
@@ -2282,6 +2354,8 @@ def build_sam3_video_model(
             enable_segmentation=enable_segmentation,
             enable_inst_interactivity=False,
             compile=compile,
+            strict_checkpoint_loading=strict_state_dict_loading,
+            conversion_source_revision=conversion_source_revision,
         )
 
     from sam3_mlx.model.sam3_video_inference import (
@@ -2296,6 +2370,7 @@ def build_sam3_video_model(
         compile_model=compile,
         confidence_threshold=confidence_threshold,
         processor_factory=processor_factory,
+        frame_feature_cache_size=frame_feature_cache_size,
     )
     return _setup_device_and_mode(model, device, eval_mode=True)
 
@@ -2412,7 +2487,6 @@ def build_sam3_multiplex_video_model(
     device="mlx",
     compile=False,
 ):
-    del strict_state_dict_loading
     _validate_mlx_device(device)
     if compile:
         _raise_compile_unsupported(
@@ -2510,7 +2584,11 @@ def build_sam3_multiplex_video_model(
         use_memory_selection=False,
     )
     if checkpoint_path is not None:
-        _load_multiplex_tracker_checkpoint(model, checkpoint_path)
+        _load_multiplex_tracker_checkpoint(
+            model,
+            checkpoint_path,
+            strict=strict_state_dict_loading,
+        )
     return _setup_device_and_mode(model, device, eval_mode=True)
 
 
@@ -2634,17 +2712,18 @@ def build_sam3_multiplex_video_predictor(
     bpe_path: Optional[str] = None,
     max_num_objects: int = 16,
     multiplex_count: int = 16,
-    use_fa3: bool = True,
+    use_fa3: bool = False,
     use_rope_real: bool = True,
     compile: bool = False,
     warm_up: bool = False,
     session_expiration_sec: int = 1200,
     default_output_prob_thresh: float = 0.5,
-    async_loading_frames: bool = True,
+    async_loading_frames: bool = False,
     load_from_HF: bool = True,
     score_threshold_detection: float = 0.4,
     image_only_det_thresh: float = 0.5,
     suppress_det_close_to_boundary: bool = True,
+    strict_state_dict_loading: bool = True,
 ):
     if load_from_HF:
         _raise_builder_unsupported(
@@ -2675,7 +2754,11 @@ def build_sam3_multiplex_video_predictor(
         suppress_det_close_to_boundary=suppress_det_close_to_boundary,
     )
     if checkpoint_path is not None:
-        _load_multiplex_checkpoint(model, checkpoint_path)
+        _load_multiplex_checkpoint(
+            model,
+            checkpoint_path,
+            strict=strict_state_dict_loading,
+        )
 
     from sam3_mlx.model.sam3_multiplex_video_predictor import (
         Sam3MultiplexVideoPredictor,
@@ -2693,14 +2776,14 @@ def build_sam3_multiplex_video_predictor(
 def build_sam3_predictor(
     checkpoint_path=None,
     bpe_path=None,
-    version="sam3.1",
+    version="sam3",
     compile=False,
     warm_up=False,
     max_num_objects=16,
     multiplex_count=16,
-    use_fa3=True,
+    use_fa3=False,
     use_rope_real=True,
-    async_loading_frames=True,
+    async_loading_frames=False,
     load_from_HF=True,
     **kwargs,
 ):
@@ -2724,6 +2807,7 @@ def build_sam3_predictor(
             bpe_path=bpe_path,
             compile=compile,
             async_loading_frames=async_loading_frames,
+            load_from_HF=load_from_HF,
             **kwargs,
         )
     raise ValueError(f"Unknown version: {version!r}. Use 'sam3' or 'sam3.1'.")

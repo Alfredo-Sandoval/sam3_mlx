@@ -36,19 +36,32 @@ class _FakeImageProcessor:
             "scores": np.array([0.91], dtype=np.float32),
         }
 
-    def set_text_prompt(self, prompt, state):
+    def set_text_prompt(
+        self,
+        prompt,
+        state,
+        *,
+        run_grounding=True,
+        text_outputs=None,
+    ):
+        del run_grounding, text_outputs
         state = dict(state)
         state["text_prompt"] = prompt
         return state
 
-    def add_geometric_prompt(self, box, label, state):
+    def add_geometric_prompt(self, box, label, state, *, run_grounding=True):
+        del run_grounding
         state = dict(state)
         state["box_prompt"] = (box, label)
         return state
 
-    def add_point_prompt(self, point, label, state):
+    def add_point_prompt(self, point, label, state, *, run_grounding=True):
+        del run_grounding
         state = dict(state)
         state["point_prompt"] = (point, label)
+        return state
+
+    def run_grounding(self, state):
         return state
 
 
@@ -146,6 +159,8 @@ def test_video_predictor_request_api_uses_official_output_schema():
     start = predictor.handle_request(
         {"type": "start_session", "resource_path": "<load-dummy-video-2>"}
     )
+    state = predictor._all_inference_states[start["session_id"]]["state"]
+    assert state["frames"].images is None
     add = predictor.handle_request(
         {
             "type": "add_prompt",
@@ -175,12 +190,87 @@ def test_video_predictor_request_api_uses_official_output_schema():
         (0, set(add["outputs"])),
         (1, set(add["outputs"])),
     ]
-    assert predictor.handle_request(
-        {"type": "remove_object", "session_id": start["session_id"], "obj_id": 0}
-    ) == {"is_success": True}
+    with pytest.raises(Sam3MlxUnsupportedError, match="frame-local detection IDs"):
+        predictor.handle_request(
+            {"type": "remove_object", "session_id": start["session_id"], "obj_id": 0}
+        )
     assert predictor.handle_request(
         {"type": "close_session", "session_id": start["session_id"]}
     ) == {"is_success": True}
+
+
+def test_selected_frame_batches_prompt_mutation_into_one_grounding_pass():
+    processors = []
+
+    class _CountingImageProcessor(_FakeImageProcessor):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.grounding_calls = 0
+            processors.append(self)
+
+        def run_grounding(self, state):
+            self.grounding_calls += 1
+            return state
+
+    predictor = sam3_mlx.build_sam3_predictor(
+        version="sam3",
+        model=object(),
+        load_from_HF=False,
+        resolution=16,
+        processor_factory=_CountingImageProcessor,
+    )
+    session_id = predictor.start_session("<load-dummy-video-1>")["session_id"]
+
+    predictor.add_prompt(
+        session_id,
+        frame_idx=0,
+        text="object",
+        bounding_boxes=[[0.25, 0.25, 0.2, 0.2], [0.75, 0.75, 0.2, 0.2]],
+        bounding_box_labels=[True, False],
+    )
+
+    assert len(processors) == 1
+    assert processors[0].grounding_calls == 1
+    assert processors[0].image_model is predictor.model.image_model
+
+
+def test_selected_frame_uses_bounded_lru_for_backbone_features():
+    set_image_calls = []
+
+    class _CountingImageProcessor(_FakeImageProcessor):
+        def set_image(self, image):
+            set_image_calls.append(image)
+            return super().set_image(image)
+
+    predictor = sam3_mlx.build_sam3_predictor(
+        version="sam3",
+        model=object(),
+        load_from_HF=False,
+        resolution=16,
+        processor_factory=_CountingImageProcessor,
+        frame_feature_cache_size=2,
+    )
+    session_id = predictor.start_session("<load-dummy-video-3>")["session_id"]
+    predictor.add_prompt(session_id, frame_idx=0, text="object")
+
+    list(
+        predictor.propagate_in_video(
+            session_id,
+            propagation_direction="forward",
+        )
+    )
+    state = predictor._all_inference_states[session_id]["state"]
+
+    assert len(set_image_calls) == 3
+    assert list(state["frame_feature_cache"]) == [1, 2]
+
+    predictor.add_prompt(session_id, frame_idx=1, text="object")
+    assert len(set_image_calls) == 3
+    assert list(state["frame_feature_cache"]) == [2, 1]
+
+    predictor.add_prompt(session_id, frame_idx=0, text="object")
+    assert len(set_image_calls) == 4
+    assert list(state["frame_feature_cache"]) == [1, 0]
 
 
 def test_multiplex_predictor_builder_constructs_checkpoint_free_mlx_stack():
@@ -271,10 +361,6 @@ def test_multiplex_predictor_warm_up_without_hook_is_noop_marker():
 @pytest.mark.parametrize(
     ("call", "feature_fragment"),
     [
-        (
-            lambda: sam3_mlx.build_sam3_predictor(),
-            "build_sam3_multiplex_video_predictor",
-        ),
         (
             sam3_mlx.build_sam3_multiplex_video_predictor,
             "build_sam3_multiplex_video_predictor",

@@ -392,16 +392,6 @@ def test_torch_compile_guard_raises_canonical_error():
             "has_presence_token=False",
             "presence-token",
         ),
-        # build_sam3_multiplex_video_predictor(load_from_HF=False, use_fa3=False)
-        # now supports checkpoint-free and local converted-checkpoint construction.
-        # The default still fails fast because automatic HF download/conversion is
-        # not wired into the MLX runtime.
-        (
-            lambda: import_module("sam3_mlx.model_builder").build_sam3_predictor(),
-            "video-multiplex",
-            "build_sam3_multiplex_video_predictor",
-            "download/conversion",
-        ),
         # Sam3TrackerPredictor.__init__ is now a real MLX construction layer
         # for cached-feature single-object tracking. Deferred predictor paths
         # are covered by tests/port/tracker/test_tracker_predictor.py.

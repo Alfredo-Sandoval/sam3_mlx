@@ -76,6 +76,7 @@ def load_resource_as_video_frames(
     img_std: tuple[float, float, float] = (0.5, 0.5, 0.5),
     async_loading_frames: bool = False,
     video_loader_type: str = "cv2",
+    materialize_mlx_frames: bool = True,
 ) -> VideoFrames | AsyncImageFrameLoader:
     """Load image-safe resources into host frames plus normalized MLX arrays.
 
@@ -97,6 +98,7 @@ def load_resource_as_video_frames(
             offload_video_to_cpu=offload_video_to_cpu,
             img_mean=img_mean,
             img_std=img_std,
+            materialize_mlx_frames=materialize_mlx_frames,
         )
 
     resource_path_str = os.fspath(resource_path)
@@ -108,6 +110,7 @@ def load_resource_as_video_frames(
             offload_video_to_cpu=offload_video_to_cpu,
             img_mean=img_mean,
             img_std=img_std,
+            materialize_mlx_frames=materialize_mlx_frames,
         )
     return load_video_frames(
         video_path=resource_path_str,
@@ -117,6 +120,7 @@ def load_resource_as_video_frames(
         img_std=img_std,
         async_loading_frames=async_loading_frames,
         video_loader_type=video_loader_type,
+        materialize_mlx_frames=materialize_mlx_frames,
     )
 
 
@@ -126,22 +130,28 @@ def load_image_as_single_frame_video(
     offload_video_to_cpu: bool,
     img_mean: tuple[float, float, float] = (0.5, 0.5, 0.5),
     img_std: tuple[float, float, float] = (0.5, 0.5, 0.5),
+    materialize_mlx_frames: bool = True,
 ) -> VideoFrames:
     """Load an image path using the official single-frame video contract."""
     _validate_image_loading_args(image_size, offload_video_to_cpu)
     path = Path(image_path)
-    frame, tensor = _load_rgb_image_and_tensor(
-        path,
-        image_size=image_size,
-        img_mean=img_mean,
-        img_std=img_std,
-    )
+    if materialize_mlx_frames:
+        frame, tensor = _load_rgb_image_and_tensor(
+            path,
+            image_size=image_size,
+            img_mean=img_mean,
+            img_std=img_std,
+        )
+        images = tensor[None, ...]
+    else:
+        frame = _load_rgb_image(path)
+        images = None
     return VideoFrames(
         frames=(frame,),
         orig_height=frame.height,
         orig_width=frame.width,
         frame_paths=(path,),
-        images=tensor[None, ...],
+        images=images,
     )
 
 
@@ -153,6 +163,7 @@ def load_video_frames(
     img_std: tuple[float, float, float] = (0.5, 0.5, 0.5),
     async_loading_frames: bool = False,
     video_loader_type: str = "cv2",
+    materialize_mlx_frames: bool = True,
 ) -> VideoFrames | AsyncImageFrameLoader:
     """Route video-like resources following the official SAM3 loader contract."""
     if image_size <= 0:
@@ -169,12 +180,14 @@ def load_video_frames(
             offload_video_to_cpu=offload_video_to_cpu,
             num_frames=int(num_frames_text),
             do_zeros=kind == "zero",
+            materialize_mlx_frames=materialize_mlx_frames,
         )
     if video_path_str.startswith("<load-dummy-video"):
         return load_dummy_video(
             image_size=image_size,
             offload_video_to_cpu=offload_video_to_cpu,
             num_frames=60,
+            materialize_mlx_frames=materialize_mlx_frames,
         )
     if video_path_str.startswith("<load-zero-video"):
         return load_dummy_video(
@@ -182,6 +195,7 @@ def load_video_frames(
             offload_video_to_cpu=offload_video_to_cpu,
             num_frames=60,
             do_zeros=True,
+            materialize_mlx_frames=materialize_mlx_frames,
         )
 
     if os.path.isdir(video_path_str):
@@ -192,6 +206,7 @@ def load_video_frames(
             img_mean=img_mean,
             img_std=img_std,
             async_loading_frames=async_loading_frames,
+            materialize_mlx_frames=materialize_mlx_frames,
         )
 
     suffix = os.path.splitext(video_path_str)[-1].lower()
@@ -204,6 +219,7 @@ def load_video_frames(
             img_std=img_std,
             async_loading_frames=async_loading_frames,
             video_loader_type=video_loader_type,
+            materialize_mlx_frames=materialize_mlx_frames,
         )
 
     try:
@@ -215,6 +231,7 @@ def load_video_frames(
             img_std=img_std,
             async_loading_frames=async_loading_frames,
             video_loader_type=video_loader_type,
+            materialize_mlx_frames=materialize_mlx_frames,
         )
     except Exception as exc:
         _raise_io_unsupported(
@@ -233,6 +250,7 @@ def load_dummy_video(
     offload_video_to_cpu: bool = False,
     num_frames: int = 60,
     do_zeros: bool = False,
+    materialize_mlx_frames: bool = True,
 ) -> VideoFrames:
     """Return deterministic dummy frames for API tests and warmup paths."""
     _validate_image_loading_args(image_size, offload_video_to_cpu)
@@ -251,13 +269,15 @@ def load_dummy_video(
             dtype=np.uint8,
         )
     frames = tuple(Image.fromarray(array) for array in arrays)
-    if num_frames:
+    if materialize_mlx_frames and num_frames:
         images = mx.stack(
             [_pil_to_mlx_image(frame, image_size) for frame in frames],
             axis=0,
         )
-    else:
+    elif materialize_mlx_frames:
         images = mx.zeros((0, 3, image_size, image_size), dtype=mx.float32)
+    else:
+        images = None
     return VideoFrames(
         frames=frames,
         orig_height=video_height,
@@ -273,6 +293,7 @@ def load_video_frames_from_image_folder(
     img_mean: tuple[float, float, float] = (0.5, 0.5, 0.5),
     img_std: tuple[float, float, float] = (0.5, 0.5, 0.5),
     async_loading_frames: bool = False,
+    materialize_mlx_frames: bool = True,
 ) -> VideoFrames | AsyncImageFrameLoader:
     _validate_image_loading_args(image_size, offload_video_to_cpu)
     folder = Path(image_folder)
@@ -292,18 +313,24 @@ def load_video_frames_from_image_folder(
             offload_video_to_cpu=offload_video_to_cpu,
             img_mean=img_mean,
             img_std=img_std,
+            materialize_mlx_frames=materialize_mlx_frames,
         )
-    payloads = [
-        _load_rgb_image_and_tensor(
-            path,
-            image_size=image_size,
-            img_mean=img_mean,
-            img_std=img_std,
-        )
-        for path in frame_paths
-    ]
-    frames = tuple(frame for frame, _ in payloads)
-    images = mx.stack([tensor for _, tensor in payloads], axis=0)
+    if materialize_mlx_frames:
+        payloads = [
+            _load_rgb_image_and_tensor(
+                path,
+                image_size=image_size,
+                img_mean=img_mean,
+                img_std=img_std,
+            )
+            for path in frame_paths
+        ]
+        frames = tuple(frame for frame, _ in payloads)
+        images = mx.stack([tensor for _, tensor in payloads], axis=0)
+    else:
+        frames = tuple(_load_rgb_image(path) for path in frame_paths)
+        images = None
+    _validate_uniform_frame_dimensions(frames, source=str(folder))
     first = frames[0]
     return VideoFrames(
         frames=frames,
@@ -324,9 +351,16 @@ def load_video_frames_from_video_file(
     gpu_acceleration: bool = False,
     gpu_device: Any | None = None,
     video_loader_type: str = "cv2",
+    materialize_mlx_frames: bool = True,
 ) -> VideoFrames:
     """Load frames from a video file using an explicitly supported backend."""
-    del async_loading_frames
+    if async_loading_frames:
+        _raise_io_unsupported(
+            "load_video_frames_from_video_file(async_loading_frames=True)",
+            reason="port-gap",
+            detail="The OpenCV decoder currently loads video-file frames synchronously.",
+            alternative="async_loading_frames=False",
+        )
     if video_loader_type == "cv2":
         return load_video_frames_from_video_file_using_cv2(
             video_path=str(video_path),
@@ -334,6 +368,7 @@ def load_video_frames_from_video_file(
             img_mean=img_mean,
             img_std=img_std,
             offload_video_to_cpu=offload_video_to_cpu,
+            materialize_mlx_frames=materialize_mlx_frames,
         )
     if video_loader_type == "torchcodec":
         return AsyncVideoFileLoaderWithTorchCodec(
@@ -354,6 +389,7 @@ def load_video_frames_from_video_file_using_cv2(
     img_mean: tuple[float, float, float] = (0.5, 0.5, 0.5),
     img_std: tuple[float, float, float] = (0.5, 0.5, 0.5),
     offload_video_to_cpu: bool = False,
+    materialize_mlx_frames: bool = True,
 ) -> VideoFrames:
     """Decode a video file with OpenCV and expose normalized MLX image tensors."""
     _validate_image_loading_args(image_size, offload_video_to_cpu)
@@ -376,7 +412,7 @@ def load_video_frames_from_video_file_using_cv2(
     tensors: list[Any] = []
     orig_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     orig_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    mean, std = _mean_std_arrays(img_mean, img_std)
+    mean_std = _mean_std_arrays(img_mean, img_std) if materialize_mlx_frames else None
     try:
         while True:
             ok, frame_bgr = cap.read()
@@ -384,13 +420,15 @@ def load_video_frames_from_video_file_using_cv2(
                 break
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
             frames.append(Image.fromarray(frame_rgb).copy())
-            frame_resized = cv2.resize(
-                frame_rgb,
-                (image_size, image_size),
-                interpolation=cv2.INTER_CUBIC,
-            )
-            tensor = _uint8_hwc_to_mlx_chw_float32(frame_resized)
-            tensors.append((tensor - mean) / std)
+            if materialize_mlx_frames:
+                frame_resized = cv2.resize(
+                    frame_rgb,
+                    (image_size, image_size),
+                    interpolation=cv2.INTER_CUBIC,
+                )
+                tensor = _uint8_hwc_to_mlx_chw_float32(frame_resized)
+                mean, std = mean_std
+                tensors.append((tensor - mean) / std)
     finally:
         cap.release()
 
@@ -399,6 +437,7 @@ def load_video_frames_from_video_file_using_cv2(
             f"No frames could be decoded from video: {path}. "
             "The file may be empty, corrupted, or encoded with an unsupported codec."
         )
+    _validate_uniform_frame_dimensions(frames, source=str(path))
     if orig_height <= 0 or orig_width <= 0:
         first = frames[0]
         orig_height, orig_width = first.height, first.width
@@ -407,7 +446,7 @@ def load_video_frames_from_video_file_using_cv2(
         orig_height=orig_height,
         orig_width=orig_width,
         frame_paths=(path,),
-        images=mx.stack(tensors, axis=0),
+        images=mx.stack(tensors, axis=0) if materialize_mlx_frames else None,
     )
 
 
@@ -421,6 +460,7 @@ class AsyncImageFrameLoader:
         offload_video_to_cpu: bool,
         img_mean: tuple[float, float, float] = (0.5, 0.5, 0.5),
         img_std: tuple[float, float, float] = (0.5, 0.5, 0.5),
+        materialize_mlx_frames: bool = True,
     ) -> None:
         if not frame_paths:
             raise RuntimeError("no images found in image-folder video")
@@ -429,6 +469,7 @@ class AsyncImageFrameLoader:
         self.image_size = image_size
         self.img_mean = img_mean
         self.img_std = img_std
+        self.materialize_mlx_frames = materialize_mlx_frames
         self._frames: list[Image.Image | None] = [None] * len(self.frame_paths)
         self._image_tensors: list[Any | None] = [None] * len(self.frame_paths)
         self._lock = Lock()
@@ -459,12 +500,25 @@ class AsyncImageFrameLoader:
         with self._lock:
             frame = self._frames[index]
             if frame is None:
-                frame, tensor = _load_rgb_image_and_tensor(
-                    self.frame_paths[index],
-                    image_size=self.image_size,
-                    img_mean=self.img_mean,
-                    img_std=self.img_std,
-                )
+                if self.materialize_mlx_frames:
+                    frame, tensor = _load_rgb_image_and_tensor(
+                        self.frame_paths[index],
+                        image_size=self.image_size,
+                        img_mean=self.img_mean,
+                        img_std=self.img_std,
+                    )
+                else:
+                    frame = _load_rgb_image(self.frame_paths[index])
+                    tensor = None
+                if index > 0 and (frame.height, frame.width) != (
+                    self.orig_height,
+                    self.orig_width,
+                ):
+                    raise ValueError(
+                        "Image-folder video frames must have uniform dimensions: "
+                        f"{self.frame_paths[index]} is {frame.width}x{frame.height}, "
+                        f"expected {self.orig_width}x{self.orig_height}."
+                    )
                 self._frames[index] = frame
                 self._image_tensors[index] = tensor
             return frame
@@ -476,6 +530,8 @@ class AsyncImageFrameLoader:
 
     @property
     def images(self):
+        if not self.materialize_mlx_frames:
+            return None
         self.wait()
         tensors = [tensor for tensor in self._image_tensors if tensor is not None]
         if len(tensors) != len(self._image_tensors):
@@ -603,6 +659,7 @@ def _load_pil_sequence(
     offload_video_to_cpu: bool,
     img_mean: tuple[float, float, float],
     img_std: tuple[float, float, float],
+    materialize_mlx_frames: bool,
 ) -> VideoFrames:
     _validate_image_loading_args(image_size, offload_video_to_cpu)
     if not images:
@@ -610,17 +667,22 @@ def _load_pil_sequence(
     if not all(isinstance(image, Image.Image) for image in images):
         raise TypeError("resource_path image sequences must contain only PIL images.")
     frames = tuple(image.convert("RGB").copy() for image in images)
-    image_tensors = mx.stack(
-        [
-            _pil_to_mlx_image(
-                frame,
-                image_size=image_size,
-                img_mean=img_mean,
-                img_std=img_std,
-            )
-            for frame in frames
-        ],
-        axis=0,
+    _validate_uniform_frame_dimensions(frames, source="PIL image sequence")
+    image_tensors = (
+        mx.stack(
+            [
+                _pil_to_mlx_image(
+                    frame,
+                    image_size=image_size,
+                    img_mean=img_mean,
+                    img_std=img_std,
+                )
+                for frame in frames
+            ],
+            axis=0,
+        )
+        if materialize_mlx_frames
+        else None
     )
     first = frames[0]
     return VideoFrames(
@@ -711,6 +773,33 @@ def _validate_image_loading_args(
         raise ValueError("image_size must be positive.")
     if offload_video_to_cpu not in (False, True):
         raise TypeError("offload_video_to_cpu must be a bool.")
+    if offload_video_to_cpu:
+        _raise_io_unsupported(
+            "sam3_mlx.model.io_utils(offload_video_to_cpu=True)",
+            reason="port-gap",
+            detail=(
+                "The current MLX loaders do not provide a separate device video "
+                "store, so CPU offload would be a no-op."
+            ),
+            alternative="offload_video_to_cpu=False",
+        )
+
+
+def _validate_uniform_frame_dimensions(
+    frames: Sequence[Image.Image],
+    *,
+    source: str,
+) -> None:
+    if not frames:
+        return
+    expected_width, expected_height = frames[0].size
+    for index, frame in enumerate(frames[1:], start=1):
+        if frame.size != (expected_width, expected_height):
+            raise ValueError(
+                f"{source} contains mixed frame dimensions: frame {index} is "
+                f"{frame.width}x{frame.height}, expected "
+                f"{expected_width}x{expected_height}."
+            )
 
 
 def _sort_frame_paths(frame_paths: list[Path]) -> list[Path]:

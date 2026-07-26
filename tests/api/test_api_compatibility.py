@@ -4,11 +4,15 @@ import numpy as np
 import pytest
 
 import sam3_mlx
+from sam3_mlx import model_builder
 from sam3_mlx._unsupported import Sam3MlxUnsupportedError
 from sam3_mlx.model.maskformer_segmentation import UniversalSegmentationHead
 from sam3_mlx.model.sam3_image import Sam3Image
 from sam3_mlx.model.sam3_image_processor import Sam3Processor
 from sam3_mlx.model.sam3_video_inference import Sam3VideoInference
+from sam3_mlx.model.sam3_multiplex_video_predictor import (
+    Sam3MultiplexVideoPredictor,
+)
 from sam3_mlx.model.sam3_video_predictor import Sam3VideoPredictor
 
 
@@ -113,8 +117,19 @@ class _FakeImageProcessor:
             "scores": np.zeros((0,), dtype=np.float32),
         }
 
-    def set_text_prompt(self, prompt, state):
+    def set_text_prompt(
+        self,
+        prompt,
+        state,
+        *,
+        run_grounding=True,
+        text_outputs=None,
+    ):
         del prompt
+        del run_grounding, text_outputs
+        return state
+
+    def run_grounding(self, state):
         return state
 
 
@@ -229,10 +244,37 @@ def test_sam3_predictor_version_sam3_uses_explicit_mlx_device():
     )
 
     assert isinstance(predictor, Sam3VideoPredictor)
-    assert predictor.async_loading_frames is True
+    assert predictor.async_loading_frames is False
     assert predictor.model.image_model is image_model
     assert predictor.model.image_size == 14
     assert predictor.model.processor_factory is _FakeImageProcessor
+
+
+def test_sam3_predictor_defaults_to_sam3_and_forwards_load_from_hf(monkeypatch):
+    captured = {}
+    expected = object()
+
+    def fake_build_sam3_video_predictor(**kwargs):
+        captured.update(kwargs)
+        return expected
+
+    monkeypatch.setattr(
+        model_builder,
+        "build_sam3_video_predictor",
+        fake_build_sam3_video_predictor,
+    )
+
+    result = model_builder.build_sam3_predictor(load_from_HF=False)
+
+    assert result is expected
+    assert captured["load_from_HF"] is False
+    assert captured["async_loading_frames"] is False
+
+
+def test_multiplex_builder_defaults_to_mlx_attention():
+    signature = inspect.signature(model_builder.build_sam3_multiplex_video_predictor)
+
+    assert signature.parameters["use_fa3"].default is False
 
 
 def test_sam3_predictor_version_sam3_propagates_compile_fail_fast():
@@ -280,7 +322,7 @@ def test_video_predictor_rejects_checkpoint_with_injected_model(kwargs):
         Sam3VideoPredictor(checkpoint_path="weights.pt", **kwargs)
 
 
-def test_video_predictor_close_session_accepts_upstream_cache_threshold():
+def test_video_predictor_rejects_unsupported_cache_threshold():
     predictor = sam3_mlx.build_sam3_video_predictor(
         model=object(),
         load_from_HF=False,
@@ -291,11 +333,122 @@ def test_video_predictor_close_session_accepts_upstream_cache_threshold():
         {"type": "start_session", "resource_path": "<load-dummy-video-1>"}
     )
 
-    assert predictor.handle_request(
-        {
-            "type": "close_session",
-            "session_id": response["session_id"],
-            "run_gc_collect": False,
-            "clear_cache_threshold": 90,
-        }
-    ) == {"is_success": True}
+    with pytest.raises(Sam3MlxUnsupportedError, match="clear_cache_threshold"):
+        predictor.handle_request(
+            {
+                "type": "close_session",
+                "session_id": response["session_id"],
+                "run_gc_collect": False,
+                "clear_cache_threshold": 90,
+            }
+        )
+
+
+def test_duplicate_session_id_is_rejected_without_overwriting_state():
+    predictor = sam3_mlx.build_sam3_video_predictor(
+        model=object(),
+        load_from_HF=False,
+        resolution=14,
+        processor_factory=_FakeImageProcessor,
+    )
+    first = predictor.start_session("<load-dummy-video-1>", session_id="duplicate")
+    original_state = predictor._all_inference_states["duplicate"]["state"]
+
+    with pytest.raises(ValueError, match="Session ID already exists: duplicate"):
+        predictor.start_session("<load-dummy-video-1>", session_id="duplicate")
+
+    assert first == {"session_id": "duplicate"}
+    assert predictor._all_inference_states["duplicate"]["state"] is original_state
+
+
+def test_expired_session_is_rejected_and_removed(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(
+        "sam3_mlx.model.sam3_base_predictor.time.monotonic",
+        lambda: now[0],
+    )
+    video_model = Sam3VideoInference(
+        image_model=object(),
+        image_size=14,
+        processor_factory=_FakeImageProcessor,
+    )
+    predictor = Sam3MultiplexVideoPredictor(
+        model=video_model,
+        session_expiration_sec=10,
+        async_loading_frames=False,
+    )
+    predictor.start_session("<load-dummy-video-1>", session_id="expires")
+    now[0] = 110.0
+
+    with pytest.raises(RuntimeError, match="might have expired"):
+        predictor.reset_session("expires")
+
+    assert "expires" not in predictor._all_inference_states
+
+
+def test_cancel_stops_selected_frame_propagation_at_frame_boundary():
+    predictor = sam3_mlx.build_sam3_video_predictor(
+        model=object(),
+        load_from_HF=False,
+        resolution=14,
+        processor_factory=_FakeImageProcessor,
+    )
+    session = predictor.start_session("<load-dummy-video-3>")
+    predictor.add_prompt(session["session_id"], frame_idx=0, text="object")
+    stream = predictor.propagate_in_video(
+        session["session_id"],
+        propagation_direction="forward",
+    )
+
+    first = next(stream)
+    predictor.cancel_propagation(session["session_id"])
+
+    assert first["frame_index"] == 0
+    assert list(stream) == []
+
+
+def test_selected_frame_rejects_unsupported_prompt_retention_and_identity():
+    predictor = sam3_mlx.build_sam3_video_predictor(
+        model=object(),
+        load_from_HF=False,
+        resolution=14,
+        processor_factory=_FakeImageProcessor,
+    )
+    session_id = predictor.start_session("<load-dummy-video-1>")["session_id"]
+
+    with pytest.raises(Sam3MlxUnsupportedError, match="clear_old_points=False"):
+        predictor.add_prompt(
+            session_id,
+            frame_idx=0,
+            text="object",
+            clear_old_points=False,
+        )
+    with pytest.raises(Sam3MlxUnsupportedError, match="add_prompt\\(obj_id\\)"):
+        predictor.add_prompt(
+            session_id,
+            frame_idx=0,
+            text="object",
+            obj_id=7,
+        )
+    with pytest.raises(Sam3MlxUnsupportedError, match="frame-local detection IDs"):
+        predictor.remove_object(session_id, frame_idx=0, obj_id=0)
+
+
+def test_selected_frame_rejects_cpu_offload_controls():
+    predictor = sam3_mlx.build_sam3_video_predictor(
+        model=object(),
+        load_from_HF=False,
+        resolution=14,
+        processor_factory=_FakeImageProcessor,
+    )
+
+    with pytest.raises(Sam3MlxUnsupportedError, match="offload_video_to_cpu=True"):
+        predictor.start_session(
+            "<load-dummy-video-1>",
+            offload_video_to_cpu=True,
+        )
+    with pytest.raises(Sam3MlxUnsupportedError, match="offload_state_to_cpu=True"):
+        predictor.start_session(
+            "<load-dummy-video-1>",
+            offload_state_to_cpu=True,
+        )

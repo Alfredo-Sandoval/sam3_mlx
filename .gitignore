@@ -42,6 +42,9 @@ third_party/
 
 # Local developer parity/benchmark scripts
 scripts/
+!scripts/
+scripts/*
+!scripts/validate_release.py
 
 # Local scratch examples/notebooks
 examples/

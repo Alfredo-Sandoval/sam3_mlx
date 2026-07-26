@@ -37,8 +37,10 @@ class Sam3VideoPredictor(Sam3BasePredictor):
         hf_repo=MLX_COMMUNITY_REPO,
         local_weights_dir=None,
         convert_from_pytorch=False,
+        conversion_source_revision=None,
         enable_segmentation=True,
         processor_factory: Callable[..., Any] | None = None,
+        frame_feature_cache_size: int = 4,
     ) -> None:
         super().__init__()
         self.async_loading_frames = async_loading_frames
@@ -89,8 +91,10 @@ class Sam3VideoPredictor(Sam3BasePredictor):
                 hf_repo=hf_repo,
                 local_weights_dir=local_weights_dir,
                 convert_from_pytorch=convert_from_pytorch,
+                conversion_source_revision=conversion_source_revision,
                 enable_segmentation=enable_segmentation,
                 processor_factory=processor_factory,
+                frame_feature_cache_size=frame_feature_cache_size,
             )
             return
 
@@ -105,6 +109,7 @@ class Sam3VideoPredictor(Sam3BasePredictor):
             image_size=resolution,
             confidence_threshold=confidence_threshold,
             processor_factory=processor_factory,
+            frame_feature_cache_size=frame_feature_cache_size,
         )
 
     def remove_object(
@@ -115,13 +120,14 @@ class Sam3VideoPredictor(Sam3BasePredictor):
         is_user_action: bool = True,
     ) -> dict[str, bool]:
         session = self._get_session(session_id)
-        self._extend_expiration_time(session)
-        self.model.remove_object(
-            inference_state=session["state"],
-            obj_id=obj_id,
-            frame_idx=frame_idx,
-            is_user_action=is_user_action,
-        )
+        with session["lock"]:
+            self._extend_expiration_time(session)
+            self.model.remove_object(
+                inference_state=session["state"],
+                obj_id=obj_id,
+                frame_idx=frame_idx,
+                is_user_action=is_user_action,
+            )
         return {"is_success": True}
 
     def _get_session_stats(self) -> str:

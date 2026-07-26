@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 from PIL import Image
 import pytest
@@ -230,8 +232,12 @@ def _synthetic_rgb_image(width, height):
 
 
 def test_transform_matches_torchvision_on_synthetic_aspect_ratios_when_available():
-    torch = pytest.importorskip("torch")
-    pytest.importorskip("torchvision")
+    if os.environ.get("SAM3_MLX_REQUIRE_TORCHVISION") == "1":
+        import torch
+        import torchvision  # noqa: F401
+    else:
+        torch = pytest.importorskip("torch")
+        pytest.importorskip("torchvision")
     from torchvision.transforms import v2
     from torchvision.transforms.v2 import functional as torch_vision_functional
 

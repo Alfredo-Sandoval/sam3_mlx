@@ -1,6 +1,9 @@
 import argparse
+import hashlib
 import json
+import re
 from collections.abc import Mapping
+from importlib.metadata import version
 from pathlib import Path
 from typing import Dict, Union, Optional
 
@@ -10,6 +13,8 @@ from huggingface_hub import snapshot_download
 
 MLX_COMMUNITY_REPO = "mlx-community/sam3-image"
 PYTORCH_REPO = "facebook/sam3"
+CONVERSION_MANIFEST = "conversion-manifest.json"
+_COMMIT_REVISION_PATTERN = re.compile(r"[0-9a-fA-F]{40}")
 
 SAM3_IMAGE_CONV_TRANSPOSE2D_WEIGHTS = frozenset(
     {
@@ -76,6 +81,7 @@ def normalize_sam3_image_weight_layout(key: str, value):
 def load_from_hub(
     hf_repo: str = MLX_COMMUNITY_REPO,
     local_dir: Optional[str] = None,
+    revision: Optional[str] = None,
 ) -> Path:
     download_kwargs = {
         "repo_id": hf_repo,
@@ -84,6 +90,8 @@ def load_from_hub(
 
     if local_dir:
         download_kwargs["local_dir"] = local_dir
+    if revision is not None:
+        download_kwargs["revision"] = revision
 
     model_path = Path(snapshot_download(**download_kwargs))
     weights_file = model_path / "model.safetensors"
@@ -94,7 +102,7 @@ def load_from_hub(
     return weights_file
 
 
-def save_weights(save_path: Union[str, Path], weights: Dict[str, mx.array]) -> None:
+def save_weights(save_path: Union[str, Path], weights: Dict[str, mx.array]) -> Path:
     if isinstance(save_path, str):
         save_path = Path(save_path)
     save_path.mkdir(parents=True, exist_ok=True)
@@ -114,12 +122,14 @@ def save_weights(save_path: Union[str, Path], weights: Dict[str, mx.array]) -> N
 
     with open(save_path / "model.safetensors.index.json", "w") as f:
         json.dump(index_data, f, indent=4)
+    return model_path
 
 
-def download(hf_repo):
+def download(hf_repo, *, revision: str):
     return Path(
         snapshot_download(
             repo_id=hf_repo,
+            revision=revision,
             allow_patterns=["*.pt", "*.json"],
         )
     )
@@ -185,7 +195,13 @@ def convert(model_path):
     weights = _remap_official_checkpoint_keys(dict(weights))
 
     mlx_weights = dict()
+    ignored_keys = []
+    unmapped_keys = []
     for k, v in weights.items():
+        source_key = k
+        if k.startswith("tracker."):
+            ignored_keys.append(source_key)
+            continue
         # Vision Encoder
         if "detector" in k:
             k = k.replace("detector.", "")
@@ -216,38 +232,157 @@ def convert(model_path):
                 v = mx.array(v.numpy())
 
                 mlx_weights[k] = v
+            else:
+                unmapped_keys.append(source_key)
+                continue
 
             if k.endswith("in_proj_weight") or k.endswith("in_proj_bias"):
                 update_attn_keys(k, mlx_weights)
+        else:
+            unmapped_keys.append(source_key)
 
     if not mlx_weights:
         raise ValueError(
             f"No detector weights were converted from {weight_file}. Expected "
             "official SAM3 keys with a detector. prefix."
         )
+    if unmapped_keys:
+        examples = ", ".join(sorted(unmapped_keys)[:5])
+        raise ValueError(
+            "SAM3 conversion encountered source keys without a reviewed mapping: "
+            f"count={len(unmapped_keys)}; examples={examples}"
+        )
 
-    return mlx_weights
+    return mlx_weights, tuple(sorted(ignored_keys))
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_conversion_manifest(
+    output_dir: Path,
+    *,
+    source_repo: str,
+    source_revision: str,
+    source_checkpoint: Path,
+    output_checkpoint: Path,
+    weights: Dict[str, mx.array],
+    ignored_keys: tuple[str, ...],
+) -> Path:
+    dtype_counts: dict[str, int] = {}
+    for value in weights.values():
+        dtype_name = str(value.dtype).rsplit(".", 1)[-1]
+        dtype_counts[dtype_name] = dtype_counts.get(dtype_name, 0) + 1
+    manifest = {
+        "architecture": "sam3-image",
+        "source_repo": source_repo,
+        "source_revision": source_revision,
+        "source_checkpoint_sha256": _sha256(source_checkpoint),
+        "converter_version": version("sam3-mlx"),
+        "output_sha256": _sha256(output_checkpoint),
+        "mapped_count": len(weights),
+        "unmapped_keys": [],
+        "ignored_keys": list(ignored_keys),
+        "dtype_counts": dict(sorted(dtype_counts.items())),
+    }
+    manifest_path = output_dir / CONVERSION_MANIFEST
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    return manifest_path
+
+
+def _validate_cached_conversion(
+    weights_file: Path,
+    manifest_file: Path,
+    *,
+    source_repo: str,
+    source_revision: str,
+) -> None:
+    manifest = json.loads(manifest_file.read_text())
+    expected = {
+        "source_repo": source_repo,
+        "source_revision": source_revision,
+        "output_sha256": _sha256(weights_file),
+    }
+    mismatches = {
+        key: (manifest.get(key), value)
+        for key, value in expected.items()
+        if manifest.get(key) != value
+    }
+    if mismatches:
+        details = ", ".join(
+            f"{key}: cached={cached!r}, requested={requested!r}"
+            for key, (cached, requested) in sorted(mismatches.items())
+        )
+        raise ValueError(
+            "Cached MLX conversion provenance does not match the requested "
+            f"source; use force=True to regenerate. {details}"
+        )
+
+
+def _validate_source_revision(source_revision: str) -> str:
+    if not _COMMIT_REVISION_PATTERN.fullmatch(source_revision):
+        raise ValueError(
+            "source_revision must be a full 40-character hexadecimal commit SHA."
+        )
+    return source_revision.lower()
 
 
 def download_and_convert(
     hf_repo: str = PYTORCH_REPO,
     mlx_path: Union[str, Path] = "sam3-mod-weights",
     force: bool = False,
+    *,
+    source_revision: str,
 ) -> Path:
+    source_revision = _validate_source_revision(source_revision)
     mlx_path = Path(mlx_path)
     weights_file = mlx_path / "model.safetensors"
     index_file = mlx_path / "model.safetensors.index.json"
+    manifest_file = mlx_path / CONVERSION_MANIFEST
 
-    if weights_file.exists() and index_file.exists() and not force:
+    if (
+        weights_file.exists()
+        and index_file.exists()
+        and manifest_file.exists()
+        and not force
+    ):
+        _validate_cached_conversion(
+            weights_file,
+            manifest_file,
+            source_repo=hf_repo,
+            source_revision=source_revision,
+        )
         return weights_file
+    if not force and any(
+        path.exists() for path in (weights_file, index_file, manifest_file)
+    ):
+        raise ValueError(
+            "Cached MLX conversion is incomplete and cannot be verified; use "
+            "force=True to regenerate it."
+        )
 
     print(f"Downloading and converting weights from {hf_repo}...")
-    model_path = download(hf_repo)
+    model_path = download(hf_repo, revision=source_revision)
+    source_checkpoint = model_path / "sam3.pt"
 
     mlx_path.mkdir(parents=True, exist_ok=True)
 
-    mlx_weights = convert(model_path)
-    save_weights(mlx_path, mlx_weights)
+    mlx_weights, ignored_keys = convert(model_path)
+    output_checkpoint = save_weights(mlx_path, mlx_weights)
+    _write_conversion_manifest(
+        mlx_path,
+        source_repo=hf_repo,
+        source_revision=source_revision,
+        source_checkpoint=source_checkpoint,
+        output_checkpoint=output_checkpoint,
+        weights=mlx_weights,
+        ignored_keys=ignored_keys,
+    )
 
     return weights_file
 
@@ -261,6 +396,12 @@ if __name__ == "__main__":
         default=MLX_COMMUNITY_REPO,
         type=str,
         help=f"MLX Community repo to download pre-converted weights (default: {MLX_COMMUNITY_REPO})",
+    )
+    parser.add_argument(
+        "--source-revision",
+        type=str,
+        default=None,
+        help="Immutable Hugging Face commit revision required for conversion.",
     )
     parser.add_argument(
         "--pytorch-repo",
@@ -282,15 +423,34 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.convert:
+        if not args.source_revision:
+            parser.error("--source-revision is required with --convert")
+        try:
+            args.source_revision = _validate_source_revision(args.source_revision)
+        except ValueError as exc:
+            parser.error(str(exc))
         mlx_path = args.mlx_path or "sam3-mod-weights"
         print(f"Converting PyTorch weights from {args.pytorch_repo}...")
-        model_path = download(args.pytorch_repo)
+        model_path = download(
+            args.pytorch_repo,
+            revision=args.source_revision,
+        )
 
         mlx_path = Path(mlx_path)
         mlx_path.mkdir(parents=True, exist_ok=True)
 
-        mlx_weights = convert(model_path)
-        save_weights(mlx_path, mlx_weights)
+        source_checkpoint = model_path / "sam3.pt"
+        mlx_weights, ignored_keys = convert(model_path)
+        output_checkpoint = save_weights(mlx_path, mlx_weights)
+        _write_conversion_manifest(
+            mlx_path,
+            source_repo=args.pytorch_repo,
+            source_revision=args.source_revision,
+            source_checkpoint=source_checkpoint,
+            output_checkpoint=output_checkpoint,
+            weights=mlx_weights,
+            ignored_keys=ignored_keys,
+        )
         print(f"Converted weights saved to {mlx_path}")
     else:
         print(f"Downloading MLX weights from {args.mlx_repo}...")
