@@ -2,7 +2,7 @@
 
 **An unofficial Apple MLX port of SAM 3 / SAM 3.1 image-segmentation components for Apple Silicon.**
 
-[![Python](https://img.shields.io/badge/Python-3.13%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20Apple%20Silicon-000000?logo=apple&logoColor=white)](#requirements)
 [![Backend](https://img.shields.io/badge/Backend-MLX-1C7C54)](https://github.com/ml-explore/mlx)
 [![License](https://img.shields.io/badge/License-SAM-blue)](LICENSE)
@@ -35,7 +35,7 @@ framework.
 ## Requirements
 
 - macOS on Apple Silicon (M-series)
-- Python ≥ 3.13
+- Python ≥ 3.12
 - [MLX](https://github.com/ml-explore/mlx) ≥ 0.30
 - SAM 3 / SAM 3.1 checkpoints, obtained separately (see
   [Attribution](#attribution))
