@@ -12,4 +12,4 @@ release-evidence-audit:
 release-check: artifact-check runtime-release-check
 
 runtime-release-check: release-evidence-audit
-	uv run python scripts/validate_runtime_release.py --receipt parity/receipts/latest.json
+	uv run python scripts/validate_runtime_release_hardened.py --receipt parity/receipts/latest.json
