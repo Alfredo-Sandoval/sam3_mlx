@@ -12,8 +12,8 @@
     "official_revision": "3c879f39826c281e95690f02c7821c4de09afae7",
     "official_sha256": "9999e2341ceef5e136daa386eecb55cb414446a00ac2b55eb2dfd2f7c3cf8c9e"
   },
-  "generated_at": "2026-07-27T07:05:25.581651+00:00",
-  "git_commit": "3d5549e89be40d0adbd836d3ca5f0fa9d9f2d81b",
+  "generated_at": "2026-07-27T07:45:12.369894+00:00",
+  "git_commit": "fc9631989f47aea1d8216b013424cb8aef1f5d44",
   "machine": "arm64",
   "mlx_version": "0.30.0",
   "package_version": "0.1.2",
@@ -566,11 +566,11 @@
     "reports": [
       {
         "path": "parity/receipts/example-image-parity.json",
-        "sha256": "1144b60640ebf3d77a31d5590d4745a0e46884e9e5c1ef989232231eb6c658f6"
+        "sha256": "d80029fb25d29492c9a633a2655b91a1762cc5db140159de3431179fe21a3997"
       },
       {
         "path": "parity/receipts/holdout-image-parity.json",
-        "sha256": "5ad868a1033a2c31cd42d5582e37a2fde2d224a421cf2eec13fc9088ca9b7bf5"
+        "sha256": "d350f5835d6b2616826396303ee698ee05800721ea328d91beaa6703e1ab9555"
       }
     ],
     "status": "passed",
@@ -584,93 +584,93 @@
   },
   "performance": {
     "measurement_boundary": "MLX active allocator peak after model load; synchronized full set_image plus text-grounding latency",
-    "peak_active_memory_bytes": 8888103743,
+    "peak_active_memory_bytes": 8888102975,
     "runs": [
       {
-        "cold_load_s": 0.362253375002183,
+        "cold_load_s": 0.39280966599471867,
         "image_sha256": "979f120edcb0050a12d5b4a1f1eaf6bc888b89f675524e7ffcf6ae5b77aa6bc4",
         "latency_by_resolution_s": {
           "1008": {
-            "median": 1.290640708990395,
-            "p95": 1.2954028339590877,
+            "median": 1.2331867910106666,
+            "p95": 1.243158666009549,
             "samples": [
-              1.2420273749739863,
-              1.290640708990395,
-              1.2513392089749686,
-              1.2954028339590877,
-              1.2941329589812085
+              1.217416792002041,
+              1.2361837080097757,
+              1.2331867910106666,
+              1.243158666009549,
+              1.2291953340172768
             ]
           },
           "504": {
-            "median": 0.4367788750096224,
-            "p95": 0.4410691249649972,
+            "median": 0.4253602910321206,
+            "p95": 0.42632537498138845,
             "samples": [
-              0.43921724997926503,
-              0.42829241702565923,
-              0.4349439999787137,
-              0.4367788750096224,
-              0.4410691249649972
+              0.422725124983117,
+              0.42547104199184105,
+              0.42632537498138845,
+              0.4253602910321206,
+              0.4190449580200948
             ]
           },
           "672": {
-            "median": 0.5779940829961561,
-            "p95": 0.5850786669761874,
+            "median": 0.5537860830081627,
+            "p95": 0.5623905420070514,
             "samples": [
-              0.5850786669761874,
-              0.5823762909858488,
-              0.5762169999652542,
-              0.5749908749712631,
-              0.5779940829961561
+              0.5623905420070514,
+              0.5549764579627663,
+              0.5481472500250675,
+              0.5537860830081627,
+              0.551616583019495
             ]
           }
         },
         "measurement_boundary": "MLX active allocator peak after model load; synchronized full set_image plus text-grounding latency",
-        "peak_active_memory_bytes": 8888103743,
+        "peak_active_memory_bytes": 8888102975,
         "profile": "example",
         "repetitions": 5,
         "status": "passed",
         "warmup_runs": 1
       },
       {
-        "cold_load_s": 0.38180879200808704,
+        "cold_load_s": 0.3848007079795934,
         "image_sha256": "7073dfecb5a3ecafb6152124113163a0ea1c1c70f92999ec892b519eca63e3d3",
         "latency_by_resolution_s": {
           "1008": {
-            "median": 1.2881468340056017,
-            "p95": 1.3492649999679998,
+            "median": 1.258427541994024,
+            "p95": 1.2595257500070147,
             "samples": [
-              1.3492649999679998,
-              1.290744416997768,
-              1.2839852080214769,
-              1.276267374982126,
-              1.2881468340056017
+              1.2528909579850733,
+              1.253988207958173,
+              1.258427541994024,
+              1.2595257500070147,
+              1.2587137920199893
             ]
           },
           "504": {
-            "median": 0.4218509169877507,
-            "p95": 0.4444899159716442,
+            "median": 0.40768083301372826,
+            "p95": 0.41158866602927446,
             "samples": [
-              0.4444899159716442,
-              0.4218509169877507,
-              0.42190133401891217,
-              0.4157039169804193,
-              0.42156137502752244
+              0.41158866602927446,
+              0.4099827920435928,
+              0.40768083301372826,
+              0.4032409170176834,
+              0.4061965420260094
             ]
           },
           "672": {
-            "median": 0.5642034579650499,
-            "p95": 0.5916839580168016,
+            "median": 0.5518392079975456,
+            "p95": 0.5702770829666406,
             "samples": [
-              0.5916839580168016,
-              0.5740140000125393,
-              0.5625711249886081,
-              0.5642034579650499,
-              0.5599526659934781
+              0.5527562919887714,
+              0.5702770829666406,
+              0.5477714579901658,
+              0.5518392079975456,
+              0.5472922500339337
             ]
           }
         },
         "measurement_boundary": "MLX active allocator peak after model load; synchronized full set_image plus text-grounding latency",
-        "peak_active_memory_bytes": 8579493443,
+        "peak_active_memory_bytes": 8579492610,
         "profile": "holdout",
         "repetitions": 5,
         "status": "passed",
@@ -687,7 +687,7 @@
     "command": "/tmp/sam3-mlx-oracle-venv/bin/python -m pytest -q -p pytest_reportlog --ignore=third_party tests",
     "counts": {
       "call_failed": 0,
-      "call_passed": 673,
+      "call_passed": 675,
       "call_skipped": 0
     },
     "deselected": 0,
@@ -697,6 +697,6 @@
     "skip_details": [],
     "skipped": 0,
     "stderr_tail": "",
-    "stdout_tail": "........................................................................ [ 10%]\n........................................................................ [ 21%]\n........................................................................ [ 32%]\n........................................................................ [ 42%]\n........................................................................ [ 53%]\n........................................................................ [ 64%]\n........................................................................ [ 74%]\n........................................................................ [ 85%]\n........................................................................ [ 96%]\n.........................                                                [100%]\n=============================== warnings summary ===============================\ntests/unsupported/test_unsupported_contract.py::test_registry_walker_returns_bounded_well_formed_entries\n  <repo>/sam3_mlx/train/nms_helper.py:17: UserWarning: Numba not found. Using slower pure Python implementations.\n    warnings.warn(\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n- generated report log file: <repo>/parity/receipts/.pytest-report.jsonl -\n673 passed, 1 warning in 5.84s\n"
+    "stdout_tail": "........................................................................ [ 10%]\n........................................................................ [ 21%]\n........................................................................ [ 32%]\n........................................................................ [ 42%]\n........................................................................ [ 53%]\n........................................................................ [ 64%]\n........................................................................ [ 74%]\n........................................................................ [ 85%]\n........................................................................ [ 96%]\n...........................                                              [100%]\n=============================== warnings summary ===============================\ntests/unsupported/test_unsupported_contract.py::test_registry_walker_returns_bounded_well_formed_entries\n  <repo>/sam3_mlx/train/nms_helper.py:17: UserWarning: Numba not found. Using slower pure Python implementations.\n    warnings.warn(\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n- generated report log file: <repo>/parity/receipts/.pytest-report.jsonl -\n675 passed, 1 warning in 5.72s\n"
   }
 }
