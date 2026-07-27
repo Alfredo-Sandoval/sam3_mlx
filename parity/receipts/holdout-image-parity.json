@@ -1,0 +1,277 @@
+{
+  "case_profile": "holdout",
+  "cases": [
+    {
+      "box_l_inf_max": 0.19427490234375,
+      "detection_count_match": true,
+      "geometric_prompts": [],
+      "mask_iou_mean": 0.9995786588106014,
+      "mask_iou_min": 0.9992956092979572,
+      "matches": [
+        {
+          "mask_iou": 0.9995429198281378,
+          "mlx_index": 0,
+          "official_index": 0
+        },
+        {
+          "mask_iou": 0.9998946037099494,
+          "mlx_index": 1,
+          "official_index": 1
+        },
+        {
+          "mask_iou": 0.9992956092979572,
+          "mlx_index": 2,
+          "official_index": 2
+        },
+        {
+          "mask_iou": 0.9995815024063611,
+          "mlx_index": 3,
+          "official_index": 3
+        }
+      ],
+      "mlx_detection_count": 4,
+      "name": "text_paper_bag_1008",
+      "official_detection_count": 4,
+      "prompt": "paper bag",
+      "resolution": 1008,
+      "score_abs_max": 0.002135932445526123,
+      "status": "passed"
+    },
+    {
+      "box_l_inf_max": 0.237548828125,
+      "detection_count_match": true,
+      "geometric_prompts": [],
+      "mask_iou_mean": 0.9994193011210293,
+      "mask_iou_min": 0.9988155868767026,
+      "matches": [
+        {
+          "mask_iou": 0.9998147462022972,
+          "mlx_index": 0,
+          "official_index": 0
+        },
+        {
+          "mask_iou": 0.9996809868141217,
+          "mlx_index": 1,
+          "official_index": 1
+        },
+        {
+          "mask_iou": 0.9988155868767026,
+          "mlx_index": 2,
+          "official_index": 2
+        },
+        {
+          "mask_iou": 0.9993658845909955,
+          "mlx_index": 3,
+          "official_index": 3
+        }
+      ],
+      "mlx_detection_count": 4,
+      "name": "text_paper_bag_672",
+      "official_detection_count": 4,
+      "prompt": "paper bag",
+      "resolution": 672,
+      "score_abs_max": 0.00182265043258667,
+      "status": "passed"
+    },
+    {
+      "box_l_inf_max": 0.2869873046875,
+      "detection_count_match": true,
+      "geometric_prompts": [],
+      "mask_iou_mean": 0.9991688642500862,
+      "mask_iou_min": 0.9987361769352291,
+      "matches": [
+        {
+          "mask_iou": 0.9994424828098867,
+          "mlx_index": 0,
+          "official_index": 0
+        },
+        {
+          "mask_iou": 0.99892138063279,
+          "mlx_index": 1,
+          "official_index": 1
+        },
+        {
+          "mask_iou": 0.9987361769352291,
+          "mlx_index": 2,
+          "official_index": 2
+        },
+        {
+          "mask_iou": 0.9995754166224392,
+          "mlx_index": 3,
+          "official_index": 3
+        }
+      ],
+      "mlx_detection_count": 4,
+      "name": "text_paper_bag_504",
+      "official_detection_count": 4,
+      "prompt": "paper bag",
+      "resolution": 504,
+      "score_abs_max": 0.0014615058898925781,
+      "status": "passed"
+    },
+    {
+      "box_l_inf_max": 0.12286376953125,
+      "detection_count_match": true,
+      "geometric_prompts": [],
+      "mask_iou_mean": 0.9974541193240224,
+      "mask_iou_min": 0.9974541193240224,
+      "matches": [
+        {
+          "mask_iou": 0.9974541193240224,
+          "mlx_index": 0,
+          "official_index": 0
+        }
+      ],
+      "mlx_detection_count": 1,
+      "name": "text_car_1008",
+      "official_detection_count": 1,
+      "prompt": "car",
+      "resolution": 1008,
+      "score_abs_max": 0.0010734796524047852,
+      "status": "passed"
+    },
+    {
+      "box_l_inf_max": null,
+      "detection_count_match": true,
+      "geometric_prompts": [],
+      "mask_iou_mean": null,
+      "mask_iou_min": null,
+      "matches": [],
+      "mlx_detection_count": 0,
+      "name": "text_nonsense_1008",
+      "official_detection_count": 0,
+      "prompt": "zzzz_not_a_real_class_qqq",
+      "resolution": 1008,
+      "score_abs_max": null,
+      "status": "passed"
+    }
+  ],
+  "confidence_threshold": 0.5,
+  "converted_checkpoint": {
+    "repo": "mlx-community/sam3-image",
+    "revision": "b72a14d8127e17e6f2a3d2e075bbbf4307ba146e",
+    "sha256": "0ad4c3f42ecf706c4cda63cf58d621699491ed65012b3999284ea370984f7173"
+  },
+  "host": {
+    "machine": "arm64",
+    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "python": "3.13.5"
+  },
+  "image": {
+    "path": "official-checkout/assets/images/groceries.jpg",
+    "sha256": "7073dfecb5a3ecafb6152124113163a0ea1c1c70f92999ec892b519eca63e3d3",
+    "size": [
+      800,
+      534
+    ]
+  },
+  "official_checkpoint": {
+    "repo": "facebook/sam3",
+    "revision": "3c879f39826c281e95690f02c7821c4de09afae7",
+    "sha256": "9999e2341ceef5e136daa386eecb55cb414446a00ac2b55eb2dfd2f7c3cf8c9e"
+  },
+  "official_code": {
+    "repo": "https://github.com/facebookresearch/sam3",
+    "revision": "2814fa619404a722d03e9a012e083e4f293a4e53"
+  },
+  "oracle": {
+    "case_spec_sha256": "7366d28a0742ae822b2e037a5e074ead20a6b7fb472abc8fb2da8130712f21fa",
+    "cases": [
+      {
+        "detection_count": 4,
+        "image_latency_s": 101.28632833302254,
+        "name": "text_paper_bag_1008",
+        "prompt_latency_s": 8.973811208968982,
+        "resolution": 1008
+      },
+      {
+        "detection_count": 4,
+        "image_latency_s": 36.09785374999046,
+        "name": "text_paper_bag_672",
+        "prompt_latency_s": 2.6519497919944115,
+        "resolution": 672
+      },
+      {
+        "detection_count": 4,
+        "image_latency_s": 23.041940749972127,
+        "name": "text_paper_bag_504",
+        "prompt_latency_s": 1.3704140830086544,
+        "resolution": 504
+      },
+      {
+        "detection_count": 1,
+        "image_latency_s": 0.0,
+        "name": "text_car_1008",
+        "prompt_latency_s": 9.84841537498869,
+        "resolution": 1008
+      },
+      {
+        "detection_count": 0,
+        "image_latency_s": 0.0,
+        "name": "text_nonsense_1008",
+        "prompt_latency_s": 9.815340500033926,
+        "resolution": 1008
+      }
+    ],
+    "cold_load_s": 7.714360417041462,
+    "cpu_adapters": [
+      "sam3.model.edt replaced with fail-fast unused stub",
+      "construction-time CUDA cache tensors redirected to CPU",
+      "pin_memory disabled for CPU-only staging",
+      "global-attention RoPE frequencies recomputed with the official formula for non-1008 processor grids"
+    ],
+    "image_sha256": "7073dfecb5a3ecafb6152124113163a0ea1c1c70f92999ec892b519eca63e3d3",
+    "precision": "torch.cpu.autocast.bfloat16"
+  },
+  "performance": {
+    "cold_load_s": 0.38180879200808704,
+    "latency_by_resolution_s": {
+      "1008": {
+        "median": 1.2881468340056017,
+        "p95": 1.3492649999679998,
+        "samples": [
+          1.3492649999679998,
+          1.290744416997768,
+          1.2839852080214769,
+          1.276267374982126,
+          1.2881468340056017
+        ]
+      },
+      "504": {
+        "median": 0.4218509169877507,
+        "p95": 0.4444899159716442,
+        "samples": [
+          0.4444899159716442,
+          0.4218509169877507,
+          0.42190133401891217,
+          0.4157039169804193,
+          0.42156137502752244
+        ]
+      },
+      "672": {
+        "median": 0.5642034579650499,
+        "p95": 0.5916839580168016,
+        "samples": [
+          0.5916839580168016,
+          0.5740140000125393,
+          0.5625711249886081,
+          0.5642034579650499,
+          0.5599526659934781
+        ]
+      }
+    },
+    "measurement_boundary": "MLX active allocator peak after model load; synchronized full set_image plus text-grounding latency",
+    "peak_active_memory_bytes": 8579493443,
+    "repetitions": 5,
+    "status": "passed",
+    "warmup_runs": 1
+  },
+  "schema_version": 1,
+  "status": "passed",
+  "thresholds": {
+    "box_l_inf_max": 2.0,
+    "mask_iou_mean_min": 0.99,
+    "mask_iou_min": 0.95,
+    "score_abs_max": 0.025
+  }
+}

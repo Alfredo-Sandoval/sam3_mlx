@@ -1,0 +1,34 @@
+{
+  "byte_identity_note": "Safetensors bytes may differ across serializer versions; release lineage requires identical tensor keys, shapes, dtypes, and values.",
+  "byte_identity_required": false,
+  "comparison": {
+    "comparison_layout": "canonical MLX image-runtime layout",
+    "dtype_mismatches": [],
+    "exact_tensor_count": 1400,
+    "extra_keys": [],
+    "missing_keys": [],
+    "published_tensor_count": 1400,
+    "reproduced_tensor_count": 1400,
+    "semantic_match": true,
+    "shape_mismatches": [],
+    "value_mismatches": []
+  },
+  "generated_at": "2026-07-27T07:05:09.981623+00:00",
+  "published_artifact": {
+    "checkpoint_sha256": "0ad4c3f42ecf706c4cda63cf58d621699491ed65012b3999284ea370984f7173",
+    "repo": "mlx-community/sam3-image",
+    "revision": "b72a14d8127e17e6f2a3d2e075bbbf4307ba146e"
+  },
+  "reproduction": {
+    "checkpoint_sha256": "b721dcda2fa3c7ebe2664825eeae7bc3df54c08b904382bf4af1d65afebec877",
+    "converter_version": "0.1.2",
+    "manifest_sha256": "26ab345f8bb4a89c2f73425073fbc96207eaaa6979f95f2c800f10858200f688"
+  },
+  "schema_version": 1,
+  "source": {
+    "checkpoint_sha256": "9999e2341ceef5e136daa386eecb55cb414446a00ac2b55eb2dfd2f7c3cf8c9e",
+    "repo": "facebook/sam3",
+    "revision": "3c879f39826c281e95690f02c7821c4de09afae7"
+  },
+  "status": "passed"
+}
