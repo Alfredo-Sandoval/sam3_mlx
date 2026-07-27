@@ -40,7 +40,7 @@ third_party/
 # Local-only provenance doc (not shipped in the public tree)
 /UPSTREAM.md
 
-# Local developer parity/benchmark scripts
+# Scripts are ignored by default; explicitly retain release-critical tooling.
 scripts/
 !scripts/
 scripts/*
@@ -49,6 +49,10 @@ scripts/*
 !scripts/run_image_parity.py
 !scripts/run_upstream_image_oracle.py
 !scripts/validate_checkpoint_lineage.py
+!scripts/run_hardened_image_parity.py
+!scripts/run_upstream_image_oracle_hardened.py
+!scripts/validate_checkpoint_lineage_hardened.py
+!scripts/audit_release_evidence.py
 
 # Local scratch examples/notebooks
 examples/
