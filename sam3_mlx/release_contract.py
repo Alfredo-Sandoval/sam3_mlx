@@ -118,6 +118,7 @@ def build_oracle_bindings(
     case_spec_sha256: str,
     confidence_threshold: float,
     oracle_runner_sha256: str,
+    release_contract_sha256: str,
 ) -> dict[str, Any]:
     """Build the complete cache identity for upstream oracle outputs."""
 
@@ -140,6 +141,7 @@ def build_oracle_bindings(
         "precision": ORACLE_PRECISION,
         "cpu_adapters": list(ORACLE_CPU_ADAPTERS),
         "oracle_runner_sha256": oracle_runner_sha256,
+        "release_contract_sha256": release_contract_sha256,
     }
 
 
