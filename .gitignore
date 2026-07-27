@@ -54,6 +54,7 @@ scripts/*
 !scripts/run_upstream_image_oracle_hardened.py
 !scripts/validate_checkpoint_lineage_hardened.py
 !scripts/audit_release_evidence.py
+!scripts/audit_release_candidate.py
 
 # Local scratch examples/notebooks
 examples/
