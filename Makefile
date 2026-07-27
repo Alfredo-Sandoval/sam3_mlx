@@ -7,7 +7,7 @@ artifact-check:
 	uv run python scripts/validate_release.py
 
 release-evidence-audit:
-	uv run python scripts/audit_release_evidence.py --receipt parity/receipts/latest.json
+	uv run python scripts/audit_release_candidate.py --receipt parity/receipts/latest.json
 
 release-check: artifact-check runtime-release-check
 
