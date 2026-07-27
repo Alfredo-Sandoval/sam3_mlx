@@ -4,6 +4,7 @@ import pytest
 
 from sam3_mlx._unsupported import Sam3MlxUnsupportedError
 from sam3_mlx.model.lifecycle_predictor import LifecycleSafeSam3BasePredictor
+from sam3_mlx.model.sam3_base_predictor import Sam3BasePredictor
 from sam3_mlx.model.sam3_video_predictor import Sam3VideoPredictor
 
 
@@ -56,9 +57,17 @@ class _ImmediateModel:
 
 
 def _predictor(model):
-    predictor = LifecycleSafeSam3BasePredictor()
+    predictor = Sam3BasePredictor()
     predictor.model = model
     return predictor
+
+
+def test_lifecycle_compatibility_class_adds_no_divergent_overrides():
+    assert LifecycleSafeSam3BasePredictor.__bases__ == (Sam3BasePredictor,)
+    assert set(LifecycleSafeSam3BasePredictor.__dict__) <= {
+        "__module__",
+        "__doc__",
+    }
 
 
 def test_shutdown_prevents_inflight_session_publication_and_disposes_state():
