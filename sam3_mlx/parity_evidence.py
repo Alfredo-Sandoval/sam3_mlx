@@ -61,32 +61,27 @@ def normalize_outputs(value: Mapping[str, Any], *, label: str) -> dict[str, np.n
 
 
 def mask_iou_matrix(left_masks: Any, right_masks: Any) -> np.ndarray:
-    """Return the complete pairwise mask-IoU matrix in float64."""
+    """Return a complete pairwise mask-IoU matrix with bounded scratch memory."""
 
     left = _normalize_masks(left_masks, label="official")
     right = _normalize_masks(right_masks, label="mlx")
     if left.shape[1:] != right.shape[1:]:
         raise ValueError(
             "Official and MLX masks must share spatial dimensions, got "
-            f"{left.shape[1:]} and {right.shape[1:]} ."
+            f"{left.shape[1:]} and {right.shape[1:]}."
         )
-    if left.shape[0] == 0 or right.shape[0] == 0:
-        return np.zeros((left.shape[0], right.shape[0]), dtype=np.float64)
 
     left_flat = left.reshape(left.shape[0], -1)
     right_flat = right.reshape(right.shape[0], -1)
-    intersection = np.logical_and(
-        left_flat[:, None, :], right_flat[None, :, :]
-    ).sum(axis=2, dtype=np.int64)
-    union = np.logical_or(left_flat[:, None, :], right_flat[None, :, :]).sum(
-        axis=2, dtype=np.int64
-    )
-    return np.divide(
-        intersection,
-        union,
-        out=np.ones_like(intersection, dtype=np.float64),
-        where=union != 0,
-    )
+    ious = np.empty((left.shape[0], right.shape[0]), dtype=np.float64)
+    for left_index, left_mask in enumerate(left_flat):
+        for right_index, right_mask in enumerate(right_flat):
+            intersection = np.logical_and(left_mask, right_mask).sum(dtype=np.int64)
+            union = np.logical_or(left_mask, right_mask).sum(dtype=np.int64)
+            ious[left_index, right_index] = (
+                1.0 if union == 0 else float(intersection / union)
+            )
+    return ious
 
 
 def optimal_assignment(scores: Any) -> list[tuple[int, int]]:
@@ -95,7 +90,7 @@ def optimal_assignment(scores: Any) -> list[tuple[int, int]]:
     matrix = np.asarray(scores, dtype=np.float64)
     if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
         raise ValueError(
-            "Assignment score matrix must be square, got " f"shape {matrix.shape}."
+            f"Assignment score matrix must be square, got shape {matrix.shape}."
         )
     if not np.isfinite(matrix).all():
         raise ValueError("Assignment score matrix contains non-finite values.")
@@ -309,9 +304,15 @@ def load_evidence_bundle(
                 f"{metadata.get('schema_version')!r}."
             )
         if metadata.get("comparison_algorithm") != COMPARISON_ALGORITHM:
-            raise ValueError("Evidence comparison algorithm does not match the release contract.")
+            raise ValueError(
+                "Evidence comparison algorithm does not match the release contract."
+            )
         case_count = metadata.get("case_count")
-        if isinstance(case_count, bool) or not isinstance(case_count, int) or case_count < 0:
+        if (
+            isinstance(case_count, bool)
+            or not isinstance(case_count, int)
+            or case_count < 0
+        ):
             raise ValueError("Evidence case_count must be a non-negative integer.")
 
         official_outputs: list[dict[str, np.ndarray]] = []
@@ -320,7 +321,9 @@ def load_evidence_bundle(
             side_outputs = {}
             for side in ("official", "mlx"):
                 value = {
-                    field: np.array(archive[f"case_{index}_{side}_{field}"], copy=True)
+                    field: np.array(
+                        archive[f"case_{index}_{side}_{field}"], copy=True
+                    )
                     for field in ("masks", "boxes", "scores")
                 }
                 side_outputs[side] = normalize_outputs(value, label=side)
