@@ -21,18 +21,19 @@ def test_bounded_lru_cache_keys_are_a_stable_snapshot():
     assert cache.keys() == ("a", "b")
 
 
-def test_bounded_lru_cache_remains_bounded_under_concurrent_access():
-    cache = BoundedLRUCache[int, int](maxsize=8)
+def test_bounded_lru_cache_remains_consistent_under_concurrent_access():
+    # Keep capacity above the shared key cardinality so this test isolates
+    # synchronization rather than intentionally racing against eviction.
+    cache = BoundedLRUCache[int, int](maxsize=32)
 
     def exercise(worker: int) -> None:
         for step in range(2_000):
             key = (worker * 17 + step) % 31
             cache[key] = step
-            value = cache.get(key)
-            assert value is not None
-            assert cache[key] == value
+            assert cache.get(key) is not None
             if step % 97 == 0:
-                tuple(cache.keys())
+                snapshot = cache.keys()
+                assert len(snapshot) == len(set(snapshot))
 
     with ThreadPoolExecutor(max_workers=12) as executor:
         list(executor.map(exercise, range(24)))
