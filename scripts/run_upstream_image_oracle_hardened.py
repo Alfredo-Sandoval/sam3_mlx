@@ -11,11 +11,13 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import types
 from typing import Any
 
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+RELEASE_CONTRACT_PATH = REPO_ROOT / "sam3_mlx" / "release_contract.py"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -26,12 +28,77 @@ from sam3_mlx.release_contract import (  # noqa: E402
     canonical_json_sha256,
     sha256_path,
 )
-from run_upstream_image_oracle import (  # noqa: E402
-    _install_cpu_oracle_adapters,
-    _restore_construction_adapters,
-    _run_prompt,
-    _set_official_global_rope_grid,
-)
+
+
+def _install_cpu_oracle_adapters(torch) -> dict[str, Any]:
+    """Install the minimal CPU-only adaptations required by the pinned upstream."""
+
+    edt_module = types.ModuleType("sam3.model.edt")
+
+    def unavailable_edt(*_args, **_kwargs):
+        raise RuntimeError("Triton EDT is unavailable in the image-only CPU oracle.")
+
+    edt_module.edt_triton = unavailable_edt
+    sys.modules["sam3.model.edt"] = edt_module
+
+    originals = {
+        "zeros": torch.zeros,
+        "arange": torch.arange,
+        "pin_memory": torch.Tensor.pin_memory,
+    }
+
+    def _cpu_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+        updated = dict(kwargs)
+        if str(updated.get("device", "")).startswith("cuda"):
+            updated["device"] = "cpu"
+        return updated
+
+    torch.zeros = lambda *args, **kwargs: originals["zeros"](
+        *args, **_cpu_kwargs(kwargs)
+    )
+    torch.arange = lambda *args, **kwargs: originals["arange"](
+        *args, **_cpu_kwargs(kwargs)
+    )
+    torch.Tensor.pin_memory = lambda tensor, *_args, **_kwargs: tensor
+    return originals
+
+
+def _restore_construction_adapters(torch, originals: dict[str, Any]) -> None:
+    torch.zeros = originals["zeros"]
+    torch.arange = originals["arange"]
+
+
+def _run_prompt(processor, state: dict[str, Any], spec: dict[str, Any]):
+    processor.reset_all_prompts(state)
+    prompt = spec["prompt"]
+    if prompt is not None:
+        state = processor.set_text_prompt(prompt, state)
+    for geometric_prompt in spec["geometric_prompts"]:
+        state = processor.add_geometric_prompt(
+            geometric_prompt["box"],
+            geometric_prompt["label"],
+            state,
+        )
+    return state
+
+
+def _set_official_global_rope_grid(model, resolution: int) -> None:
+    """Recompute official global-attention RoPE for a non-default processor grid."""
+
+    grid_size = resolution // 14
+    trunk = model.backbone.vision_backbone.trunk
+    for block in trunk.blocks:
+        if block.window_size != 0 or not block.attn.use_rope:
+            continue
+        attention = block.attn
+        scale_pos = 1.0
+        if attention.rope_interp:
+            scale_pos = attention.rope_pt_size[0] / grid_size
+        attention.freqs_cis = attention.compute_cis(
+            end_x=grid_size,
+            end_y=grid_size,
+            scale_pos=scale_pos,
+        )
 
 
 def _validate_official_checkout(checkout: Path) -> str:
@@ -114,6 +181,8 @@ def main() -> None:
     parser.add_argument("--confidence-threshold", type=float, default=0.5)
     args = parser.parse_args()
 
+    if args.out.suffix != ".npz":
+        raise SystemExit("--out must end in .npz.")
     try:
         revision = _validate_official_checkout(args.official_checkout)
         specs = _validate_case_specs(json.loads(args.cases.read_text()))
@@ -129,11 +198,13 @@ def main() -> None:
     image_sha256 = sha256_path(args.image)
     case_spec_sha256 = sha256_path(args.cases)
     runner_sha256 = sha256_path(Path(__file__))
+    release_contract_sha256 = sha256_path(RELEASE_CONTRACT_PATH)
     bindings = build_oracle_bindings(
         image_sha256=image_sha256,
         case_spec_sha256=case_spec_sha256,
         confidence_threshold=args.confidence_threshold,
         oracle_runner_sha256=runner_sha256,
+        release_contract_sha256=release_contract_sha256,
     )
 
     import torch
@@ -168,12 +239,13 @@ def main() -> None:
         "precision": bindings["precision"],
         "cpu_adapters": bindings["cpu_adapters"],
         "oracle_runner_sha256": runner_sha256,
+        "release_contract_sha256": release_contract_sha256,
         "cold_load_s": load_s,
         "environment": {
             "machine": platform.machine(),
             "platform": platform.platform(),
             "python": platform.python_version(),
-            "torch": torch.__version__,
+            "torch": str(torch.__version__),
         },
         "cases": [],
     }
