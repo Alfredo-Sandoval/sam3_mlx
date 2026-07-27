@@ -1,6 +1,5 @@
 prune tests
 prune dev_docs
-prune scripts
 prune examples
 prune third_party
 prune checkpoints
@@ -9,6 +8,23 @@ prune sam3_mlx/agent
 prune sam3_mlx/eval
 prune sam3_mlx/train
 prune sam3_mlx/perflib/triton
+
+include README.md
+include PARITY.md
+include ARCHITECTURE.md
+include Makefile
+include scripts/validate_release.py
+include scripts/validate_runtime_release.py
+include scripts/validate_runtime_release_hardened.py
+include scripts/audit_release_evidence.py
+include scripts/audit_release_candidate.py
+include scripts/run_image_parity.py
+include scripts/run_hardened_image_parity.py
+include scripts/run_upstream_image_oracle_hardened.py
+include scripts/validate_checkpoint_lineage_hardened.py
+recursive-include parity/receipts *.json
+recursive-include parity/manifests *.json
+recursive-include parity/evidence *.npz
 
 global-exclude .DS_Store
 global-exclude __pycache__

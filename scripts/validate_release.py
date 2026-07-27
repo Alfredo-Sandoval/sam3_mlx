@@ -22,6 +22,37 @@ REQUIRED_WHEEL_MEMBERS = {
     "sam3_mlx/__init__.py",
     "sam3_mlx/assets/bpe_simple_vocab_16e6.txt.gz",
     "sam3_mlx/model_builder.py",
+    "sam3_mlx/model/lifecycle_predictor.py",
+    "sam3_mlx/parity_evidence.py",
+    "sam3_mlx/release_contract.py",
+    "sam3_mlx/source_binding.py",
+}
+REQUIRED_SDIST_SUFFIXES = {
+    "pyproject.toml",
+    "README.md",
+    "PARITY.md",
+    "ARCHITECTURE.md",
+    "Makefile",
+    "sam3_mlx/__init__.py",
+    "sam3_mlx/assets/bpe_simple_vocab_16e6.txt.gz",
+    "sam3_mlx/parity_evidence.py",
+    "sam3_mlx/release_contract.py",
+    "sam3_mlx/source_binding.py",
+    "scripts/validate_release.py",
+    "scripts/validate_runtime_release.py",
+    "scripts/validate_runtime_release_hardened.py",
+    "scripts/audit_release_evidence.py",
+    "scripts/audit_release_candidate.py",
+    "scripts/run_image_parity.py",
+    "scripts/run_hardened_image_parity.py",
+    "scripts/run_upstream_image_oracle_hardened.py",
+    "scripts/validate_checkpoint_lineage_hardened.py",
+    "parity/receipts/latest.json",
+    "parity/receipts/example-image-parity.json",
+    "parity/receipts/holdout-image-parity.json",
+    "parity/manifests/checkpoint-lineage.json",
+    "parity/evidence/example-image-parity.npz",
+    "parity/evidence/holdout-image-parity.npz",
 }
 
 
@@ -58,13 +89,10 @@ def _inspect_wheel(wheel: Path) -> None:
 def _inspect_sdist(sdist: Path) -> None:
     with tarfile.open(sdist, "r:gz") as archive:
         members = [member.name for member in archive.getmembers()]
-    suffixes = {
-        "pyproject.toml",
-        "sam3_mlx/__init__.py",
-        "sam3_mlx/assets/bpe_simple_vocab_16e6.txt.gz",
-    }
     missing = sorted(
-        suffix for suffix in suffixes if not any(name.endswith(suffix) for name in members)
+        suffix
+        for suffix in REQUIRED_SDIST_SUFFIXES
+        if not any(name.endswith(suffix) for name in members)
     )
     if missing:
         raise RuntimeError(f"Source distribution is missing required files: {missing}")
@@ -94,6 +122,16 @@ from pathlib import Path
 import cv2
 import numpy as np
 import sam3_mlx
+from sam3_mlx.parity_evidence import optimal_assignment
+from sam3_mlx.release_contract import (
+    MLX_CHECKPOINT_REPO,
+    MLX_CHECKPOINT_REVISION,
+    MLX_CHECKPOINT_SHA256,
+    PACKAGE_VERSION,
+)
+from sam3_mlx.convert import DEFAULT_MLX_CHECKPOINT
+from sam3_mlx.model.lifecycle_predictor import LifecycleSafeSam3BasePredictor
+from sam3_mlx.source_binding import ATTESTATION_PATH_PREFIXES
 
 expected_exports = {
     "Sam3MlxUnsupportedError",
@@ -105,6 +143,17 @@ expected_exports = {
     "download_ckpt_from_hf",
 }
 assert set(sam3_mlx.__all__) == expected_exports
+assert sam3_mlx.__version__ == PACKAGE_VERSION
+assert DEFAULT_MLX_CHECKPOINT.repo == MLX_CHECKPOINT_REPO
+assert DEFAULT_MLX_CHECKPOINT.revision == MLX_CHECKPOINT_REVISION
+assert DEFAULT_MLX_CHECKPOINT.output_sha256 == MLX_CHECKPOINT_SHA256
+assert LifecycleSafeSam3BasePredictor.__name__ == "LifecycleSafeSam3BasePredictor"
+assert ATTESTATION_PATH_PREFIXES == (
+    "parity/receipts/",
+    "parity/manifests/",
+    "parity/evidence/",
+)
+assert optimal_assignment(np.eye(2)) == [(0, 0), (1, 1)]
 # Experimental multiplex builders remain importable but are not stable __all__.
 import sam3_mlx.experimental as experimental
 

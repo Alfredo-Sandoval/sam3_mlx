@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from sam3_mlx.model.sam3_base_predictor import Sam3BasePredictor
+from sam3_mlx.model.lifecycle_predictor import LifecycleSafeSam3BasePredictor
 
 
-class Sam3MultiplexVideoPredictor(Sam3BasePredictor):
+class Sam3MultiplexVideoPredictor(LifecycleSafeSam3BasePredictor):
     """Torch-free SAM 3.1 multiplex predictor wrapper.
 
     The official class adds Torch autocast and optional warm-up compilation around
