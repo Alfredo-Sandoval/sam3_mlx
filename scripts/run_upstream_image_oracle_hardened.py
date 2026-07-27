@@ -141,6 +141,20 @@ def _validate_official_checkout(checkout: Path) -> str:
     return revision
 
 
+def _require_module_from_checkout(module, checkout: Path, *, label: str) -> str:
+    source = getattr(module, "__file__", None)
+    if not source:
+        raise ValueError(f"{label} has no import source path.")
+    resolved = Path(source).resolve()
+    try:
+        relative = resolved.relative_to(checkout.resolve())
+    except ValueError as exc:
+        raise ValueError(
+            f"{label} was imported from {resolved}, outside {checkout.resolve()}."
+        ) from exc
+    return str(relative)
+
+
 def _validate_case_specs(specs: Any) -> list[dict[str, Any]]:
     if not isinstance(specs, list) or not specs:
         raise ValueError("Oracle cases must be a non-empty JSON list.")
@@ -164,8 +178,34 @@ def _validate_case_specs(specs: Any) -> list[dict[str, Any]]:
             raise ValueError(
                 f"Oracle case {name!r} resolution must be a positive multiple of 14."
             )
-        if not isinstance(spec["geometric_prompts"], list):
+        prompt = spec["prompt"]
+        if prompt is not None and not isinstance(prompt, str):
+            raise ValueError(f"Oracle case {name!r} prompt must be a string or null.")
+        geometric_prompts = spec["geometric_prompts"]
+        if not isinstance(geometric_prompts, list):
             raise ValueError(f"Oracle case {name!r} geometric_prompts must be a list.")
+        for geometric_prompt in geometric_prompts:
+            if not isinstance(geometric_prompt, dict) or set(geometric_prompt) != {
+                "box",
+                "label",
+            }:
+                raise ValueError(
+                    f"Oracle case {name!r} geometric prompts require box and label."
+                )
+            box = geometric_prompt["box"]
+            if (
+                not isinstance(box, list)
+                or len(box) != 4
+                or any(
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not np.isfinite(value)
+                    for value in box
+                )
+            ):
+                raise ValueError(f"Oracle case {name!r} contains an invalid box.")
+            if geometric_prompt["label"] not in (True, False):
+                raise ValueError(f"Oracle case {name!r} contains an invalid box label.")
         names.add(name)
         validated.append(spec)
     return validated
@@ -183,6 +223,10 @@ def main() -> None:
 
     if args.out.suffix != ".npz":
         raise SystemExit("--out must end in .npz.")
+    if not np.isfinite(args.confidence_threshold) or not (
+        0.0 <= args.confidence_threshold <= 1.0
+    ):
+        raise SystemExit("--confidence-threshold must be finite and within [0, 1].")
     try:
         revision = _validate_official_checkout(args.official_checkout)
         specs = _validate_case_specs(json.loads(args.cases.read_text()))
@@ -214,14 +258,31 @@ def main() -> None:
     import sam3.model_builder as model_builder
     from sam3.model.sam3_image_processor import Sam3Processor
 
+    try:
+        model_builder_source = _require_module_from_checkout(
+            model_builder,
+            args.official_checkout,
+            label="sam3.model_builder",
+        )
+        processor_module = sys.modules[Sam3Processor.__module__]
+        processor_source = _require_module_from_checkout(
+            processor_module,
+            args.official_checkout,
+            label=Sam3Processor.__module__,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
     load_started = time.perf_counter()
-    model = model_builder.build_sam3_image_model(
-        checkpoint_path=str(args.checkpoint),
-        load_from_HF=False,
-        device="cpu",
-        enable_inst_interactivity=False,
-    )
-    _restore_construction_adapters(torch, originals)
+    try:
+        model = model_builder.build_sam3_image_model(
+            checkpoint_path=str(args.checkpoint),
+            load_from_HF=False,
+            device="cpu",
+            enable_inst_interactivity=False,
+        )
+    finally:
+        _restore_construction_adapters(torch, originals)
     load_s = time.perf_counter() - load_started
 
     image = Image.open(args.image).convert("RGB")
@@ -246,6 +307,10 @@ def main() -> None:
             "platform": platform.platform(),
             "python": platform.python_version(),
             "torch": str(torch.__version__),
+        },
+        "official_imports": {
+            "model_builder": model_builder_source,
+            "image_processor": processor_source,
         },
         "cases": [],
     }
@@ -308,8 +373,6 @@ def main() -> None:
     finally:
         torch.Tensor.pin_memory = originals["pin_memory"]
 
-    # Recheck after inference so a checkout mutation during a long oracle run
-    # cannot silently survive into release evidence.
     try:
         final_revision = _validate_official_checkout(args.official_checkout)
     except ValueError as exc:
