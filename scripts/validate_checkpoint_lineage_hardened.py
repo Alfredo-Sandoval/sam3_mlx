@@ -123,6 +123,7 @@ def _validate_reproduction_manifest(
     }
     if drift:
         raise ValueError(f"Reproduction manifest does not match release contract: {drift}")
+
     ignored_keys = manifest.get("ignored_keys")
     if not isinstance(ignored_keys, list) or any(
         not isinstance(key, str) or not key.startswith("tracker.")
@@ -131,8 +132,27 @@ def _validate_reproduction_manifest(
         raise ValueError(
             "Reproduction manifest ignored_keys must contain only explicit tracker keys."
         )
+    if ignored_keys != sorted(set(ignored_keys)):
+        raise ValueError(
+            "Reproduction manifest ignored_keys must be sorted and unique."
+        )
+
     dtype_counts = manifest.get("dtype_counts")
-    if not isinstance(dtype_counts, dict) or sum(dtype_counts.values()) != CHECKPOINT_TENSOR_COUNT:
+    if not isinstance(dtype_counts, dict) or not dtype_counts:
+        raise ValueError("Reproduction manifest dtype_counts must be a non-empty object.")
+    if any(
+        not isinstance(dtype_name, str)
+        or not dtype_name
+        or isinstance(count, bool)
+        or not isinstance(count, int)
+        or count < 0
+        for dtype_name, count in dtype_counts.items()
+    ):
+        raise ValueError(
+            "Reproduction manifest dtype_counts must map dtype names to "
+            "non-negative integer counts."
+        )
+    if sum(dtype_counts.values()) != CHECKPOINT_TENSOR_COUNT:
         raise ValueError("Reproduction manifest dtype_counts do not cover all tensors.")
 
 
