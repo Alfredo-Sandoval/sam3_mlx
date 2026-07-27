@@ -14,7 +14,7 @@
     "value_mismatches": []
   },
   "converter_module_sha256": "6306e16eebb8d43831d87c08c4919c8b28e8a47561f5d1042cbc2eebdb5f9390",
-  "generated_at": "2026-07-27T17:49:57.781921+00:00",
+  "generated_at": "2026-07-27T18:39:00.694220+00:00",
   "lineage_runner_sha256": "7eec10a6a92eb0856a4b9efa7d6a90ab505b076eb834c4de6f8a4cfc8cd8dfa1",
   "published_artifact": {
     "checkpoint_sha256": "0ad4c3f42ecf706c4cda63cf58d621699491ed65012b3999284ea370984f7173",
@@ -357,6 +357,6 @@
     "repo": "facebook/sam3",
     "revision": "3c879f39826c281e95690f02c7821c4de09afae7"
   },
-  "source_commit": "0312b935af273d19a150408f90aec810cb63cfe9",
+  "source_commit": "9887a86553dfa074a8777465ca7b3b3af37bd5df",
   "status": "passed"
 }
