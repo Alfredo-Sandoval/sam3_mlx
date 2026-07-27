@@ -9,10 +9,10 @@ checkpoint loading, text and geometric prompting, and frame-local inference.
 SAM 3.1 multiplex and temporal tracking remain experimental. They are not
 covered by the image-runtime parity claim.
 
-The hardening branch intentionally invalidates the existing schema-v1 release
-receipt. A releasable commit now requires schema-v2 reports, raw replayable NPZ
-evidence, hardened checkpoint lineage, one source commit across every artifact,
-and a receipt-only attestation commit.
+The previous schema-v1 release receipt was superseded by schema-v2 reports, raw
+replayable NPZ evidence, hardened checkpoint lineage, one source commit across
+every artifact, and a receipt-only attestation commit. Those artifacts are now
+checked in and pass the local release gate.
 
 ## Package map
 
@@ -237,18 +237,22 @@ receipt/attestation validator.
 - Evidence files that were internally valid but generated from different source
   commits.
 
-## Remaining release work
+## Release gate status
 
-The source changes are complete enough for re-attestation, but the branch is not
-yet releasable. The following must run on Apple Silicon:
+The local `0.1.2` release gate is complete:
 
-1. Generate `parity/evidence/example-image-parity.npz` and its schema-v2 report.
-2. Generate `parity/evidence/holdout-image-parity.npz` and its schema-v2 report.
-3. Generate the schema-v2 checkpoint-lineage report.
-4. Run the complete test suite with zero skips and zero deselections.
-5. Generate `latest.json` against the source commit.
-6. Commit only evidence paths in the attestation commit.
-7. Run `make release-check` from a clean worktree.
+1. Both schema-v2 raw parity bundles and reports are checked in.
+2. Checkpoint lineage passes for all 1,400 tensors.
+3. The receipt records 701 passing tests with zero failures, skips, or
+   deselections.
+4. Every evidence artifact names the same source commit.
+5. The evidence-only attestation commit has that source commit as its sole
+   parent.
+6. `make release-check` passes from a clean worktree, including wheel and source
+   distribution inspection and clean-install validation.
+
+Creating a version tag or publishing an artifact is a separate distribution
+action and is not implied by the checked-in evidence.
 
 ## Remaining product risks
 
@@ -263,10 +267,9 @@ yet releasable. The following must run on Apple Silicon:
 
 ## Highest-leverage next work
 
-1. Re-attest the hardened image release on Apple Silicon.
-2. Add a broader external image corpus without weakening the frozen holdout.
-3. Profile device-native preprocessing and repeated-prompt text caching.
-4. Add a sequential video decode path for forward propagation.
-5. Split checkpoint normalization and component factories out of
-   `model_builder.py` only after the release is re-attested.
-6. Treat temporal tracking as a separate 0.2 assurance program.
+1. Add a broader external image corpus without weakening the frozen holdout.
+2. Profile device-native preprocessing and repeated-prompt text caching.
+3. Add a sequential video decode path for forward propagation.
+4. Split checkpoint normalization and component factories out of
+   `model_builder.py` without changing the stable release contract.
+5. Treat temporal tracking as a separate 0.2 assurance program.

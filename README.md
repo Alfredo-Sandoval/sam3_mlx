@@ -170,9 +170,9 @@ See [`PARITY.md`](PARITY.md) for commands and [`ARCHITECTURE.md`](ARCHITECTURE.m
 for the complete system and risk map.
 
 > [!IMPORTANT]
-> Source hardening invalidates the previous schema-v1 receipt. The changed source
-> must not be tagged or published until schema-v2 parity bundles, lineage, tests,
-> and the source-bound receipt are regenerated on Apple Silicon.
+> The checked-in schema-v2 parity bundles, checkpoint lineage, and runtime
+> receipt satisfy the local release gate for their recorded source commit.
+> Run `make release-check` from a clean worktree before tagging or publishing.
 
 ## Limitations
 

@@ -175,26 +175,28 @@ source-commit chain. `validate_runtime_release_hardened.py` then verifies the
 source/attestation commit relationship, including raw evidence paths.
 `validate_release.py` builds and inspects the wheel and source distribution.
 
-## Current repository state after hardening
+## Current repository state
 
-The previously checked-in schema-v1 receipt is historical evidence only. It does
-not satisfy the schema-v2 raw-replay and source-binding contract. The hardening
-branch must not be tagged or published until the Apple-Silicon regeneration
-sequence above is complete.
+The checked-in schema-v2 reports, raw NPZ bundles, checkpoint-lineage manifest,
+and runtime receipt are source-bound to the commit recorded in
+`parity/receipts/latest.json`. The independent replay audit covers 11 cases
+across the example and holdout profiles, and the recorded release suite contains
+701 passing tests with zero failures, skips, or deselections. `make
+release-check` passes from the clean receipt-only attestation commit.
 
-## Historical performance boundary
+## Current performance evidence
 
-The previous Apple-Silicon run measured synchronized full `set_image` plus text
-grounding with one warmup and five samples per resolution. Approximate medians
-were:
+The source-bound Apple-Silicon run measured synchronized full `set_image` plus
+text grounding with one warmup and five samples per resolution. Median ranges
+across the example and holdout profiles were:
 
-- `1008`: `1.23–1.26 s`;
-- `672`: about `0.55 s`;
-- `504`: about `0.41–0.43 s`;
+- `1008`: `1.15–1.19 s`;
+- `672`: `0.50–0.55 s`;
+- `504`: `0.37–0.42 s`;
 - peak active MLX allocation: about `8.89 GB`.
 
-These numbers must be regenerated after hardening. They are not automatically
-valid for a changed source commit.
+These measurements describe one Apple-Silicon host and the source commit named
+by the receipt. They are not performance guarantees for later commits.
 
 ## Intentionally deferred
 
