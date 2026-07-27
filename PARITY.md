@@ -51,7 +51,8 @@ passing report requires exactly 1,400 matching tensor keys, shapes, dtypes, and
 values.
 
 The schema-v2 lineage report embeds the complete conversion manifest and records
-the lineage runner and converter-module SHA-256 values.
+the generating source commit plus lineage-runner and converter-module SHA-256
+values.
 
 ### 3. Upstream oracle
 
@@ -66,7 +67,8 @@ inference and binds its cache to:
 - CPU BF16 precision;
 - the explicitly allowed CPU adaptations;
 - oracle runner SHA-256;
-- release-contract SHA-256.
+- release-contract SHA-256;
+- actual import paths inside the pinned official checkout.
 
 A cache missing any binding is not release evidence.
 
@@ -77,9 +79,10 @@ every case in compressed NPZ bundles. Object pairing uses deterministic Hungaria
 maximum-mask-IoU assignment.
 
 Schema-v2 reports reference the raw bundle by SHA-256. Summary metrics are
-recomputed by the release auditor rather than trusted directly.
+recomputed by the release auditor rather than trusted directly. Both the report
+and raw bundle record the exact `sam3_mlx` source commit that generated them.
 
-### 5. Receipt
+### 5. Source-bound receipt
 
 The runtime receipt binds:
 
@@ -90,13 +93,18 @@ The runtime receipt binds:
 - checkpoint-lineage report and SHA-256;
 - case and performance projections.
 
+`audit_release_candidate.py` requires the receipt, both reports, both raw bundles,
+and the lineage report to name the same source commit. This prevents internally
+valid evidence generated from different source revisions from being combined.
+
 A following attestation commit may contain only files under `parity/receipts/`,
 `parity/manifests/`, and `parity/evidence/`.
 
 ## Generate hardened evidence
 
-Commit all source changes first. Use a clean official checkout at the revision
-recorded in `sam3_mlx.release_contract`.
+Commit all source changes first. Evidence generators reject non-evidence
+worktree changes. Use a clean official checkout at the revision recorded in
+`sam3_mlx.release_contract`.
 
 ### Calibration profile
 
@@ -160,18 +168,19 @@ make artifact-check
 make release-check
 ```
 
-`release-evidence-audit` loads raw NPZ files with pickle disabled, replays every
-case, verifies all cache and lineage bindings, and reconstructs the receipt
-projections. `validate_runtime_release_hardened.py` then verifies the
+`release-evidence-audit` invokes `audit_release_candidate.py`. It loads raw NPZ
+files with pickle disabled, replays every case, verifies all cache and lineage
+bindings, reconstructs the receipt projections, and checks the cross-artifact
+source-commit chain. `validate_runtime_release_hardened.py` then verifies the
 source/attestation commit relationship, including raw evidence paths.
 `validate_release.py` builds and inspects the wheel and source distribution.
 
 ## Current repository state after hardening
 
 The previously checked-in schema-v1 receipt is historical evidence only. It does
-not satisfy the schema-v2 raw-replay contract. The hardening branch must not be
-tagged or published until the Apple-Silicon regeneration sequence above is
-complete.
+not satisfy the schema-v2 raw-replay and source-binding contract. The hardening
+branch must not be tagged or published until the Apple-Silicon regeneration
+sequence above is complete.
 
 ## Historical performance boundary
 
