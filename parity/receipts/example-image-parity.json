@@ -366,12 +366,14 @@
       "status": "passed"
     }
   ],
+  "comparison_algorithm": "hungarian-max-mask-iou-v1",
   "confidence_threshold": 0.5,
   "converted_checkpoint": {
     "repo": "mlx-community/sam3-image",
     "revision": "b72a14d8127e17e6f2a3d2e075bbbf4307ba146e",
     "sha256": "0ad4c3f42ecf706c4cda63cf58d621699491ed65012b3999284ea370984f7173"
   },
+  "generated_at": "2026-07-27T17:45:47.147666+00:00",
   "host": {
     "machine": "arm64",
     "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
@@ -395,105 +397,159 @@
     "revision": "2814fa619404a722d03e9a012e083e4f293a4e53"
   },
   "oracle": {
+    "bindings": {
+      "case_spec_sha256": "77341c9d178642824471a9136e2380ab3081359c5c63e28082b4f5f15586b2a3",
+      "confidence_threshold": 0.5,
+      "cpu_adapters": [
+        "sam3.model.edt replaced with fail-fast unused stub",
+        "construction-time CUDA cache tensors redirected to CPU",
+        "pin_memory disabled for CPU-only staging",
+        "global-attention RoPE frequencies recomputed with the official formula for non-1008 processor grids"
+      ],
+      "image_sha256": "979f120edcb0050a12d5b4a1f1eaf6bc888b89f675524e7ffcf6ae5b77aa6bc4",
+      "official_checkpoint": {
+        "repo": "facebook/sam3",
+        "revision": "3c879f39826c281e95690f02c7821c4de09afae7",
+        "sha256": "9999e2341ceef5e136daa386eecb55cb414446a00ac2b55eb2dfd2f7c3cf8c9e"
+      },
+      "official_code": {
+        "repo": "https://github.com/facebookresearch/sam3",
+        "revision": "2814fa619404a722d03e9a012e083e4f293a4e53"
+      },
+      "oracle_runner_sha256": "da4a4d2ad6907d2a04d9a2c242e6542c088f910ee5852855f146f1214a64ce03",
+      "precision": "torch.cpu.autocast.bfloat16",
+      "release_contract_sha256": "fe339e1823ed0ccec35f06a2d754ffc98c6f15d87a66118af7639f60452bb8b5",
+      "schema_version": 2
+    },
+    "cache_key": "5e4a359910695503fe16d724537ffa9672ade8d61064fb3b383495a7e5df5f97",
     "case_spec_sha256": "77341c9d178642824471a9136e2380ab3081359c5c63e28082b4f5f15586b2a3",
     "cases": [
       {
         "detection_count": 12,
-        "image_latency_s": 103.55695645796368,
+        "image_latency_s": 110.44470233295579,
         "name": "text_shoe_1008",
-        "prompt_latency_s": 9.164171832962893,
+        "prompt_latency_s": 8.905433125037234,
         "resolution": 1008
       },
       {
         "detection_count": 0,
         "image_latency_s": 0.0,
         "name": "text_nonsense_1008",
-        "prompt_latency_s": 8.675473458017223,
+        "prompt_latency_s": 8.971820375008974,
         "resolution": 1008
       },
       {
         "detection_count": 6,
         "image_latency_s": 0.0,
         "name": "positive_box_1008",
-        "prompt_latency_s": 9.112713625014294,
+        "prompt_latency_s": 9.186029625008814,
         "resolution": 1008
       },
       {
         "detection_count": 5,
         "image_latency_s": 0.0,
         "name": "positive_negative_box_1008",
-        "prompt_latency_s": 17.858890958013944,
+        "prompt_latency_s": 20.546598208951764,
         "resolution": 1008
       },
       {
         "detection_count": 13,
-        "image_latency_s": 36.674348500033375,
+        "image_latency_s": 41.97961708297953,
         "name": "text_shoe_672",
-        "prompt_latency_s": 2.9965052499901503,
+        "prompt_latency_s": 3.7301516669685952,
         "resolution": 672
       },
       {
         "detection_count": 12,
-        "image_latency_s": 23.061352458957117,
+        "image_latency_s": 29.87374320899835,
         "name": "text_shoe_504",
-        "prompt_latency_s": 1.397970957972575,
+        "prompt_latency_s": 1.4671929170144722,
         "resolution": 504
       }
     ],
-    "cold_load_s": 7.9742358749499545,
+    "cold_load_s": 8.291530458023772,
+    "confidence_threshold": 0.5,
     "cpu_adapters": [
       "sam3.model.edt replaced with fail-fast unused stub",
       "construction-time CUDA cache tensors redirected to CPU",
       "pin_memory disabled for CPU-only staging",
       "global-attention RoPE frequencies recomputed with the official formula for non-1008 processor grids"
     ],
+    "environment": {
+      "machine": "arm64",
+      "platform": "macOS-26.5.2-arm64-arm-64bit",
+      "python": "3.12.13",
+      "torch": "2.6.0"
+    },
+    "generated_at": "2026-07-27T17:41:30.472837+00:00",
     "image_sha256": "979f120edcb0050a12d5b4a1f1eaf6bc888b89f675524e7ffcf6ae5b77aa6bc4",
-    "precision": "torch.cpu.autocast.bfloat16"
+    "official_checkpoint": {
+      "repo": "facebook/sam3",
+      "revision": "3c879f39826c281e95690f02c7821c4de09afae7",
+      "sha256": "9999e2341ceef5e136daa386eecb55cb414446a00ac2b55eb2dfd2f7c3cf8c9e"
+    },
+    "official_code": {
+      "repo": "https://github.com/facebookresearch/sam3",
+      "revision": "2814fa619404a722d03e9a012e083e4f293a4e53"
+    },
+    "official_imports": {
+      "image_processor": "sam3/model/sam3_image_processor.py",
+      "model_builder": "sam3/model_builder.py"
+    },
+    "oracle_runner_sha256": "da4a4d2ad6907d2a04d9a2c242e6542c088f910ee5852855f146f1214a64ce03",
+    "precision": "torch.cpu.autocast.bfloat16",
+    "release_contract_sha256": "fe339e1823ed0ccec35f06a2d754ffc98c6f15d87a66118af7639f60452bb8b5",
+    "schema_version": 2
   },
   "performance": {
-    "cold_load_s": 0.39280966599471867,
+    "cold_load_s": 0.847803125041537,
     "latency_by_resolution_s": {
       "1008": {
-        "median": 1.2331867910106666,
-        "p95": 1.243158666009549,
+        "median": 1.1859180830069818,
+        "p95": 1.2047705419827253,
         "samples": [
-          1.217416792002041,
-          1.2361837080097757,
-          1.2331867910106666,
-          1.243158666009549,
-          1.2291953340172768
+          1.1859180830069818,
+          1.1743785410071723,
+          1.2047705419827253,
+          1.1688307499862276,
+          1.1938520410330966
         ]
       },
       "504": {
-        "median": 0.4253602910321206,
-        "p95": 0.42632537498138845,
+        "median": 0.42407029203604907,
+        "p95": 0.4425538340001367,
         "samples": [
-          0.422725124983117,
-          0.42547104199184105,
-          0.42632537498138845,
-          0.4253602910321206,
-          0.4190449580200948
+          0.41140708298189566,
+          0.41599695797776803,
+          0.4247245840379037,
+          0.4425538340001367,
+          0.42407029203604907
         ]
       },
       "672": {
-        "median": 0.5537860830081627,
-        "p95": 0.5623905420070514,
+        "median": 0.5452175830141641,
+        "p95": 0.5480322920484468,
         "samples": [
-          0.5623905420070514,
-          0.5549764579627663,
-          0.5481472500250675,
-          0.5537860830081627,
-          0.551616583019495
+          0.5422490839846432,
+          0.5480322920484468,
+          0.5452175830141641,
+          0.5455437090131454,
+          0.5419022500282153
         ]
       }
     },
     "measurement_boundary": "MLX active allocator peak after model load; synchronized full set_image plus text-grounding latency",
-    "peak_active_memory_bytes": 8888102975,
+    "peak_active_memory_bytes": 8888103071,
     "repetitions": 5,
     "status": "passed",
     "warmup_runs": 1
   },
-  "schema_version": 1,
+  "raw_evidence": {
+    "path": "parity/evidence/example-image-parity.npz",
+    "sha256": "5e7ec810f8e925b72defb0ac2686c12f9b11364a6f5f9b2749b248ec0f82577f"
+  },
+  "schema_version": 2,
+  "source_commit": "0312b935af273d19a150408f90aec810cb63cfe9",
   "status": "passed",
   "thresholds": {
     "box_l_inf_max": 2.0,

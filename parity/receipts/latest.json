@@ -2,18 +2,18 @@
   "checkpoint": {
     "architecture": "sam3-image",
     "artifact_revision": "b72a14d8127e17e6f2a3d2e075bbbf4307ba146e",
-    "conversion_manifest_sha256": "26ab345f8bb4a89c2f73425073fbc96207eaaa6979f95f2c800f10858200f688",
+    "conversion_manifest_sha256": "7253f6235f85eab514ba106e01b39f3cfc1fdaf75ba06243db83f7b080e50ccf",
     "converted_repo": "mlx-community/sam3-image",
     "converted_sha256": "0ad4c3f42ecf706c4cda63cf58d621699491ed65012b3999284ea370984f7173",
     "lineage_report": "parity/manifests/checkpoint-lineage.json",
-    "lineage_report_sha256": "3f628b80301b4959d977c90a4d36a6b161c73f215550d8c5209faf1444a5abc4",
+    "lineage_report_sha256": "1cc6baa631386c129804c8d36f1df73e244a0e2aafab4a574e78ee5d9cc9d351",
     "official_code_revision": "2814fa619404a722d03e9a012e083e4f293a4e53",
     "official_repo": "facebook/sam3",
     "official_revision": "3c879f39826c281e95690f02c7821c4de09afae7",
     "official_sha256": "9999e2341ceef5e136daa386eecb55cb414446a00ac2b55eb2dfd2f7c3cf8c9e"
   },
-  "generated_at": "2026-07-27T07:45:12.369894+00:00",
-  "git_commit": "fc9631989f47aea1d8216b013424cb8aef1f5d44",
+  "generated_at": "2026-07-27T17:52:58.800828+00:00",
+  "git_commit": "0312b935af273d19a150408f90aec810cb63cfe9",
   "machine": "arm64",
   "mlx_version": "0.30.0",
   "package_version": "0.1.2",
@@ -566,11 +566,11 @@
     "reports": [
       {
         "path": "parity/receipts/example-image-parity.json",
-        "sha256": "d80029fb25d29492c9a633a2655b91a1762cc5db140159de3431179fe21a3997"
+        "sha256": "4418a1e305c8f16c0d109e67218daf189408d6cc8eb4dbdba392c94e39e36cb6"
       },
       {
         "path": "parity/receipts/holdout-image-parity.json",
-        "sha256": "d350f5835d6b2616826396303ee698ee05800721ea328d91beaa6703e1ab9555"
+        "sha256": "37db51ecab4e6889f71284749a08fe37c51ec2c3ef108f1a6a0c034337cebf9d"
       }
     ],
     "status": "passed",
@@ -584,93 +584,93 @@
   },
   "performance": {
     "measurement_boundary": "MLX active allocator peak after model load; synchronized full set_image plus text-grounding latency",
-    "peak_active_memory_bytes": 8888102975,
+    "peak_active_memory_bytes": 8888103071,
     "runs": [
       {
-        "cold_load_s": 0.39280966599471867,
+        "cold_load_s": 0.847803125041537,
         "image_sha256": "979f120edcb0050a12d5b4a1f1eaf6bc888b89f675524e7ffcf6ae5b77aa6bc4",
         "latency_by_resolution_s": {
           "1008": {
-            "median": 1.2331867910106666,
-            "p95": 1.243158666009549,
+            "median": 1.1859180830069818,
+            "p95": 1.2047705419827253,
             "samples": [
-              1.217416792002041,
-              1.2361837080097757,
-              1.2331867910106666,
-              1.243158666009549,
-              1.2291953340172768
+              1.1859180830069818,
+              1.1743785410071723,
+              1.2047705419827253,
+              1.1688307499862276,
+              1.1938520410330966
             ]
           },
           "504": {
-            "median": 0.4253602910321206,
-            "p95": 0.42632537498138845,
+            "median": 0.42407029203604907,
+            "p95": 0.4425538340001367,
             "samples": [
-              0.422725124983117,
-              0.42547104199184105,
-              0.42632537498138845,
-              0.4253602910321206,
-              0.4190449580200948
+              0.41140708298189566,
+              0.41599695797776803,
+              0.4247245840379037,
+              0.4425538340001367,
+              0.42407029203604907
             ]
           },
           "672": {
-            "median": 0.5537860830081627,
-            "p95": 0.5623905420070514,
+            "median": 0.5452175830141641,
+            "p95": 0.5480322920484468,
             "samples": [
-              0.5623905420070514,
-              0.5549764579627663,
-              0.5481472500250675,
-              0.5537860830081627,
-              0.551616583019495
+              0.5422490839846432,
+              0.5480322920484468,
+              0.5452175830141641,
+              0.5455437090131454,
+              0.5419022500282153
             ]
           }
         },
         "measurement_boundary": "MLX active allocator peak after model load; synchronized full set_image plus text-grounding latency",
-        "peak_active_memory_bytes": 8888102975,
+        "peak_active_memory_bytes": 8888103071,
         "profile": "example",
         "repetitions": 5,
         "status": "passed",
         "warmup_runs": 1
       },
       {
-        "cold_load_s": 0.3848007079795934,
+        "cold_load_s": 0.4952092079911381,
         "image_sha256": "7073dfecb5a3ecafb6152124113163a0ea1c1c70f92999ec892b519eca63e3d3",
         "latency_by_resolution_s": {
           "1008": {
-            "median": 1.258427541994024,
-            "p95": 1.2595257500070147,
+            "median": 1.1465698329848237,
+            "p95": 1.1880782920052297,
             "samples": [
-              1.2528909579850733,
-              1.253988207958173,
-              1.258427541994024,
-              1.2595257500070147,
-              1.2587137920199893
+              1.1485451250337064,
+              1.1880782920052297,
+              1.113675000029616,
+              1.1465698329848237,
+              1.134889791952446
             ]
           },
           "504": {
-            "median": 0.40768083301372826,
-            "p95": 0.41158866602927446,
+            "median": 0.37319854099769145,
+            "p95": 0.3742057079798542,
             "samples": [
-              0.41158866602927446,
-              0.4099827920435928,
-              0.40768083301372826,
-              0.4032409170176834,
-              0.4061965420260094
+              0.37319854099769145,
+              0.3713447909685783,
+              0.3732364160241559,
+              0.37274116597836837,
+              0.3742057079798542
             ]
           },
           "672": {
-            "median": 0.5518392079975456,
-            "p95": 0.5702770829666406,
+            "median": 0.49775749997934327,
+            "p95": 0.7403259170241654,
             "samples": [
-              0.5527562919887714,
-              0.5702770829666406,
-              0.5477714579901658,
-              0.5518392079975456,
-              0.5472922500339337
+              0.7403259170241654,
+              0.5820327500114217,
+              0.49775749997934327,
+              0.4938450420158915,
+              0.49080325005343184
             ]
           }
         },
         "measurement_boundary": "MLX active allocator peak after model load; synchronized full set_image plus text-grounding latency",
-        "peak_active_memory_bytes": 8579492610,
+        "peak_active_memory_bytes": 8579492599,
         "profile": "holdout",
         "repetitions": 5,
         "status": "passed",
@@ -684,10 +684,10 @@
   "schema_version": 1,
   "status": "passed",
   "tests": {
-    "command": "/tmp/sam3-mlx-oracle-venv/bin/python -m pytest -q -p pytest_reportlog --ignore=third_party tests",
+    "command": "/private/tmp/sam3-mlx-oracle-venv/bin/python -m pytest -q -p pytest_reportlog --ignore=third_party tests",
     "counts": {
       "call_failed": 0,
-      "call_passed": 675,
+      "call_passed": 701,
       "call_skipped": 0
     },
     "deselected": 0,
@@ -697,6 +697,6 @@
     "skip_details": [],
     "skipped": 0,
     "stderr_tail": "",
-    "stdout_tail": "........................................................................ [ 10%]\n........................................................................ [ 21%]\n........................................................................ [ 32%]\n........................................................................ [ 42%]\n........................................................................ [ 53%]\n........................................................................ [ 64%]\n........................................................................ [ 74%]\n........................................................................ [ 85%]\n........................................................................ [ 96%]\n...........................                                              [100%]\n=============================== warnings summary ===============================\ntests/unsupported/test_unsupported_contract.py::test_registry_walker_returns_bounded_well_formed_entries\n  <repo>/sam3_mlx/train/nms_helper.py:17: UserWarning: Numba not found. Using slower pure Python implementations.\n    warnings.warn(\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n- generated report log file: <repo>/parity/receipts/.pytest-report.jsonl -\n675 passed, 1 warning in 5.72s\n"
+    "stdout_tail": "........................................................................ [ 10%]\n........................................................................ [ 20%]\n........................................................................ [ 30%]\n........................................................................ [ 41%]\n........................................................................ [ 51%]\n........................................................................ [ 61%]\n........................................................................ [ 71%]\n........................................................................ [ 82%]\n........................................................................ [ 92%]\n.....................................................                    [100%]\n=============================== warnings summary ===============================\ntests/unsupported/test_unsupported_contract.py::test_registry_walker_returns_bounded_well_formed_entries\n  <repo>/sam3_mlx/train/nms_helper.py:17: UserWarning: Numba not found. Using slower pure Python implementations.\n    warnings.warn(\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n- generated report log file: <repo>/parity/receipts/.pytest-report.jsonl -\n701 passed, 1 warning in 5.80s\n"
   }
 }
