@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from sam3_mlx._unsupported import raise_unsupported
 from sam3_mlx.convert import MLX_COMMUNITY_REPO
-from sam3_mlx.model.sam3_base_predictor import Sam3BasePredictor
+from sam3_mlx.model.lifecycle_predictor import LifecycleSafeSam3BasePredictor
 
 
-class Sam3VideoPredictor(Sam3BasePredictor):
+class Sam3VideoPredictor(LifecycleSafeSam3BasePredictor):
     """MLX video predictor wrapper matching the official SAM3 request API.
 
     The predictor owns session/request behavior. The model object underneath it
@@ -110,6 +111,39 @@ class Sam3VideoPredictor(Sam3BasePredictor):
             confidence_threshold=confidence_threshold,
             processor_factory=processor_factory,
             frame_feature_cache_size=frame_feature_cache_size,
+        )
+
+    def start_session(
+        self,
+        resource_path,
+        session_id: str | None = None,
+        offload_video_to_cpu: bool = False,
+        offload_state_to_cpu: bool = False,
+    ) -> dict[str, str]:
+        # The selected-frame image-folder path is intentionally bounded and lazy.
+        # The legacy async folder loader eagerly retains every decoded frame, so
+        # accepting this combination would silently violate the release memory
+        # contract. Other resources retain their existing loader-specific guards.
+        if (
+            self.async_loading_frames
+            and isinstance(resource_path, (str, Path))
+            and Path(resource_path).is_dir()
+        ):
+            raise_unsupported(
+                "Sam3VideoPredictor.start_session(async image-folder loading)",
+                reason="port-gap",
+                detail=(
+                    "Selected-frame image-folder sessions use a bounded on-demand "
+                    "host cache. The legacy async preloader retains every frame and "
+                    "would violate that bounded-memory contract."
+                ),
+                alternative="Construct the predictor with async_loading_frames=False.",
+            )
+        return super().start_session(
+            resource_path=resource_path,
+            session_id=session_id,
+            offload_video_to_cpu=offload_video_to_cpu,
+            offload_state_to_cpu=offload_state_to_cpu,
         )
 
     def _get_session_stats(self) -> str:
