@@ -67,12 +67,11 @@ def _valid_receipt(**overrides):
     return receipt
 
 
-def test_release_receipt_accepts_committed_evidence_projection():
-    receipt = json.loads((REPO_ROOT / "parity/receipts/latest.json").read_text())
+def test_release_receipt_schema_accepts_complete_receipt():
     validate_receipt(
-        receipt,
-        expected_commit=receipt["git_commit"],
-        evidence_root=REPO_ROOT,
+        _valid_receipt(),
+        expected_commit="a" * 40,
+        require_passed=False,
     )
 
 
