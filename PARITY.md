@@ -140,7 +140,7 @@ uv run python scripts/validate_checkpoint_lineage_hardened.py \
 ### Source-bound receipt
 
 ```bash
-uv run python scripts/validate_runtime_release.py --generate \
+uv run python scripts/validate_runtime_release_hardened.py --generate \
   --pytest-python /path/to/release-python \
   --receipt parity/receipts/latest.json \
   --parity-report parity/receipts/example-image-parity.json \
@@ -162,9 +162,9 @@ make release-check
 
 `release-evidence-audit` loads raw NPZ files with pickle disabled, replays every
 case, verifies all cache and lineage bindings, and reconstructs the receipt
-projections. `validate_runtime_release.py` then verifies the source/attestation
-commit relationship. `validate_release.py` builds and inspects the wheel and
-source distribution.
+projections. `validate_runtime_release_hardened.py` then verifies the
+source/attestation commit relationship, including raw evidence paths.
+`validate_release.py` builds and inspects the wheel and source distribution.
 
 ## Current repository state after hardening
 
