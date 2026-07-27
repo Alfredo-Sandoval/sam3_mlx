@@ -137,6 +137,8 @@ class Sam3BasePredictor:
             "cancel_event": cancel_event,
             "state_version": 0,
             "propagation_active": False,
+            "closing": False,
+            "closed": False,
         }
         with self._sessions_lock:
             self._reserved_session_ids.discard(session_id)
@@ -160,6 +162,7 @@ class Sam3BasePredictor:
     ) -> dict[str, Any]:
         session = self._get_session(session_id)
         with session["lock"]:
+            self._ensure_session_open(session)
             self._extend_expiration_time(session)
             self._reject_or_invalidate_if_propagating(session, action="add_prompt")
             prompt_kwargs = dict(
@@ -217,6 +220,7 @@ class Sam3BasePredictor:
     ) -> dict[str, Any]:
         session = self._get_session(session_id)
         with session["lock"]:
+            self._ensure_session_open(session)
             self._extend_expiration_time(session)
             self._reject_or_invalidate_if_propagating(session, action="remove_object")
             result = self.model.remove_object(
@@ -225,31 +229,32 @@ class Sam3BasePredictor:
                 frame_idx=frame_idx,
                 is_user_action=is_user_action,
             )
-        if result is None or (isinstance(result, tuple) and result[1] is None):
-            import numpy as np
+            if result is None or (isinstance(result, tuple) and result[1] is None):
+                import numpy as np
 
-            state = session["state"]
-            outputs = {
-                "out_obj_ids": np.zeros(0, dtype=np.int64),
-                "out_boxes_xywh": np.zeros((0, 4), dtype=np.float32),
-                "out_binary_masks": np.zeros(
-                    (
-                        0,
-                        int(state["orig_height"]),
-                        int(state["orig_width"]),
+                state = session["state"]
+                outputs = {
+                    "out_obj_ids": np.zeros(0, dtype=np.int64),
+                    "out_boxes_xywh": np.zeros((0, 4), dtype=np.float32),
+                    "out_binary_masks": np.zeros(
+                        (
+                            0,
+                            int(state["orig_height"]),
+                            int(state["orig_width"]),
+                        ),
+                        dtype=bool,
                     ),
-                    dtype=bool,
-                ),
-            }
-        elif isinstance(result, tuple):
-            _, outputs = result
-        else:
-            outputs = result
+                }
+            elif isinstance(result, tuple):
+                _, outputs = result
+            else:
+                outputs = result
         return {"frame_index": frame_idx, "outputs": outputs}
 
     def cancel_propagation(self, session_id: str) -> dict[str, bool]:
         session = self._get_session(session_id)
         with session["lock"]:
+            self._ensure_session_open(session)
             self._extend_expiration_time(session)
             # Cancellation is the only mutator allowed during an active stream.
             session["cancel_event"].set()
@@ -268,6 +273,7 @@ class Sam3BasePredictor:
     ):
         session = self._get_session(session_id)
         with session["lock"]:
+            self._ensure_session_open(session)
             self._extend_expiration_time(session)
             if session.get("propagation_active"):
                 raise RuntimeError(
@@ -305,6 +311,7 @@ class Sam3BasePredictor:
                 while not session["cancel_event"].is_set():
                     try:
                         with session["lock"]:
+                            self._ensure_session_open(session)
                             if session["state_version"] != start_version:
                                 raise RuntimeError(
                                     "Session state changed during propagation; "
@@ -321,11 +328,13 @@ class Sam3BasePredictor:
                     return
         finally:
             with session["lock"]:
-                session["propagation_active"] = False
+                if not session["closed"]:
+                    session["propagation_active"] = False
 
     def reset_session(self, session_id: str) -> dict[str, bool]:
         session = self._get_session(session_id)
         with session["lock"]:
+            self._ensure_session_open(session)
             self._extend_expiration_time(session)
             self._reject_or_invalidate_if_propagating(session, action="reset_session")
             self.model.reset_state(session["state"])
@@ -356,7 +365,11 @@ class Sam3BasePredictor:
         run_gc_collect: bool = True,
     ) -> dict[str, bool]:
         with self._sessions_lock:
-            session = self._all_inference_states.pop(session_id, None)
+            session = self._all_inference_states.get(session_id)
+            if session is not None:
+                with session["lock"]:
+                    session["closing"] = True
+                    self._all_inference_states.pop(session_id, None)
         if session is not None:
             self._dispose_session(session)
             if run_gc_collect:
@@ -367,9 +380,14 @@ class Sam3BasePredictor:
         expired_session = None
         with self._sessions_lock:
             session = self._all_inference_states.get(session_id)
-            if session is not None and self._session_is_expired(session):
-                expired_session = self._all_inference_states.pop(session_id, None)
-                session = None
+            if session is not None:
+                with session["lock"]:
+                    if self._session_is_expired(session):
+                        session["closing"] = True
+                        expired_session = self._all_inference_states.pop(
+                            session_id, None
+                        )
+                        session = None
         if expired_session is not None:
             self._dispose_session(expired_session)
         if session is None:
@@ -377,6 +395,11 @@ class Sam3BasePredictor:
                 f"Cannot find session {session_id}; it might have expired"
             )
         return session
+
+    @staticmethod
+    def _ensure_session_open(session: dict[str, Any]) -> None:
+        if session["closing"] or session["closed"]:
+            raise RuntimeError(f"Session {session['session_id']} is closed")
 
     def _extend_expiration_time(self, session: dict[str, Any]) -> None:
         session["last_used_monotonic"] = time.monotonic()
@@ -391,6 +414,7 @@ class Sam3BasePredictor:
     @staticmethod
     def _dispose_session(session: dict[str, Any]) -> None:
         with session["lock"]:
+            session["closing"] = True
             session["cancel_event"].set()
             session["propagation_active"] = False
             state = session.get("state")
@@ -400,10 +424,14 @@ class Sam3BasePredictor:
                 if callable(close):
                     close()
                 state.clear()
+            session["closed"] = True
 
     def shutdown(self) -> None:
         with self._sessions_lock:
             sessions = list(self._all_inference_states.values())
+            for session in sessions:
+                with session["lock"]:
+                    session["closing"] = True
             self._all_inference_states.clear()
             self._reserved_session_ids.clear()
         for session in sessions:

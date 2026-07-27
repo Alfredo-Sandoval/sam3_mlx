@@ -1,7 +1,9 @@
 import importlib.util
 from pathlib import Path
+import subprocess
 
 import numpy as np
+import pytest
 
 from tests._paths import REPO_ROOT
 
@@ -55,3 +57,43 @@ def test_evidence_path_uses_checkout_relative_identity():
         )
         == "official-checkout/assets/images/test.jpg"
     )
+
+
+def test_official_checkout_requires_exact_clean_commit(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=tmp_path,
+        check=True,
+    )
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("clean\n")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "fixture"], cwd=tmp_path, check=True)
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+
+    assert (
+        _parity._validate_official_checkout(
+            tmp_path,
+            expected_revision=revision,
+        )
+        == revision
+    )
+
+    tracked.write_text("dirty\n")
+    with pytest.raises(ValueError, match="must be clean"):
+        _parity._validate_official_checkout(
+            tmp_path,
+            expected_revision=revision,
+        )

@@ -1,4 +1,5 @@
 import inspect
+from threading import Event, Thread
 
 import numpy as np
 import pytest
@@ -410,6 +411,43 @@ def test_expired_session_is_rejected_and_removed(monkeypatch):
     assert "expires" not in predictor._all_inference_states
 
 
+def test_operation_rechecks_session_after_concurrent_close(monkeypatch):
+    predictor = sam3_mlx.build_sam3_video_predictor(
+        model=object(),
+        load_from_HF=False,
+        resolution=14,
+        processor_factory=_FakeImageProcessor,
+    )
+    session_id = predictor.start_session("<load-dummy-video-1>")["session_id"]
+    original_get_session = predictor._get_session
+    looked_up = Event()
+    resume_operation = Event()
+    operation_error = []
+
+    def paused_get_session(requested_session_id):
+        session = original_get_session(requested_session_id)
+        looked_up.set()
+        assert resume_operation.wait(timeout=2)
+        return session
+
+    def reset_session():
+        try:
+            predictor.reset_session(session_id)
+        except RuntimeError as exc:
+            operation_error.append(str(exc))
+
+    monkeypatch.setattr(predictor, "_get_session", paused_get_session)
+    worker = Thread(target=reset_session)
+    worker.start()
+    assert looked_up.wait(timeout=2)
+    predictor.close_session(session_id, run_gc_collect=False)
+    resume_operation.set()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert operation_error == [f"Session {session_id} is closed"]
+
+
 def test_cancel_stops_selected_frame_propagation_at_frame_boundary():
     predictor = sam3_mlx.build_sam3_video_predictor(
         model=object(),
@@ -500,6 +538,8 @@ def test_video_predictor_remove_object_preserves_base_schema():
         "cancel_event": Event(),
         "state_version": 0,
         "propagation_active": False,
+        "closing": False,
+        "closed": False,
     }
 
     result = predictor.remove_object(session_id, frame_idx=4, obj_id=3)

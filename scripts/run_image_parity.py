@@ -138,6 +138,50 @@ def _evidence_path(path: Path, *, official_checkout: Path) -> str:
     return f"official-checkout/{relative}"
 
 
+def _validate_official_checkout(
+    checkout: Path,
+    *,
+    expected_revision: str = OFFICIAL_REVISION,
+) -> str:
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=checkout,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    if revision != expected_revision:
+        raise ValueError(
+            f"Official checkout must be {expected_revision}, found {revision}."
+        )
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=normal"],
+        cwd=checkout,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout
+    if status.strip():
+        raise ValueError(
+            "Official checkout must be clean; git status reported:\n"
+            f"{status.rstrip()}"
+        )
+    submodules = subprocess.run(
+        ["git", "submodule", "status", "--recursive"],
+        cwd=checkout,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.splitlines()
+    dirty_submodules = [line for line in submodules if line[:1] in {"+", "-", "U"}]
+    if dirty_submodules:
+        raise ValueError(
+            "Official checkout submodules must match the pinned commit:\n"
+            + "\n".join(dirty_submodules)
+        )
+    return revision
+
+
 def _percentile(values: list[float], quantile: float) -> float:
     ordered = sorted(values)
     index = max(0, min(len(ordered) - 1, int(np.ceil(quantile * len(ordered))) - 1))
@@ -360,17 +404,10 @@ def main() -> None:
     parser.add_argument("--repetitions", type=int, default=5)
     args = parser.parse_args()
 
-    revision = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=args.official_checkout,
-        check=True,
-        text=True,
-        capture_output=True,
-    ).stdout.strip()
-    if revision != OFFICIAL_REVISION:
-        raise SystemExit(
-            f"Official checkout must be {OFFICIAL_REVISION}, found {revision}."
-        )
+    try:
+        revision = _validate_official_checkout(args.official_checkout)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     if args.repetitions < 5:
         raise SystemExit("--repetitions must be at least 5 for release evidence.")
 

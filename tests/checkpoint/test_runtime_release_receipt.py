@@ -1,4 +1,6 @@
 import importlib.util
+import copy
+import hashlib
 import json
 import pytest
 
@@ -35,11 +37,17 @@ def _valid_receipt(**overrides):
         },
         "tests": {
             "command": "pytest -q tests",
+            "exit_code": 0,
             "passed": True,
             "failed": False,
             "skipped": 0,
             "deselected": 0,
             "skip_details": [],
+            "counts": {
+                "call_passed": 1,
+                "call_failed": 0,
+                "call_skipped": 0,
+            },
         },
         "parity": {
             "status": "passed",
@@ -59,8 +67,13 @@ def _valid_receipt(**overrides):
     return receipt
 
 
-def test_release_receipt_schema_accepts_complete_receipt():
-    validate_receipt(_valid_receipt(), expected_commit="a" * 40)
+def test_release_receipt_accepts_committed_evidence_projection():
+    receipt = json.loads((REPO_ROOT / "parity/receipts/latest.json").read_text())
+    validate_receipt(
+        receipt,
+        expected_commit=receipt["git_commit"],
+        evidence_root=REPO_ROOT,
+    )
 
 
 def test_release_receipt_schema_and_commit_binding():
@@ -73,7 +86,11 @@ def test_release_receipt_schema_and_commit_binding():
         validate_receipt(bad, require_passed=False)
 
     with pytest.raises(ReceiptError, match="git_commit does not match"):
-        validate_receipt(_valid_receipt(), expected_commit="d" * 40)
+        validate_receipt(
+            _valid_receipt(),
+            expected_commit="d" * 40,
+            require_passed=False,
+        )
 
     with pytest.raises(ReceiptError, match="skip_details"):
         bad = _valid_receipt()
@@ -91,7 +108,15 @@ def test_release_receipt_schema_and_commit_binding():
         validate_receipt(bad)
 
     with pytest.raises(ReceiptError, match="not 'passed'"):
-        validate_receipt(_valid_receipt(status="failed"), expected_commit="a" * 40)
+        validate_receipt(
+            _valid_receipt(status="failed"),
+            expected_commit="a" * 40,
+        )
+
+    with pytest.raises(ReceiptError, match="inconsistent"):
+        bad = _valid_receipt()
+        bad["tests"]["failed"] = True
+        validate_receipt(bad, require_passed=False)
 
 
 def test_parent_bound_receipt_requires_receipt_only_attestation(monkeypatch):
@@ -137,6 +162,28 @@ def test_promote_measured_receipt_requires_calibration_and_holdout(
     report_paths = []
     for profile in ("example", "holdout"):
         path = tmp_path / f"{profile}.json"
+        cases = [
+            {
+                "name": f"{profile}-{resolution}",
+                "resolution": resolution,
+                "status": "passed",
+                "official_detection_count": 1,
+                "mlx_detection_count": 1,
+                "detection_count_match": True,
+                "mask_iou_min": 1.0,
+                "mask_iou_mean": 1.0,
+                "box_l_inf_max": 0.0,
+                "score_abs_max": 0.0,
+                "matches": [
+                    {
+                        "official_index": 0,
+                        "mlx_index": 0,
+                        "mask_iou": 1.0,
+                    }
+                ],
+            }
+            for resolution in (1008, 672, 504)
+        ]
         path.write_text(
             json.dumps(
                 {
@@ -153,9 +200,20 @@ def test_promote_measured_receipt_requires_calibration_and_holdout(
                     },
                     "thresholds": thresholds,
                     "image": {"sha256": "1" * 64},
-                    "cases": [{"name": profile, "status": "passed"}],
+                    "cases": cases,
                     "performance": {
                         "status": "passed",
+                        "cold_load_s": 0.5,
+                        "warmup_runs": 1,
+                        "repetitions": 5,
+                        "latency_by_resolution_s": {
+                            str(resolution): {
+                                "samples": [1.0, 2.0, 3.0, 4.0, 5.0],
+                                "median": 3.0,
+                                "p95": 5.0,
+                            }
+                            for resolution in (1008, 672, 504)
+                        },
                         "peak_active_memory_bytes": 123,
                         "measurement_boundary": "fixture",
                     },
@@ -192,5 +250,32 @@ def test_promote_measured_receipt_requires_calibration_and_holdout(
     )
     assert promoted["status"] == "passed"
     assert promoted["parity"]["status"] == "passed"
-    assert len(promoted["parity"]["cases"]) == 2
+    assert len(promoted["parity"]["cases"]) == 6
     assert promoted["checkpoint"]["official_revision"] == source_revision
+    validate_receipt(
+        promoted,
+        expected_commit="a" * 40,
+        evidence_root=tmp_path,
+    )
+
+    tampered_report = json.loads(report_paths[0].read_text())
+    tampered_report["cases"][0]["name"] = "tampered"
+    report_paths[0].write_text(json.dumps(tampered_report))
+    with pytest.raises(ReceiptError, match="digest mismatch"):
+        validate_receipt(promoted, evidence_root=tmp_path)
+
+    promoted_with_new_digest = copy.deepcopy(promoted)
+    promoted_with_new_digest["parity"]["reports"][0]["sha256"] = hashlib.sha256(
+        report_paths[0].read_bytes()
+    ).hexdigest()
+    with pytest.raises(ReceiptError, match="does not match referenced evidence"):
+        validate_receipt(promoted_with_new_digest, evidence_root=tmp_path)
+
+    dishonest_report = json.loads(report_paths[0].read_text())
+    dishonest_report["cases"][0]["mask_iou_min"] = 0.0
+    report_paths[0].write_text(json.dumps(dishonest_report))
+    promoted_with_new_digest["parity"]["reports"][0]["sha256"] = hashlib.sha256(
+        report_paths[0].read_bytes()
+    ).hexdigest()
+    with pytest.raises(ReceiptError, match="not reproducible"):
+        validate_receipt(promoted_with_new_digest, evidence_root=tmp_path)
