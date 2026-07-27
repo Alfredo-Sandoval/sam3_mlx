@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+import statistics
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -67,7 +68,7 @@ def mask_iou_matrix(left_masks: Any, right_masks: Any) -> np.ndarray:
     if left.shape[1:] != right.shape[1:]:
         raise ValueError(
             "Official and MLX masks must share spatial dimensions, got "
-            f"{left.shape[1:]} and {right.shape[1:]}."
+            f"{left.shape[1:]} and {right.shape[1:]} ."
         )
     if left.shape[0] == 0 or right.shape[0] == 0:
         return np.zeros((left.shape[0], right.shape[0]), dtype=np.float64)
@@ -216,7 +217,7 @@ def compare_case(
     ]
 
     mask_iou_min = min(mask_ious) if mask_ious else None
-    mask_iou_mean = float(np.mean(mask_ious)) if mask_ious else None
+    mask_iou_mean = statistics.mean(mask_ious) if mask_ious else None
     box_l_inf_max = max(box_errors) if box_errors else None
     score_abs_max = max(score_errors) if score_errors else None
     passed = count_match and (
