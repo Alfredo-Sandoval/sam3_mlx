@@ -38,6 +38,7 @@ REQUIRED_SDIST_SUFFIXES = {
     "sam3_mlx/release_contract.py",
     "scripts/validate_release.py",
     "scripts/validate_runtime_release.py",
+    "scripts/validate_runtime_release_hardened.py",
     "scripts/audit_release_evidence.py",
     "scripts/run_image_parity.py",
     "scripts/run_hardened_image_parity.py",
