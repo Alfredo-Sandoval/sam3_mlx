@@ -118,12 +118,14 @@ def build_oracle_bindings(
     case_spec_sha256: str,
     confidence_threshold: float,
     oracle_runner_sha256: str,
-    release_contract_sha256: str,
+    release_contract_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Build the complete cache identity for upstream oracle outputs."""
 
     if not math.isfinite(float(confidence_threshold)):
         raise ValueError("confidence_threshold must be finite")
+    if release_contract_sha256 is None:
+        release_contract_sha256 = sha256_path(Path(__file__))
     return {
         "schema_version": ORACLE_SCHEMA_VERSION,
         "official_code": {
