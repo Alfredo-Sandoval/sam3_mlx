@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate replayable, cache-bound official-vs-MLX SAM 3 image evidence."""
+"""Generate replayable, source-bound official-vs-MLX SAM 3 image evidence."""
 
 from __future__ import annotations
 
@@ -47,6 +47,7 @@ from sam3_mlx.release_contract import (  # noqa: E402
     sha256_path,
     validate_exact_mapping,
 )
+from sam3_mlx.source_binding import validate_attestation_only_worktree  # noqa: E402
 from run_image_parity import (  # noqa: E402
     _case_specs,
     _evidence_path,
@@ -121,7 +122,10 @@ def _validate_oracle_archive(
         ):
             raise ValueError("Oracle cache case metadata count is invalid.")
         expected_names = [spec["name"] for spec in expected_specs]
-        observed_names = [case.get("name") for case in cases_metadata]
+        observed_names = [
+            case.get("name") if isinstance(case, dict) else None
+            for case in cases_metadata
+        ]
         if observed_names != expected_names:
             raise ValueError(
                 "Oracle cache case profile mismatch: "
@@ -133,6 +137,8 @@ def _validate_oracle_archive(
         for index, (spec, case_metadata) in enumerate(
             zip(expected_specs, cases_metadata, strict=True)
         ):
+            if not isinstance(case_metadata, dict):
+                raise ValueError(f"Oracle case {spec['name']!r} metadata is invalid.")
             if case_metadata.get("resolution") != spec["resolution"]:
                 raise ValueError(
                     f"Oracle case {spec['name']!r} resolution metadata drifted."
@@ -194,14 +200,19 @@ def main() -> None:
             "Release evidence confidence threshold is frozen at "
             f"{RELEASE_CONFIDENCE_THRESHOLD}."
         )
-    if args.repetitions < 5:
+    if isinstance(args.repetitions, bool) or args.repetitions < 5:
         raise SystemExit("--repetitions must be at least 5 for release evidence.")
+    if args.out.suffix != ".json":
+        raise SystemExit("--out must end in .json.")
     if args.evidence_out.suffix != ".npz":
         raise SystemExit("--evidence-out must end in .npz.")
 
     try:
+        source_commit, _ = validate_attestation_only_worktree(REPO_ROOT)
         report_relative = _repo_relative(args.out)
         evidence_relative = _repo_relative(args.evidence_out)
+        if report_relative == evidence_relative:
+            raise ValueError("Report and raw evidence paths must be distinct.")
         revision = _validate_official_checkout(
             args.official_checkout,
             expected_revision=OFFICIAL_CODE_REVISION,
@@ -222,7 +233,8 @@ def main() -> None:
             f"{mlx_checkpoint_sha256}."
         )
 
-    image = Image.open(args.image).convert("RGB")
+    with Image.open(args.image) as source_image:
+        image = source_image.convert("RGB")
     try:
         image_record = _validate_profile_image(
             image_path=args.image,
@@ -313,6 +325,7 @@ def main() -> None:
     status = "passed" if all(case["status"] == "passed" for case in cases) else "failed"
 
     evidence_metadata = {
+        "source_commit": source_commit,
         "profile": args.profile,
         "report_path": report_relative,
         "image": image_record,
@@ -342,20 +355,23 @@ def main() -> None:
         mlx_outputs=mlx_outputs,
     )
 
-    # Recheck after the long MLX run so either checkout mutating mid-run fails.
     try:
+        final_source_commit, _ = validate_attestation_only_worktree(REPO_ROOT)
         final_revision = _validate_official_checkout(
             args.official_checkout,
             expected_revision=OFFICIAL_CODE_REVISION,
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+    if final_source_commit != source_commit:
+        raise SystemExit("sam3_mlx source commit changed during parity execution.")
     if final_revision != revision:
         raise SystemExit("Official checkout revision changed during parity execution.")
 
     report = {
         "schema_version": REPORT_SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source_commit": source_commit,
         "status": status,
         "comparison_algorithm": COMPARISON_ALGORITHM,
         "official_code": evidence_metadata["official_code"],
@@ -385,6 +401,7 @@ def main() -> None:
             {
                 "wrote": str(args.out),
                 "evidence": str(args.evidence_out),
+                "source_commit": source_commit,
                 "status": status,
                 "comparison_algorithm": COMPARISON_ALGORITHM,
             },
