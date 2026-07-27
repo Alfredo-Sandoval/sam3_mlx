@@ -25,6 +25,7 @@ REQUIRED_WHEEL_MEMBERS = {
     "sam3_mlx/model/lifecycle_predictor.py",
     "sam3_mlx/parity_evidence.py",
     "sam3_mlx/release_contract.py",
+    "sam3_mlx/source_binding.py",
 }
 REQUIRED_SDIST_SUFFIXES = {
     "pyproject.toml",
@@ -36,10 +37,12 @@ REQUIRED_SDIST_SUFFIXES = {
     "sam3_mlx/assets/bpe_simple_vocab_16e6.txt.gz",
     "sam3_mlx/parity_evidence.py",
     "sam3_mlx/release_contract.py",
+    "sam3_mlx/source_binding.py",
     "scripts/validate_release.py",
     "scripts/validate_runtime_release.py",
     "scripts/validate_runtime_release_hardened.py",
     "scripts/audit_release_evidence.py",
+    "scripts/audit_release_candidate.py",
     "scripts/run_image_parity.py",
     "scripts/run_hardened_image_parity.py",
     "scripts/run_upstream_image_oracle_hardened.py",
@@ -128,6 +131,7 @@ from sam3_mlx.release_contract import (
 )
 from sam3_mlx.convert import DEFAULT_MLX_CHECKPOINT
 from sam3_mlx.model.lifecycle_predictor import LifecycleSafeSam3BasePredictor
+from sam3_mlx.source_binding import ATTESTATION_PATH_PREFIXES
 
 expected_exports = {
     "Sam3MlxUnsupportedError",
@@ -144,6 +148,11 @@ assert DEFAULT_MLX_CHECKPOINT.repo == MLX_CHECKPOINT_REPO
 assert DEFAULT_MLX_CHECKPOINT.revision == MLX_CHECKPOINT_REVISION
 assert DEFAULT_MLX_CHECKPOINT.output_sha256 == MLX_CHECKPOINT_SHA256
 assert LifecycleSafeSam3BasePredictor.__name__ == "LifecycleSafeSam3BasePredictor"
+assert ATTESTATION_PATH_PREFIXES == (
+    "parity/receipts/",
+    "parity/manifests/",
+    "parity/evidence/",
+)
 assert optimal_assignment(np.eye(2)) == [(0, 0), (1, 1)]
 # Experimental multiplex builders remain importable but are not stable __all__.
 import sam3_mlx.experimental as experimental
