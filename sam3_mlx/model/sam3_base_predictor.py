@@ -18,6 +18,13 @@ class Sam3BasePredictor:
         self._all_inference_states: dict[str, dict[str, Any]] = {}
         self._sessions_lock = RLock()
         self._reserved_session_ids: set[str] = set()
+        self._cancelled_session_ids: set[str] = set()
+        self._predictor_shutdown = False
+
+    @property
+    def is_shutdown(self) -> bool:
+        with self._sessions_lock:
+            return self._predictor_shutdown
 
     def handle_request(self, request: dict[str, Any]) -> dict[str, Any]:
         request_type = request["type"]
@@ -101,11 +108,16 @@ class Sam3BasePredictor:
         if session_id is None:
             session_id = str(uuid.uuid4())
         with self._sessions_lock:
+            if self._predictor_shutdown:
+                raise RuntimeError(
+                    "Predictor has been shut down and cannot start new sessions."
+                )
             if (
                 session_id in self._all_inference_states
                 or session_id in self._reserved_session_ids
             ):
                 raise ValueError(f"Session ID already exists: {session_id}")
+            self._cancelled_session_ids.discard(session_id)
             self._reserved_session_ids.add(session_id)
 
         init_kwargs = {
@@ -122,6 +134,7 @@ class Sam3BasePredictor:
         except BaseException:
             with self._sessions_lock:
                 self._reserved_session_ids.discard(session_id)
+                self._cancelled_session_ids.discard(session_id)
             raise
 
         now = time.monotonic()
@@ -140,9 +153,37 @@ class Sam3BasePredictor:
             "closing": False,
             "closed": False,
         }
+
+        publish_error: RuntimeError | None = None
         with self._sessions_lock:
             self._reserved_session_ids.discard(session_id)
-            self._all_inference_states[session_id] = session
+            cancelled = session_id in self._cancelled_session_ids
+            self._cancelled_session_ids.discard(session_id)
+            if self._predictor_shutdown:
+                publish_error = RuntimeError(
+                    "Predictor was shut down while the session was loading; "
+                    "the loaded state was disposed."
+                )
+            elif cancelled:
+                publish_error = RuntimeError(
+                    f"Session {session_id} was closed while it was loading; "
+                    "the loaded state was disposed."
+                )
+            elif session_id in self._all_inference_states:
+                publish_error = RuntimeError(
+                    f"Session ID became occupied while loading: {session_id}"
+                )
+            else:
+                self._all_inference_states[session_id] = session
+
+        if publish_error is not None:
+            try:
+                self._dispose_session(session)
+            except BaseException as exc:
+                raise RuntimeError(
+                    f"Failed to dispose unpublished session {session_id}."
+                ) from exc
+            raise publish_error
         return {"session_id": session_id}
 
     def add_prompt(
@@ -256,7 +297,6 @@ class Sam3BasePredictor:
         with session["lock"]:
             self._ensure_session_open(session)
             self._extend_expiration_time(session)
-            # Cancellation is the only mutator allowed during an active stream.
             session["cancel_event"].set()
             if hasattr(self.model, "cancel_propagation"):
                 self.model.cancel_propagation(session["state"])
@@ -346,11 +386,8 @@ class Sam3BasePredictor:
         *,
         action: str,
     ) -> None:
-        """Reject state mutators while a propagation stream is active.
+        """Reject state mutators while a propagation stream is active."""
 
-        Cancellation remains allowed separately via cancel_propagation. Mutators
-        must not interleave with an open stream (mixed-prompt outputs).
-        """
         if session.get("propagation_active"):
             raise RuntimeError(
                 f"Cannot {action} while propagation is active on session "
@@ -364,7 +401,11 @@ class Sam3BasePredictor:
         session_id: str,
         run_gc_collect: bool = True,
     ) -> dict[str, bool]:
+        session = None
         with self._sessions_lock:
+            if session_id in self._reserved_session_ids:
+                self._cancelled_session_ids.add(session_id)
+                return {"is_success": True}
             session = self._all_inference_states.get(session_id)
             if session is not None:
                 with session["lock"]:
@@ -413,6 +454,7 @@ class Sam3BasePredictor:
 
     @staticmethod
     def _dispose_session(session: dict[str, Any]) -> None:
+        close_error: BaseException | None = None
         with session["lock"]:
             session["closing"] = True
             session["cancel_event"].set()
@@ -422,17 +464,50 @@ class Sam3BasePredictor:
                 frames = state.get("frames")
                 close = getattr(frames, "close", None)
                 if callable(close):
-                    close()
+                    try:
+                        close()
+                    except BaseException as exc:
+                        close_error = exc
                 state.clear()
             session["closed"] = True
+        if close_error is not None:
+            raise RuntimeError(
+                f"Failed to close frame provider for session {session['session_id']}."
+            ) from close_error
+
+    def _live_session_frame_counts(self) -> list[tuple[str, int]]:
+        with self._sessions_lock:
+            sessions = list(self._all_inference_states.items())
+        snapshot: list[tuple[str, int]] = []
+        for session_id, session in sessions:
+            with session["lock"]:
+                if session["closing"] or session["closed"]:
+                    continue
+                state = session.get("state")
+                if isinstance(state, dict) and "num_frames" in state:
+                    snapshot.append((session_id, int(state["num_frames"])))
+        return snapshot
 
     def shutdown(self) -> None:
         with self._sessions_lock:
+            if self._predictor_shutdown:
+                return
+            self._predictor_shutdown = True
             sessions = list(self._all_inference_states.values())
             for session in sessions:
                 with session["lock"]:
                     session["closing"] = True
             self._all_inference_states.clear()
             self._reserved_session_ids.clear()
+            self._cancelled_session_ids.clear()
+
+        errors: list[BaseException] = []
         for session in sessions:
-            self._dispose_session(session)
+            try:
+                self._dispose_session(session)
+            except BaseException as exc:
+                errors.append(exc)
+        if errors:
+            raise RuntimeError(
+                f"Predictor shutdown encountered {len(errors)} disposal error(s)."
+            ) from errors[0]
