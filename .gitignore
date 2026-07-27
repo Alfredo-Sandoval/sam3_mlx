@@ -46,6 +46,7 @@ scripts/
 scripts/*
 !scripts/validate_release.py
 !scripts/validate_runtime_release.py
+!scripts/validate_runtime_release_hardened.py
 !scripts/run_image_parity.py
 !scripts/run_upstream_image_oracle.py
 !scripts/validate_checkpoint_lineage.py
