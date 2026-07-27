@@ -41,6 +41,21 @@ RELEASE_THRESHOLDS = {
     "score_abs_max": 0.025,
 }
 
+# Pin both the calibration image and the independently selected holdout. A new
+# image corpus is a new release contract, not an in-place regeneration detail.
+RELEASE_IMAGES = {
+    "example": {
+        "path": "official-checkout/assets/images/test_image.jpg",
+        "sha256": "979f120edcb0050a12d5b4a1f1eaf6bc888b89f675524e7ffcf6ae5b77aa6bc4",
+        "size": [1280, 720],
+    },
+    "holdout": {
+        "path": "official-checkout/assets/images/groceries.jpg",
+        "sha256": "7073dfecb5a3ecafb6152124113163a0ea1c1c70f92999ec892b519eca63e3d3",
+        "size": [800, 534],
+    },
+}
+
 EXPECTED_CASE_NAMES = {
     "example": (
         "text_shoe_1008",
