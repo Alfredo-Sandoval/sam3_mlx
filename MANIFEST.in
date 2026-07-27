@@ -17,6 +17,7 @@ include scripts/validate_release.py
 include scripts/validate_runtime_release.py
 include scripts/validate_runtime_release_hardened.py
 include scripts/audit_release_evidence.py
+include scripts/audit_release_candidate.py
 include scripts/run_image_parity.py
 include scripts/run_hardened_image_parity.py
 include scripts/run_upstream_image_oracle_hardened.py
