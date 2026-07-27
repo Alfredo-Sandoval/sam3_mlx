@@ -1,121 +1,198 @@
-# Parity status
+# Parity and release evidence
 
-The `0.1.2` release boundary requires a **passed**, source-commit-bound receipt
-under `parity/receipts/`. The claim is limited to the SAM 3 image runtime and
-the measured prompt/resolution matrix below.
+## Scope
 
-## Verified contracts
+The 0.1.x parity claim is limited to the SAM 3 image runtime. It covers the
+frozen image, prompt, resolution, checkpoint, precision, and threshold matrix in
+`sam3_mlx.release_contract`.
 
-- Synthetic RGB preprocessing is compared with TorchVision over multiple aspect
-  ratios with absolute and relative tolerance `1e-6`.
-- Checkpoint shape and required-key coverage are validated before model
-  mutation.
-- Default hub downloads use a pinned revision and package-embedded output
-  SHA-256 (`sam3_mlx.convert.DEFAULT_MLX_CHECKPOINT`).
-- Checkpoint lineage is reproduced from pinned official checkpoint revision
-  `3c879f39826c281e95690f02c7821c4de09afae7`; all 1,400 published tensors
-  match exactly after canonical runtime layout normalization.
-- Tracker and multiplex component fixtures record their upstream reference
-  commit in the corresponding test modules.
+It does not cover:
 
-The ordinary test suite may skip Torch/TorchVision comparisons when those
-oracle dependencies are absent. A parity environment must preflight those
-dependencies and treat their absence as a failure:
+- SAM 3.1 multiplex or temporal tracking;
+- persistent cross-frame identity;
+- training or official evaluation tooling;
+- unmeasured processor resolutions;
+- broad task-level segmentation quality.
+
+## Frozen numerical contract
+
+Every non-empty case requires:
+
+- exact detection count;
+- per-object mask IoU at least `0.95`;
+- case mean mask IoU at least `0.99`;
+- box-coordinate L-infinity error at most `2.0` pixels;
+- score absolute error at most `0.025`.
+
+The confidence threshold is `0.5`. Measured resolutions are `1008`, `672`, and
+`504`.
+
+The calibration and holdout images, prompt cases, official source revision,
+official checkpoint, published MLX checkpoint, CPU precision, and allowed CPU
+adaptations are content-addressed in `sam3_mlx.release_contract`.
+
+## Evidence layers
+
+### 1. Preprocessing
+
+Synthetic RGB inputs are compared against TorchVision preprocessing across
+multiple aspect ratios. Release preprocessing tests must run with TorchVision
+available:
 
 ```bash
 make preprocess-parity-check
 ```
 
-## Release gates
+### 2. Checkpoint lineage
 
-| Gate | Command | Proves |
-| --- | --- | --- |
-| Packaging | `make artifact-check` | Wheel/sdist members, clean import, stable exports |
-| Runtime receipt | `make runtime-release-check` | Passed upstream parity receipt bound to git commit |
-| Release | `make release-check` | Both packaging and runtime gates |
+A fresh conversion from the pinned official checkpoint is compared with the
+pinned published MLX artifact after canonical runtime-layout normalization. A
+passing report requires exactly 1,400 matching tensor keys, shapes, dtypes, and
+values.
 
-Generate a schema-complete **blocked** receipt without measured evidence:
+The schema-v2 lineage report embeds the complete conversion manifest and records
+the lineage runner and converter-module SHA-256 values.
+
+### 3. Upstream oracle
+
+The hardened official oracle verifies the official checkout before and after
+inference and binds its cache to:
+
+- official code revision and clean status;
+- official checkpoint revision and SHA-256;
+- image SHA-256;
+- exact case-spec bytes;
+- confidence threshold;
+- CPU BF16 precision;
+- the explicitly allowed CPU adaptations;
+- oracle runner SHA-256;
+- release-contract SHA-256.
+
+A cache missing any binding is not release evidence.
+
+### 4. Raw output parity
+
+The hardened parity runner stores official and MLX masks, boxes, and scores for
+every case in compressed NPZ bundles. Object pairing uses deterministic Hungarian
+maximum-mask-IoU assignment.
+
+Schema-v2 reports reference the raw bundle by SHA-256. Summary metrics are
+recomputed by the release auditor rather than trusted directly.
+
+### 5. Receipt
+
+The runtime receipt binds:
+
+- source commit;
+- package and MLX versions;
+- complete test outcomes and skip details;
+- two parity reports and their SHA-256 values;
+- checkpoint-lineage report and SHA-256;
+- case and performance projections.
+
+A following attestation commit may contain only files under `parity/receipts/`,
+`parity/manifests/`, and `parity/evidence/`.
+
+## Generate hardened evidence
+
+Commit all source changes first. Use a clean official checkout at the revision
+recorded in `sam3_mlx.release_contract`.
+
+### Calibration profile
 
 ```bash
-uv run python scripts/validate_runtime_release.py --generate \
-  --receipt parity/receipts/latest.json
+uv run python scripts/run_hardened_image_parity.py \
+  --official-checkout /path/to/pinned/sam3 \
+  --official-checkpoint /path/to/sam3.pt \
+  --official-python /path/to/oracle-python \
+  --mlx-checkpoint /path/to/model.safetensors \
+  --image /path/to/pinned/sam3/assets/images/test_image.jpg \
+  --profile example \
+  --out parity/receipts/example-image-parity.json \
+  --evidence-out parity/evidence/example-image-parity.npz
 ```
 
-Generate a passed receipt after producing the example, independent holdout, and
-checkpoint-lineage reports:
+### Independent holdout profile
 
 ```bash
-SAM3_OFFICIAL_CHECKOUT=/path/to/sam3-at-2814fa6 \
+uv run python scripts/run_hardened_image_parity.py \
+  --official-checkout /path/to/pinned/sam3 \
+  --official-checkpoint /path/to/sam3.pt \
+  --official-python /path/to/oracle-python \
+  --mlx-checkpoint /path/to/model.safetensors \
+  --image /path/to/pinned/sam3/assets/images/groceries.jpg \
+  --profile holdout \
+  --out parity/receipts/holdout-image-parity.json \
+  --evidence-out parity/evidence/holdout-image-parity.npz
+```
+
+### Checkpoint lineage
+
+```bash
+uv run python scripts/validate_checkpoint_lineage_hardened.py \
+  --official-checkpoint /path/to/sam3.pt \
+  --published-checkpoint /path/to/published/model.safetensors \
+  --reproduced-checkpoint /path/to/reproduced/model.safetensors \
+  --reproduction-manifest /path/to/reproduced/conversion-manifest.json \
+  --out parity/manifests/checkpoint-lineage.json
+```
+
+### Source-bound receipt
+
+```bash
 uv run python scripts/validate_runtime_release.py --generate \
-  --pytest-python /path/to/python-with-torch-and-torchvision \
+  --pytest-python /path/to/release-python \
   --receipt parity/receipts/latest.json \
   --parity-report parity/receipts/example-image-parity.json \
   --parity-report parity/receipts/holdout-image-parity.json \
   --lineage-report parity/manifests/checkpoint-lineage.json
 ```
 
-The receipt binds the source commit. A following receipt-only attestation commit
-may add files under `parity/receipts/` and `parity/manifests/`; the runtime gate
-verifies that no source file changed in that commit.
+The release suite must record zero failures, zero skips, and zero deselections.
+Commit only the generated evidence paths in the attestation commit.
 
-## Evidence required before an end-to-end parity claim
+## Validate a candidate
 
-A checked-in receipt must identify:
+```bash
+make release-evidence-audit
+make runtime-release-check
+make artifact-check
+make release-check
+```
 
-- official repository commit and checkpoint revision;
-- source and converted checkpoint SHA-256 values;
-- converter version, reproduction manifest, and semantic lineage report;
-- input corpus and positive, negative, and empty prompts;
-- exact detection-count agreement, per-object and mean mask IoU, box error, and
-  score error;
-- MLX version, Apple device, dtype, and input resolution;
-- results at `1008`, `672`, and `504`;
-- steady-state latency and peak active memory;
-- every skipped/deselected test node ID with rationale.
+`release-evidence-audit` loads raw NPZ files with pickle disabled, replays every
+case, verifies all cache and lineage bindings, and reconstructs the receipt
+projections. `validate_runtime_release.py` then verifies the source/attestation
+commit relationship. `validate_release.py` builds and inspects the wheel and
+source distribution.
 
-## Numerical contract
+## Current repository state after hardening
 
-The first example-image run was used only for calibration. Its deliberately
-strict initial limits (`mask_iou_min=0.98`, `score_abs_max=0.02`) rejected one
-small 504px mask at `0.96675` IoU and one BF16-vs-FP32 score delta at `0.02010`.
-Before running the independent holdout, the release contract was frozen at:
+The previously checked-in schema-v1 receipt is historical evidence only. It does
+not satisfy the schema-v2 raw-replay contract. The hardening branch must not be
+tagged or published until the Apple-Silicon regeneration sequence above is
+complete.
 
-- exact detection count;
-- per-object mask IoU at least `0.95` and case mean at least `0.99`;
-- box coordinate L-infinity error at most `2.0` pixels;
-- score absolute error at most `0.025`.
+## Historical performance boundary
 
-The independent `groceries.jpg` holdout passed all five cases. Its worst
-measured values were mask IoU `0.99745`, box error `0.28699` pixels, and score
-error `0.00214`. The example profile also passed the frozen contract and
-includes positive, negative, and empty prompts.
+The previous Apple-Silicon run measured synchronized full `set_image` plus text
+grounding with one warmup and five samples per resolution. Approximate medians
+were:
 
-Official inference uses CPU BF16 on the Apple-Silicon oracle host. The pinned
-upstream commit assumes CUDA for cache construction and Triton EDT imports, so
-the oracle records four scoped adaptations: unused EDT fails fast, construction
-cache tensors use CPU, pinned-memory staging is disabled, and the official RoPE
-formula is recomputed for 672/504 grids.
+- `1008`: `1.23–1.26 s`;
+- `672`: about `0.55 s`;
+- `504`: about `0.41–0.43 s`;
+- peak active MLX allocation: about `8.89 GB`.
 
-MLX performance uses one warmup and five synchronized full
-`set_image + grounding` samples per resolution. Across the example and holdout
-profiles, median latency was `1.225–1.264 s` at 1008, `0.552–0.569 s` at 672,
-and `0.412–0.422 s` at 504. Peak active MLX memory was `8,888,103,879` bytes.
+These numbers must be regenerated after hardening. They are not automatically
+valid for a changed source commit.
 
-## Current receipt (`parity/receipts/latest.json`)
+## Intentionally deferred
 
-- Status: see the machine-readable `status` and `git_commit`; release requires
-  `status=passed` and a clean source/attestation binding.
-- Package version target: **0.1.2**
-- Default hub pin: revision + output SHA-256 in
-  `sam3_mlx.convert.DEFAULT_MLX_CHECKPOINT`
-- The receipt must reference both measured parity profiles and the semantic
-  checkpoint-lineage report.
-- MLX self-determinism alone is never accepted as upstream parity.
-
-## Intentionally deferred (not 0.1.2)
-
-- Full SAM 3.1 multiplex/temporal tracking and multi-object state-transition
-  parity (target **0.2.0**; builders live under `sam3_mlx.experimental`)
-- Splitting `model_builder.py` into many modules
-- Device-native preprocessing, shared RoPE across blocks, conversion
-  concurrency / atomic multi-process writes
+- full SAM 3.1 multiplex and temporal parity;
+- device-native preprocessing;
+- shared text-feature caching for the general image API;
+- sequential OpenCV decode optimization;
+- atomic multi-process conversion output;
+- decomposition of `model_builder.py`;
+- external task-diverse validation beyond the pinned calibration and holdout.
