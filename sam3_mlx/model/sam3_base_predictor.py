@@ -135,6 +135,8 @@ class Sam3BasePredictor:
             "last_used_monotonic": now,
             "lock": RLock(),
             "cancel_event": cancel_event,
+            "state_version": 0,
+            "propagation_active": False,
         }
         with self._sessions_lock:
             self._reserved_session_ids.discard(session_id)
@@ -159,6 +161,7 @@ class Sam3BasePredictor:
         session = self._get_session(session_id)
         with session["lock"]:
             self._extend_expiration_time(session)
+            self._reject_or_invalidate_if_propagating(session, action="add_prompt")
             prompt_kwargs = dict(
                 inference_state=session["state"],
                 frame_idx=frame_idx,
@@ -215,6 +218,7 @@ class Sam3BasePredictor:
         session = self._get_session(session_id)
         with session["lock"]:
             self._extend_expiration_time(session)
+            self._reject_or_invalidate_if_propagating(session, action="remove_object")
             result = self.model.remove_object(
                 session["state"],
                 obj_id=obj_id,
@@ -247,6 +251,7 @@ class Sam3BasePredictor:
         session = self._get_session(session_id)
         with session["lock"]:
             self._extend_expiration_time(session)
+            # Cancellation is the only mutator allowed during an active stream.
             session["cancel_event"].set()
             if hasattr(self.model, "cancel_propagation"):
                 self.model.cancel_propagation(session["state"])
@@ -264,6 +269,10 @@ class Sam3BasePredictor:
         session = self._get_session(session_id)
         with session["lock"]:
             self._extend_expiration_time(session)
+            if session.get("propagation_active"):
+                raise RuntimeError(
+                    f"Session {session_id} already has an active propagation stream."
+                )
             session["cancel_event"].clear()
             if propagation_direction not in {"both", "forward", "backward"}:
                 raise ValueError(
@@ -280,33 +289,66 @@ class Sam3BasePredictor:
             for key, value in kwargs.items():
                 if key in signature.parameters:
                     propagate_kwargs[key] = value
+            session["propagation_active"] = True
+            start_version = session["state_version"]
         directions = []
         if propagation_direction in {"both", "forward"}:
             directions.append(False)
         if propagation_direction in {"both", "backward"}:
             directions.append(True)
-        for reverse in directions:
-            generator = self.model.propagate_in_video(
-                **propagate_kwargs,
-                reverse=reverse,
-            )
-            while not session["cancel_event"].is_set():
-                try:
-                    with session["lock"]:
-                        frame_idx, outputs = next(generator)
-                        self._extend_expiration_time(session)
-                except StopIteration:
-                    break
-                yield {"frame_index": frame_idx, "outputs": outputs}
-            if session["cancel_event"].is_set():
-                return
+        try:
+            for reverse in directions:
+                generator = self.model.propagate_in_video(
+                    **propagate_kwargs,
+                    reverse=reverse,
+                )
+                while not session["cancel_event"].is_set():
+                    try:
+                        with session["lock"]:
+                            if session["state_version"] != start_version:
+                                raise RuntimeError(
+                                    "Session state changed during propagation; "
+                                    "refusing to emit mixed-prompt frames. "
+                                    "Cancel or wait for the stream to end before "
+                                    "mutating prompts."
+                                )
+                            frame_idx, outputs = next(generator)
+                            self._extend_expiration_time(session)
+                    except StopIteration:
+                        break
+                    yield {"frame_index": frame_idx, "outputs": outputs}
+                if session["cancel_event"].is_set():
+                    return
+        finally:
+            with session["lock"]:
+                session["propagation_active"] = False
 
     def reset_session(self, session_id: str) -> dict[str, bool]:
         session = self._get_session(session_id)
         with session["lock"]:
             self._extend_expiration_time(session)
+            self._reject_or_invalidate_if_propagating(session, action="reset_session")
             self.model.reset_state(session["state"])
         return {"is_success": True}
+
+    @staticmethod
+    def _reject_or_invalidate_if_propagating(
+        session: dict[str, Any],
+        *,
+        action: str,
+    ) -> None:
+        """Reject state mutators while a propagation stream is active.
+
+        Cancellation remains allowed separately via cancel_propagation. Mutators
+        must not interleave with an open stream (mixed-prompt outputs).
+        """
+        if session.get("propagation_active"):
+            raise RuntimeError(
+                f"Cannot {action} while propagation is active on session "
+                f"{session.get('session_id')!r}. Call cancel_propagation first "
+                "or wait for the stream to finish."
+            )
+        session["state_version"] = int(session.get("state_version", 0)) + 1
 
     def close_session(
         self,
@@ -350,8 +392,13 @@ class Sam3BasePredictor:
     def _dispose_session(session: dict[str, Any]) -> None:
         with session["lock"]:
             session["cancel_event"].set()
+            session["propagation_active"] = False
             state = session.get("state")
             if isinstance(state, dict):
+                frames = state.get("frames")
+                close = getattr(frames, "close", None)
+                if callable(close):
+                    close()
                 state.clear()
 
     def shutdown(self) -> None:

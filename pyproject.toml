@@ -1,6 +1,6 @@
 [project]
 name = "sam3_mlx"
-version = "0.1.1"
+version = "0.1.2"
 description = "MLX port of Meta's Segment Anything 3 (SAM 3) for Apple Silicon."
 readme = "README.md"
 license = "LicenseRef-SAM"
@@ -41,6 +41,9 @@ dependencies = [
 viz = [
     "matplotlib>=3.10.8",
 ]
+video = [
+    "opencv-python-headless>=4.10.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/Alfredo-Sandoval/sam3_mlx"
@@ -74,4 +77,9 @@ norecursedirs = [
     ".git",
     ".venv",
     "third_party",
+]
+
+[dependency-groups]
+dev = [
+    "pytest-reportlog>=1.0.0",
 ]

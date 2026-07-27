@@ -4,6 +4,12 @@ from typing import Optional
 import mlx.core as mx
 import mlx.nn as nn
 
+from sam3_mlx.model.bounded_cache import BoundedLRUCache
+
+# Enough for the common 1008/672/504 pyramid levels without unbounded growth
+# across arbitrary custom resolutions on long-lived shared models.
+_DEFAULT_POS_CACHE_SIZE = 16
+
 
 class PositionEmbeddingSine(nn.Module):
     def __init__(
@@ -13,6 +19,7 @@ class PositionEmbeddingSine(nn.Module):
         normalize: bool = True,
         scale: Optional[float] = None,
         precompute_resolution: Optional[int] = None,
+        cache_size: int = _DEFAULT_POS_CACHE_SIZE,
     ):
         super().__init__()
         assert num_pos_feats % 2 == 0, "Expecting even model width"
@@ -25,7 +32,9 @@ class PositionEmbeddingSine(nn.Module):
             scale = 2 * math.pi
         self.scale = scale
 
-        self.cache = {}
+        self.cache: BoundedLRUCache[tuple[int, int], mx.array] = BoundedLRUCache(
+            maxsize=cache_size
+        )
         if precompute_resolution is not None:
             precompute_sizes = [
                 (precompute_resolution // 4, precompute_resolution // 4),
@@ -81,8 +90,9 @@ class PositionEmbeddingSine(nn.Module):
         batch, _, height, width = shape
 
         cache_key = (height, width)
-        if cache_key in self.cache:
-            return mx.repeat(self.cache[cache_key][None], repeats=batch, axis=0)
+        cached = self.cache.get(cache_key)
+        if cached is not None:
+            return mx.repeat(cached[None], repeats=batch, axis=0)
 
         y_embed = mx.arange(1, height + 1, dtype=mx.float32).reshape(1, -1, 1)
         y_embed = mx.broadcast_to(y_embed, (batch, height, width))
@@ -106,6 +116,5 @@ class PositionEmbeddingSine(nn.Module):
             (mx.sin(pos_y[:, :, :, 0::2]), mx.cos(pos_y[:, :, :, 1::2])), axis=4
         ).flatten(3)
         pos = mx.concat((pos_y, pos_x), axis=3).transpose(0, 3, 1, 2)
-        if cache_key is not None:
-            self.cache[cache_key] = pos[0]
+        self.cache[cache_key] = pos[0]
         return mx.stop_gradient(pos)

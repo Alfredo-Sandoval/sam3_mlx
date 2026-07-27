@@ -213,6 +213,28 @@ def _as_pil_rgb_image(image):
     raise ValueError("Image must be a PIL image or a NumPy array")
 
 
+_IMAGE_RESULT_KEYS = (
+    "geometric_prompt",
+    "boxes",
+    "masks",
+    "masks_logits",
+    "mask_logits",
+    "semantic_seg",
+    "scores",
+)
+_IMAGE_SIZE_KEYS = (
+    "original_height",
+    "original_width",
+    "original_heights",
+    "original_widths",
+)
+_IMAGE_LANGUAGE_KEYS = (
+    "language_features",
+    "language_mask",
+    "language_embeds",
+)
+
+
 def _batch_original_sizes(state: Dict):
     has_heights = "original_heights" in state
     has_widths = "original_widths" in state
@@ -231,6 +253,27 @@ def _batch_original_sizes(state: Dict):
     if len(heights) == 0:
         raise ValueError("Batch state must contain at least one original image size.")
     return list(zip(heights, widths))
+
+
+def _clear_prompt_and_result_keys(state: Dict) -> None:
+    """Remove prompts and prediction outputs from a mutable processor state."""
+    if "backbone_out" in state:
+        for key in _IMAGE_LANGUAGE_KEYS:
+            state["backbone_out"].pop(key, None)
+
+    for key in _IMAGE_RESULT_KEYS:
+        state.pop(key, None)
+
+
+def _clear_image_dependent_state(state: Dict) -> None:
+    """Invalidate prompts, outputs, and size metadata before replacing an image.
+
+    Reused states must not retain geometric prompts, opposite batch size keys, or
+    stale outputs from a previous single-image or batch call.
+    """
+    _clear_prompt_and_result_keys(state)
+    for key in _IMAGE_SIZE_KEYS:
+        state.pop(key, None)
 
 
 def _normalize_processor_device(device) -> str:
@@ -302,6 +345,8 @@ class Sam3Processor:
     def set_image(self, image, state=None):
         if state is None:
             state = {}
+        else:
+            _clear_image_dependent_state(state)
 
         image = _as_pil_rgb_image(image)
         width, height = image.size
@@ -320,6 +365,8 @@ class Sam3Processor:
 
         if state is None:
             state = {}
+        else:
+            _clear_image_dependent_state(state)
         if not isinstance(images, list):
             raise ValueError("Images must be a list of PIL images or NumPy arrays.")
         if len(images) == 0:
@@ -453,27 +500,7 @@ class Sam3Processor:
 
     def reset_all_prompts(self, state: Dict):
         """Removes all the prompts and results"""
-        if "backbone_out" in state:
-            backbone_keys_to_del = [
-                "language_features",
-                "language_mask",
-                "language_embeds",
-            ]
-            for key in backbone_keys_to_del:
-                if key in state["backbone_out"]:
-                    del state["backbone_out"][key]
-
-        keys_to_del = [
-            "geometric_prompt",
-            "boxes",
-            "masks",
-            "masks_logits",
-            "mask_logits",
-            "scores",
-        ]
-        for key in keys_to_del:
-            if key in state:
-                del state[key]
+        _clear_prompt_and_result_keys(state)
 
     def set_confidence_threshold(self, threshold: float, state=None):
         if not 0.0 <= threshold <= 1.0:

@@ -159,6 +159,58 @@ def _interpolate_bilinear_antialias_nchw(input: mx.array, size: tuple[int, int])
     return mx.stack(cols, axis=3)
 
 
+_INTERPOLATE_MODE_MAP = {
+    "nearest": "nearest",
+    "bilinear": "linear",
+    "linear": "linear",
+    "bicubic": "cubic",
+    "cubic": "cubic",
+}
+
+
+def _resolve_output_size(spatial_shape, *, size=None, scale_factor=None):
+    """Normalize Torch-style size/scale_factor into (out_h, out_w) and scale pair."""
+    current_h, current_w = int(spatial_shape[0]), int(spatial_shape[1])
+
+    if size is not None:
+        if isinstance(size, int):
+            out_h = out_w = int(size)
+        else:
+            if len(size) != 2:
+                raise ValueError("size must be an int or a length-2 sequence.")
+            out_h, out_w = int(size[0]), int(size[1])
+        if current_h == 0 or current_w == 0:
+            final_scale = (1.0, 1.0)
+        else:
+            final_scale = (out_h / current_h, out_w / current_w)
+        return (out_h, out_w), final_scale
+
+    if scale_factor is not None:
+        if isinstance(scale_factor, (float, int)):
+            scale_h = scale_w = float(scale_factor)
+        else:
+            if len(scale_factor) != 2:
+                raise ValueError(
+                    "scale_factor must be a float/int or a length-2 sequence."
+                )
+            scale_h, scale_w = float(scale_factor[0]), float(scale_factor[1])
+        out_h = int(current_h * scale_h)
+        out_w = int(current_w * scale_w)
+        return (out_h, out_w), (scale_h, scale_w)
+
+    raise ValueError("Either size or scale_factor must be defined")
+
+
+def _map_interpolate_mode(mode: str) -> str:
+    try:
+        return _INTERPOLATE_MODE_MAP[mode]
+    except KeyError as exc:
+        supported = ", ".join(sorted(_INTERPOLATE_MODE_MAP))
+        raise ValueError(
+            f"Unsupported interpolate mode {mode!r}; expected one of: {supported}."
+        ) from exc
+
+
 def interpolate(
     input,
     size=None,
@@ -167,58 +219,37 @@ def interpolate(
     align_corners=None,
     antialias=False,
 ):
+    mlx_mode = _map_interpolate_mode(mode)
+    out_hw, final_scale = _resolve_output_size(
+        input.shape[-2:],
+        size=size,
+        scale_factor=scale_factor,
+    )
+
     if input.size == 0:
+        if input.ndim == 4 and input.shape[0] == 0 and input.shape[1] == 0:
+            raise ValueError(
+                "interpolate does not support tensors with both empty batch "
+                "and channel dimensions."
+            )
         out_shape = list(input.shape)
-        if size is not None:
-            # size is usually (H, W)
-            out_shape[2] = size[0]
-            out_shape[3] = size[1]
-        elif scale_factor is not None:
-            out_shape[2] = int(out_shape[2] * scale_factor)
-            out_shape[3] = int(out_shape[3] * scale_factor)
+        out_shape[-2] = out_hw[0]
+        out_shape[-1] = out_hw[1]
         return mx.zeros(out_shape, dtype=input.dtype)
 
-    x = input.transpose(0, 2, 3, 1)
-    if mode == "bilinear" or mode == "bicubic":
-        mode = "linear"
-
-    current_h, current_w = x.shape[1], x.shape[2]
-
-    if size is not None:
-        if isinstance(size, int):
-            size = (size, size)
-
-        scale_h = size[0] / current_h
-        scale_w = size[1] / current_w
-        final_scale = (scale_h, scale_w)
-
-    elif scale_factor is not None:
-        if isinstance(scale_factor, (float, int)):
-            final_scale = (float(scale_factor), float(scale_factor))
-        else:
-            final_scale = scale_factor
-        size = (
-            int(current_h * final_scale[0]),
-            int(current_w * final_scale[1]),
-        )
-
-    else:
-        raise ValueError("Either size or scale_factor must be defined")
-
     if antialias:
-        if mode != "linear" or align_corners not in (False, None):
+        if mlx_mode != "linear" or align_corners not in (False, None):
             raise ValueError(
                 "antialias=True is only supported for bilinear interpolation "
                 "with align_corners=False."
             )
-        return _interpolate_bilinear_antialias_nchw(input, size)
+        return _interpolate_bilinear_antialias_nchw(input, out_hw)
 
+    x = input.transpose(0, 2, 3, 1)
     upsample_layer = nn.Upsample(
-        scale_factor=final_scale, mode=mode, align_corners=align_corners
+        scale_factor=final_scale, mode=mlx_mode, align_corners=align_corners
     )
-
     x = upsample_layer(x)
-
     return x.transpose(0, 3, 1, 2)
 
 

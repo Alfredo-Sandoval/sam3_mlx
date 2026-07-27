@@ -126,6 +126,8 @@ class Sam3VideoInference:
             "feature_cache": {},
             "frame_feature_cache": OrderedDict(),
             "text_feature_cache": OrderedDict(),
+            # Selected-frame inference yields outputs to the caller and does not
+            # retain full-resolution per-frame results for later temporal reuse.
             "cached_frame_outputs": {},
             "action_history": [],
             "text_prompt": None,
@@ -237,7 +239,6 @@ class Sam3VideoInference:
             frame_idx=frame_idx,
             output_prob_thresh=output_prob_thresh,
         )
-        inference_state["cached_frame_outputs"][frame_idx] = outputs
         return frame_idx, outputs
 
     def propagate_in_video(
@@ -271,7 +272,8 @@ class Sam3VideoInference:
             inference_state["previous_stages_out"][frame_idx] = (
                 "_THIS_FRAME_HAS_OUTPUTS_"
             )
-            inference_state["cached_frame_outputs"][frame_idx] = outputs
+            # Do not retain full-resolution outputs: selected-frame mode yields
+            # them to the caller and never reads cached_frame_outputs.
             yield frame_idx, outputs
 
     def remove_object(

@@ -134,8 +134,17 @@ class _FakeImageProcessor:
 
 
 def test_public_builders_keep_upstream_parameter_names_and_order():
+    import sam3_mlx.experimental as experimental
+
     for name, expected_order in UPSTREAM_BUILDER_PARAM_ORDER.items():
-        signature = inspect.signature(getattr(sam3_mlx, name))
+        if name in {
+            "build_sam3_multiplex_video_model",
+            "build_sam3_multiplex_video_predictor",
+        }:
+            target = getattr(experimental, name)
+        else:
+            target = getattr(sam3_mlx, name)
+        signature = inspect.signature(target)
         assert list(signature.parameters)[: len(expected_order)] == expected_order
 
 
@@ -225,8 +234,23 @@ def test_video_predictor_accepts_upstream_positional_builder_args():
 
     assert isinstance(predictor, Sam3VideoPredictor)
     assert predictor.async_loading_frames is True
+    # Upstream positional slot is accepted and stored, but only cv2/torchcodec
+    # are valid loaders. Invalid types fail before dummy/folder shortcuts.
     assert predictor.video_loader_type == "imageio"
-    response = predictor.handle_request(
+    with pytest.raises(RuntimeError, match="video_loader_type"):
+        predictor.handle_request(
+            {"type": "start_session", "resource_path": "<load-dummy-video-1>"}
+        )
+
+    # A supported backend still starts sessions normally.
+    supported = sam3_mlx.build_sam3_video_predictor(
+        model=object(),
+        load_from_HF=False,
+        resolution=14,
+        processor_factory=_FakeImageProcessor,
+        video_loader_type="cv2",
+    )
+    response = supported.handle_request(
         {"type": "start_session", "resource_path": "<load-dummy-video-1>"}
     )
     assert sorted(response) == ["session_id"]
@@ -405,6 +429,100 @@ def test_cancel_stops_selected_frame_propagation_at_frame_boundary():
 
     assert first["frame_index"] == 0
     assert list(stream) == []
+
+
+def test_add_prompt_rejected_while_propagation_active():
+    predictor = sam3_mlx.build_sam3_video_predictor(
+        model=object(),
+        load_from_HF=False,
+        resolution=14,
+        processor_factory=_FakeImageProcessor,
+    )
+    session_id = predictor.start_session("<load-dummy-video-3>")["session_id"]
+    predictor.add_prompt(session_id, frame_idx=0, text="object-a")
+    stream = predictor.propagate_in_video(
+        session_id,
+        propagation_direction="forward",
+    )
+    first = next(stream)
+    assert first["frame_index"] == 0
+
+    with pytest.raises(RuntimeError, match="Cannot add_prompt while propagation"):
+        predictor.add_prompt(session_id, frame_idx=0, text="object-b")
+
+    with pytest.raises(RuntimeError, match="Cannot reset_session while propagation"):
+        predictor.reset_session(session_id)
+
+    # Cancellation remains allowed; remaining frames are not emitted.
+    predictor.cancel_propagation(session_id)
+    assert list(stream) == []
+
+    # After the stream ends, mutators work again.
+    predictor.add_prompt(session_id, frame_idx=1, text="object-c")
+    remaining = list(
+        predictor.propagate_in_video(session_id, propagation_direction="forward")
+    )
+    assert remaining
+
+
+def test_video_predictor_remove_object_preserves_base_schema():
+    """Concrete predictor must return the base/upstream remove_object schema."""
+    from sam3_mlx.model.sam3_base_predictor import Sam3BasePredictor
+
+    sentinel_outputs = {
+        "out_obj_ids": np.array([3], dtype=np.int64),
+        "out_boxes_xywh": np.zeros((1, 4), dtype=np.float32),
+        "out_binary_masks": np.zeros((1, 2, 2), dtype=bool),
+    }
+
+    class _RemovalModel:
+        def remove_object(self, inference_state, obj_id, frame_idx=0, is_user_action=True):
+            del inference_state, obj_id, is_user_action
+            return frame_idx, sentinel_outputs
+
+    class _Harness(Sam3BasePredictor):
+        def __init__(self):
+            super().__init__()
+            self.model = _RemovalModel()
+
+    predictor = _Harness()
+    # Inject a live session without going through model.init_state.
+    session_id = "remove-schema"
+    from threading import Event, RLock
+    import time
+
+    predictor._all_inference_states[session_id] = {
+        "state": {"orig_height": 2, "orig_width": 2, "num_frames": 1},
+        "session_id": session_id,
+        "created_monotonic": time.monotonic(),
+        "last_used_monotonic": time.monotonic(),
+        "lock": RLock(),
+        "cancel_event": Event(),
+        "state_version": 0,
+        "propagation_active": False,
+    }
+
+    result = predictor.remove_object(session_id, frame_idx=4, obj_id=3)
+    assert result == {"frame_index": 4, "outputs": sentinel_outputs}
+    assert "is_success" not in result
+
+
+def test_selected_frame_output_cache_is_bounded():
+    predictor = sam3_mlx.build_sam3_video_predictor(
+        model=object(),
+        load_from_HF=False,
+        resolution=14,
+        processor_factory=_FakeImageProcessor,
+    )
+    session_id = predictor.start_session("<load-dummy-video-100>")["session_id"]
+    predictor.add_prompt(session_id, frame_idx=0, text="object")
+    frames = list(
+        predictor.propagate_in_video(session_id, propagation_direction="forward")
+    )
+    assert len(frames) == 100
+    state = predictor._all_inference_states[session_id]["state"]
+    # Selected-frame path must not retain full-resolution per-frame outputs.
+    assert state.get("cached_frame_outputs", {}) == {}
 
 
 def test_selected_frame_rejects_unsupported_prompt_retention_and_identity():

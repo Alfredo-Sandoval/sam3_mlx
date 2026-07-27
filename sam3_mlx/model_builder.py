@@ -12,6 +12,7 @@ from mlx.utils import tree_flatten
 from sam3_mlx._device import is_mlx_runtime_device
 from sam3_mlx._unsupported import raise_unsupported
 from sam3_mlx.convert import (
+    DEFAULT_MLX_CHECKPOINT,
     MLX_COMMUNITY_REPO,
     download_and_convert,
     load_from_hub,
@@ -2218,12 +2219,15 @@ def build_sam3_image_model(
     enable_segmentation=True,
     enable_inst_interactivity=False,
     compile=False,
-    hf_repo=MLX_COMMUNITY_REPO,
+    hf_repo=DEFAULT_MLX_CHECKPOINT.repo,
+    hf_revision=DEFAULT_MLX_CHECKPOINT.revision,
     local_weights_dir=None,
     convert_from_pytorch=False,
     interactive_checkpoint_path=None,
     strict_checkpoint_loading=True,
     conversion_source_revision=None,
+    expected_output_sha256=None,
+    verify_hub_provenance=True,
 ):
     if compile:
         _raise_compile_unsupported(
@@ -2268,6 +2272,13 @@ def build_sam3_image_model(
         inst_interactive_predictor=inst_interactive_predictor,
     )
 
+    provenance = {
+        "status": "unloaded",
+        "repo": None,
+        "revision": None,
+        "output_sha256": None,
+    }
+
     if checkpoint_path is None and load_from_HF:
         if convert_from_pytorch:
             checkpoint_path = download_and_convert(
@@ -2275,11 +2286,42 @@ def build_sam3_image_model(
                 mlx_path=local_weights_dir or "sam3-mod-weights",
                 source_revision=conversion_source_revision,
             )
+            provenance = {
+                "status": "converted-from-pytorch",
+                "repo": "facebook/sam3",
+                "revision": conversion_source_revision,
+                "output_sha256": None,
+            }
         else:
+            if expected_output_sha256 is None and hf_repo == DEFAULT_MLX_CHECKPOINT.repo:
+                if hf_revision == DEFAULT_MLX_CHECKPOINT.revision:
+                    expected_output_sha256 = DEFAULT_MLX_CHECKPOINT.output_sha256
             checkpoint_path = load_from_hub(
                 hf_repo=hf_repo,
                 local_dir=local_weights_dir,
+                revision=hf_revision,
+                expected_output_sha256=expected_output_sha256,
+                expected_architecture=DEFAULT_MLX_CHECKPOINT.architecture,
+                verify_provenance=verify_hub_provenance,
             )
+            provenance = {
+                "status": (
+                    "package-pinned"
+                    if verify_hub_provenance
+                    else "hub-unverified"
+                ),
+                "repo": hf_repo,
+                "revision": hf_revision,
+                "output_sha256": expected_output_sha256,
+            }
+    elif checkpoint_path is not None:
+        provenance = {
+            "status": "user-supplied-unverified",
+            "repo": None,
+            "revision": None,
+            "output_sha256": None,
+            "checkpoint_path": str(checkpoint_path),
+        }
 
     if checkpoint_path is not None:
         _load_checkpoint(
@@ -2289,6 +2331,7 @@ def build_sam3_image_model(
             strict=strict_checkpoint_loading,
         )
 
+    model.checkpoint_provenance = provenance
     return _setup_device_and_mode(model, device, eval_mode)
 
 

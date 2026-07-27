@@ -77,16 +77,10 @@ class _NoWarmHookModel:
     pass
 
 
-def test_public_package_exports_image_video_and_multiplex_builders():
+def test_public_package_exports_image_and_selected_frame_builders():
     expected_exports = {
         "build_tracker": model_builder.build_tracker,
         "build_sam3_image_model": model_builder.build_sam3_image_model,
-        "build_sam3_multiplex_video_model": (
-            model_builder.build_sam3_multiplex_video_model
-        ),
-        "build_sam3_multiplex_video_predictor": (
-            model_builder.build_sam3_multiplex_video_predictor
-        ),
         "build_sam3_predictor": model_builder.build_sam3_predictor,
         "build_sam3_video_model": model_builder.build_sam3_video_model,
         "build_sam3_video_predictor": model_builder.build_sam3_video_predictor,
@@ -101,6 +95,24 @@ def test_public_package_exports_image_video_and_multiplex_builders():
     assert sam3_mlx.Sam3MlxUnsupportedError is Sam3MlxUnsupportedError
     for name, expected in expected_exports.items():
         assert getattr(sam3_mlx, name) is expected
+
+
+def test_multiplex_builders_live_under_experimental_with_deprecated_alias():
+    import sam3_mlx.experimental as experimental
+
+    assert (
+        experimental.build_sam3_multiplex_video_model
+        is model_builder.build_sam3_multiplex_video_model
+    )
+    assert (
+        experimental.build_sam3_multiplex_video_predictor
+        is model_builder.build_sam3_multiplex_video_predictor
+    )
+    with pytest.warns(DeprecationWarning, match="experimental"):
+        assert (
+            sam3_mlx.build_sam3_multiplex_video_predictor
+            is model_builder.build_sam3_multiplex_video_predictor
+        )
 
 
 def test_distribution_excludes_unsupported_source_surfaces():
@@ -274,7 +286,9 @@ def test_selected_frame_uses_bounded_lru_for_backbone_features():
 
 
 def test_multiplex_predictor_builder_constructs_checkpoint_free_mlx_stack():
-    predictor = sam3_mlx.build_sam3_multiplex_video_predictor(
+    import sam3_mlx.experimental as experimental
+
+    predictor = experimental.build_sam3_multiplex_video_predictor(
         load_from_HF=False,
         use_fa3=False,
         use_rope_real=False,
@@ -322,7 +336,9 @@ def test_multiplex_predictor_builder_constructs_checkpoint_free_mlx_stack():
 
 
 def test_multiplex_predictor_builder_threads_detection_thresholds():
-    predictor = sam3_mlx.build_sam3_multiplex_video_predictor(
+    import sam3_mlx.experimental as experimental
+
+    predictor = experimental.build_sam3_multiplex_video_predictor(
         load_from_HF=False,
         use_fa3=False,
         use_rope_real=False,
@@ -358,20 +374,11 @@ def test_multiplex_predictor_warm_up_without_hook_is_noop_marker():
     assert model._warm_up_complete is True
 
 
-@pytest.mark.parametrize(
-    ("call", "feature_fragment"),
-    [
-        (
-            sam3_mlx.build_sam3_multiplex_video_predictor,
-            "build_sam3_multiplex_video_predictor",
-        ),
-    ],
-)
-def test_multiplex_public_api_fails_fast_until_runtime_is_ported(
-    call, feature_fragment
-):
+def test_multiplex_public_api_fails_fast_until_runtime_is_ported():
+    import sam3_mlx.experimental as experimental
+
     with pytest.raises(Sam3MlxUnsupportedError) as exc_info:
-        call()
+        experimental.build_sam3_multiplex_video_predictor()
 
     assert exc_info.value.reason == "video-multiplex"
-    assert feature_fragment in exc_info.value.feature
+    assert "build_sam3_multiplex_video_predictor" in exc_info.value.feature

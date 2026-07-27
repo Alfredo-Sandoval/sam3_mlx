@@ -8,6 +8,7 @@ from sam3_mlx._unsupported import raise_unsupported
 from sam3_mlx.sam.rope import apply_rotary_enc, apply_rotary_enc_real, compute_axial_cis
 from sam3_mlx.sam.transformer import RoPEAttention
 from sam3_mlx.model.act_ckpt_utils import activation_ckpt_wrapper
+from sam3_mlx.model.bounded_cache import BoundedLRUCache
 from sam3_mlx.model.box_ops import box_cxcywh_to_xyxy
 
 from sam3_mlx.model.model_misc import (
@@ -18,6 +19,8 @@ from sam3_mlx.model.model_misc import (
     inverse_sigmoid,
     MultiheadAttentionWrapper as MultiHeadAttention,
 )
+
+_DEFAULT_COORD_CACHE_SIZE = 8
 
 
 def _raise_decoder_unsupported(feature: str, *, reason: str, detail: str) -> None:
@@ -359,7 +362,9 @@ class TransformerDecoder(nn.Module):
             self.boxRPB_embed_y = MLP(n_input, d_model, nheads, 2)
             self.compilable_cord_cache = None
             self.compilable_stored_size = None
-            self.coord_cache = {}
+            self.coord_cache: BoundedLRUCache[tuple, tuple] = BoundedLRUCache(
+                maxsize=_DEFAULT_COORD_CACHE_SIZE
+            )
 
             if resolution is not None and stride is not None:
                 feat_size = resolution // stride
@@ -415,9 +420,11 @@ class TransformerDecoder(nn.Module):
         boxes_xyxy = box_cxcywh_to_xyxy(reference_boxes).transpose(1, 0, 2)
         bs, num_queries, _ = boxes_xyxy.shape
 
-        if feat_size not in self.coord_cache:
-            self.coord_cache[feat_size] = self._get_coords(H, W)
-        coords_h, coords_w = self.coord_cache[feat_size]
+        cached_coords = self.coord_cache.get(feat_size)
+        if cached_coords is None:
+            cached_coords = self._get_coords(H, W)
+            self.coord_cache[feat_size] = cached_coords
+        coords_h, coords_w = cached_coords
 
         assert coords_h.shape == (H,)
         assert coords_w.shape == (W,)

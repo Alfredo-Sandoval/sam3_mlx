@@ -3,6 +3,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
 from typing import Dict, Union, Optional
@@ -15,6 +16,31 @@ MLX_COMMUNITY_REPO = "mlx-community/sam3-image"
 PYTORCH_REPO = "facebook/sam3"
 CONVERSION_MANIFEST = "conversion-manifest.json"
 _COMMIT_REVISION_PATTERN = re.compile(r"[0-9a-fA-F]{40}")
+
+
+@dataclass(frozen=True)
+class DefaultMlxCheckpoint:
+    """Pinned default preconverted MLX image checkpoint.
+
+    The community snapshot does not currently ship a conversion-manifest.json, so
+    the package pin (immutable revision + output SHA-256) is the release
+    provenance source of truth. When a conversion-manifest.json is present it is
+    also validated against this pin.
+    """
+
+    repo: str
+    revision: str
+    output_sha256: str
+    architecture: str = "sam3-image"
+
+
+# Pinned to the mlx-community/sam3-image revision that matches the audited
+# local artifact hash. Bump both fields together when publishing a new default.
+DEFAULT_MLX_CHECKPOINT = DefaultMlxCheckpoint(
+    repo=MLX_COMMUNITY_REPO,
+    revision="b72a14d8127e17e6f2a3d2e075bbbf4307ba146e",
+    output_sha256=("0ad4c3f42ecf706c4cda63cf58d621699491ed65012b3999284ea370984f7173"),
+)
 
 SAM3_IMAGE_CONV_TRANSPOSE2D_WEIGHTS = frozenset(
     {
@@ -79,19 +105,30 @@ def normalize_sam3_image_weight_layout(key: str, value):
 
 
 def load_from_hub(
-    hf_repo: str = MLX_COMMUNITY_REPO,
+    hf_repo: str = DEFAULT_MLX_CHECKPOINT.repo,
     local_dir: Optional[str] = None,
     revision: Optional[str] = None,
+    *,
+    expected_output_sha256: Optional[str] = None,
+    expected_architecture: str = "sam3-image",
+    verify_provenance: bool = True,
 ) -> Path:
+    if revision is None:
+        raise ValueError(
+            "load_from_hub requires an immutable Hugging Face revision "
+            "(full 40-character commit SHA). Pass revision= explicitly or use "
+            "DEFAULT_MLX_CHECKPOINT.revision."
+        )
+    revision = _validate_source_revision(revision)
+
     download_kwargs = {
         "repo_id": hf_repo,
         "allow_patterns": ["*.safetensors", "*.json"],
+        "revision": revision,
     }
 
     if local_dir:
         download_kwargs["local_dir"] = local_dir
-    if revision is not None:
-        download_kwargs["revision"] = revision
 
     model_path = Path(snapshot_download(**download_kwargs))
     weights_file = model_path / "model.safetensors"
@@ -99,7 +136,99 @@ def load_from_hub(
     if not weights_file.exists():
         raise FileNotFoundError(f"model.safetensors not found in {hf_repo}.")
 
+    if verify_provenance:
+        if expected_output_sha256 is None:
+            if (
+                hf_repo == DEFAULT_MLX_CHECKPOINT.repo
+                and revision == DEFAULT_MLX_CHECKPOINT.revision
+            ):
+                expected_output_sha256 = DEFAULT_MLX_CHECKPOINT.output_sha256
+                expected_architecture = DEFAULT_MLX_CHECKPOINT.architecture
+            else:
+                raise ValueError(
+                    "load_from_hub provenance verification requires "
+                    "expected_output_sha256 for non-default repository/revision "
+                    "pairs. Pass expected_output_sha256=... or "
+                    "verify_provenance=False for an unverified experimental load."
+                )
+        validate_hub_checkpoint_provenance(
+            weights_file.parent,
+            expected_repo=hf_repo,
+            expected_revision=revision,
+            expected_output_sha256=expected_output_sha256,
+            expected_architecture=expected_architecture,
+        )
+
     return weights_file
+
+
+def validate_hub_checkpoint_provenance(
+    checkpoint_dir: Union[str, Path],
+    *,
+    expected_repo: str,
+    expected_revision: str,
+    expected_output_sha256: str,
+    expected_architecture: str = "sam3-image",
+) -> dict:
+    """Validate a downloaded MLX checkpoint before model mutation.
+
+    Always checks the weights digest against the package/caller pin. When a
+    conversion-manifest.json is present, architecture and output_sha256 must
+    match the pin as well.
+    """
+    checkpoint_dir = Path(checkpoint_dir)
+    weights_file = checkpoint_dir / "model.safetensors"
+    if not weights_file.exists():
+        raise FileNotFoundError(f"model.safetensors not found in {checkpoint_dir}.")
+
+    expected_revision = _validate_source_revision(expected_revision)
+    expected_output_sha256 = expected_output_sha256.lower()
+    actual_sha = _sha256(weights_file)
+    if actual_sha != expected_output_sha256:
+        raise ValueError(
+            "Downloaded MLX checkpoint content hash does not match the pinned "
+            f"expected digest: actual={actual_sha}, "
+            f"expected={expected_output_sha256}, repo={expected_repo}, "
+            f"revision={expected_revision}."
+        )
+
+    manifest_file = checkpoint_dir / CONVERSION_MANIFEST
+    provenance: dict = {
+        "status": "package-pinned",
+        "repo": expected_repo,
+        "revision": expected_revision,
+        "architecture": expected_architecture,
+        "output_sha256": actual_sha,
+        "manifest_path": None,
+    }
+    if not manifest_file.exists():
+        return provenance
+
+    manifest = json.loads(manifest_file.read_text())
+    expected = {
+        "architecture": expected_architecture,
+        "artifact_repo": expected_repo,
+        "artifact_revision": expected_revision,
+        "output_sha256": expected_output_sha256,
+    }
+    mismatches = {
+        key: (manifest.get(key), value)
+        for key, value in expected.items()
+        if manifest.get(key) != value
+    }
+    if mismatches:
+        details = ", ".join(
+            f"{key}: manifest={cached!r}, expected={requested!r}"
+            for key, (cached, requested) in sorted(mismatches.items())
+        )
+        raise ValueError(
+            "conversion-manifest.json does not match the pinned default "
+            f"checkpoint provenance. {details}"
+        )
+    provenance["status"] = "manifest-verified"
+    provenance["manifest_path"] = str(manifest_file)
+    provenance["manifest"] = manifest
+    return provenance
 
 
 def save_weights(save_path: Union[str, Path], weights: Dict[str, mx.array]) -> Path:
@@ -184,16 +313,7 @@ def _remap_official_checkpoint_keys(weights):
     return remapped
 
 
-def convert(model_path):
-    import torch
-
-    weight_file = str(model_path / "sam3.pt")
-    weights = torch.load(weight_file, map_location="cpu", weights_only=True)
-    weights = _unwrap_checkpoint_payload(weights)
-    if not isinstance(weights, Mapping):
-        raise ValueError("SAM3 PyTorch checkpoint payload must be a mapping.")
-    weights = _remap_official_checkpoint_keys(dict(weights))
-
+def _convert_checkpoint_weights(weights, *, source_label: str):
     mlx_weights = dict()
     ignored_keys = []
     unmapped_keys = []
@@ -230,7 +350,7 @@ def convert(model_path):
             # geometry encoder
             elif k.startswith("geometry_encoder."):
                 v = mx.array(v.numpy())
-
+                v = normalize_sam3_image_weight_layout(k, v)
                 mlx_weights[k] = v
             else:
                 unmapped_keys.append(source_key)
@@ -243,7 +363,7 @@ def convert(model_path):
 
     if not mlx_weights:
         raise ValueError(
-            f"No detector weights were converted from {weight_file}. Expected "
+            f"No detector weights were converted from {source_label}. Expected "
             "official SAM3 keys with a detector. prefix."
         )
     if unmapped_keys:
@@ -254,6 +374,18 @@ def convert(model_path):
         )
 
     return mlx_weights, tuple(sorted(ignored_keys))
+
+
+def convert(model_path):
+    import torch
+
+    weight_file = str(model_path / "sam3.pt")
+    weights = torch.load(weight_file, map_location="cpu", weights_only=True)
+    weights = _unwrap_checkpoint_payload(weights)
+    if not isinstance(weights, Mapping):
+        raise ValueError("SAM3 PyTorch checkpoint payload must be a mapping.")
+    weights = _remap_official_checkpoint_keys(dict(weights))
+    return _convert_checkpoint_weights(weights, source_label=weight_file)
 
 
 def _sha256(path: Path) -> str:
@@ -454,5 +586,22 @@ if __name__ == "__main__":
         print(f"Converted weights saved to {mlx_path}")
     else:
         print(f"Downloading MLX weights from {args.mlx_repo}...")
-        weights_path = load_from_hub(args.mlx_repo, args.mlx_path)
+        if args.mlx_repo == DEFAULT_MLX_CHECKPOINT.repo and not args.source_revision:
+            revision = DEFAULT_MLX_CHECKPOINT.revision
+            expected_sha = DEFAULT_MLX_CHECKPOINT.output_sha256
+        elif args.source_revision:
+            revision = _validate_source_revision(args.source_revision)
+            expected_sha = None
+        else:
+            parser.error(
+                "--source-revision is required when downloading a non-default "
+                "MLX repository (use a full 40-character commit SHA)."
+            )
+        weights_path = load_from_hub(
+            args.mlx_repo,
+            args.mlx_path,
+            revision=revision,
+            expected_output_sha256=expected_sha,
+            verify_provenance=expected_sha is not None,
+        )
         print(f"MLX weights available at: {weights_path}")

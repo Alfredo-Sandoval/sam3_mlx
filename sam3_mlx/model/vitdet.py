@@ -6,8 +6,11 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from sam3_mlx._unsupported import raise_unsupported
+from sam3_mlx.model.bounded_cache import BoundedLRUCache
 from sam3_mlx.model.data_misc import NestedTensor, interpolate
 from sam3_mlx.model.model_misc import Mlp as _Mlp, LayerScale, DropPath
+
+_DEFAULT_ROPE_CACHE_SIZE = 8
 
 
 class Mlp(_Mlp):
@@ -358,7 +361,9 @@ class Attention(nn.Module):
         self.relative_coords = relative_coords.astype(mx.int64)
 
     def _setup_rope_freqs(self) -> None:
-        self._freqs_cis_cache = {}
+        self._freqs_cis_cache: BoundedLRUCache[
+            Tuple[int, int], mx.array
+        ] = BoundedLRUCache(maxsize=_DEFAULT_ROPE_CACHE_SIZE)
         if not self.use_rope:
             self.freqs_cis = None
             return
@@ -432,9 +437,11 @@ class Attention(nn.Module):
                 f"{spatial_size} implies {expected_tokens} tokens, got {token_count}."
             )
         cache_key = (end_x, end_y)
-        if cache_key not in self._freqs_cis_cache:
-            self._freqs_cis_cache[cache_key] = self._build_rope_freqs(spatial_size)
-        return self._freqs_cis_cache[cache_key]
+        cached = self._freqs_cis_cache.get(cache_key)
+        if cached is None:
+            cached = self._build_rope_freqs(spatial_size)
+            self._freqs_cis_cache[cache_key] = cached
+        return cached
 
     def _apply_rope(
         self,

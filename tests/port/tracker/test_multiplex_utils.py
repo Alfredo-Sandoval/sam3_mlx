@@ -1,5 +1,7 @@
 import importlib.util
+import os
 import subprocess
+from pathlib import Path
 
 import numpy as np
 import mlx.core as mx
@@ -18,7 +20,12 @@ def _to_numpy(value):
 
 def _load_official_multiplex_utils():
     torch = pytest.importorskip("torch")
-    official_checkout = REPO_ROOT / "third_party" / "facebook-sam3"
+    official_checkout = Path(
+        os.environ.get(
+            "SAM3_OFFICIAL_CHECKOUT",
+            REPO_ROOT / "third_party" / "facebook-sam3",
+        )
+    )
     official_source = official_checkout / "sam3" / "model" / "multiplex_utils.py"
     if not official_source.exists():
         pytest.skip("official facebookresearch/sam3 checkout is not available")
@@ -27,7 +34,11 @@ def _load_official_multiplex_utils():
         ["git", "-C", str(official_checkout), "rev-parse", "HEAD"],
         text=True,
     ).strip()
-    assert commit == OFFICIAL_SAM3_MULTIPLEX_UTILS_COMMIT
+    if commit != OFFICIAL_SAM3_MULTIPLEX_UTILS_COMMIT:
+        pytest.skip(
+            "official facebookresearch/sam3 checkout is at "
+            f"{commit}, expected pinned {OFFICIAL_SAM3_MULTIPLEX_UTILS_COMMIT}"
+        )
 
     spec = importlib.util.spec_from_file_location(
         "_official_sam3_multiplex_utils",

@@ -112,24 +112,6 @@ class Sam3VideoPredictor(Sam3BasePredictor):
             frame_feature_cache_size=frame_feature_cache_size,
         )
 
-    def remove_object(
-        self,
-        session_id: str,
-        frame_idx: int = 0,
-        obj_id: int = 0,
-        is_user_action: bool = True,
-    ) -> dict[str, bool]:
-        session = self._get_session(session_id)
-        with session["lock"]:
-            self._extend_expiration_time(session)
-            self.model.remove_object(
-                inference_state=session["state"],
-                obj_id=obj_id,
-                frame_idx=frame_idx,
-                is_user_action=is_user_action,
-            )
-        return {"is_success": True}
-
     def _get_session_stats(self) -> str:
         live_session_strs = []
         for sid, session in self._all_inference_states.items():

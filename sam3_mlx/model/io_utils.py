@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import queue
+from collections import OrderedDict
 from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
-from threading import Condition, Lock, Thread, get_ident
+from threading import Condition, Event, Lock, Thread, get_ident
 from types import TracebackType
 from typing import Any, Sequence
 
@@ -15,6 +16,10 @@ from PIL import Image
 import mlx.core as mx
 
 from sam3_mlx._unsupported import raise_unsupported
+
+# Host RGB frames retained for selected-frame random access. Bound this so long
+# image-folder sessions do not keep every decoded frame resident.
+DEFAULT_LAZY_FRAME_CACHE_SIZE = 8
 
 
 def _raise_io_unsupported(feature: str, *, reason: str, detail: str, alternative=None):
@@ -28,6 +33,16 @@ def _raise_io_unsupported(feature: str, *, reason: str, detail: str, alternative
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
+SUPPORTED_VIDEO_LOADER_TYPES = frozenset({"cv2", "torchcodec"})
+
+
+def _validate_video_loader_type(video_loader_type: str) -> str:
+    if video_loader_type not in SUPPORTED_VIDEO_LOADER_TYPES:
+        raise RuntimeError(
+            "video_loader_type must be either 'cv2' or 'torchcodec'; "
+            f"got {video_loader_type!r}."
+        )
+    return video_loader_type
 
 
 def _uint8_hwc_to_mlx_chw_float32(array: np.ndarray):
@@ -68,6 +83,153 @@ class VideoFrames:
         return self.frames[index]
 
 
+class LazyImageFolderFrames:
+    """Random-access image-folder frames with a bounded host RGB cache.
+
+    Used when ``materialize_mlx_frames=False`` (selected-frame sessions) so long
+    folders do not retain every decoded PIL image. Paths remain the source of
+    truth; frames are loaded on demand.
+    """
+
+    def __init__(
+        self,
+        frame_paths: Sequence[Path],
+        *,
+        cache_size: int = DEFAULT_LAZY_FRAME_CACHE_SIZE,
+    ) -> None:
+        if not frame_paths:
+            raise RuntimeError("no images found in image-folder video")
+        if cache_size < 1:
+            raise ValueError("cache_size must be >= 1")
+        self.frame_paths = tuple(frame_paths)
+        self._cache_size = int(cache_size)
+        self._cache: OrderedDict[int, Image.Image] = OrderedDict()
+        self._lock = Lock()
+        self._closed = False
+        first = _load_rgb_image(self.frame_paths[0])
+        self.orig_height = first.height
+        self.orig_width = first.width
+        self._cache[0] = first
+        self.images = None
+
+    def __len__(self) -> int:
+        return len(self.frame_paths)
+
+    def __getitem__(self, index: int) -> Image.Image:
+        if self._closed:
+            raise RuntimeError("LazyImageFolderFrames is closed")
+        if index < 0 or index >= len(self.frame_paths):
+            raise IndexError(index)
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("LazyImageFolderFrames is closed")
+            cached = self._cache.get(index)
+            if cached is not None:
+                self._cache.move_to_end(index)
+                return cached
+            frame = _load_rgb_image(self.frame_paths[index])
+            if (frame.height, frame.width) != (self.orig_height, self.orig_width):
+                raise ValueError(
+                    "Image-folder video frames must have uniform dimensions: "
+                    f"{self.frame_paths[index]} is {frame.width}x{frame.height}, "
+                    f"expected {self.orig_width}x{self.orig_height}."
+                )
+            self._cache[index] = frame
+            while len(self._cache) > self._cache_size:
+                self._cache.popitem(last=False)
+            return frame
+
+    @property
+    def frames(self) -> tuple[Image.Image, ...]:
+        """Materialize all frames (tests / debug only; defeats lazy loading)."""
+        return tuple(self[i] for i in range(len(self)))
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            self._cache.clear()
+
+
+class LazyVideoFileFrames:
+    """Indexed OpenCV video reader with a bounded host RGB frame cache."""
+
+    def __init__(
+        self,
+        video_path: str | Path,
+        *,
+        cache_size: int = DEFAULT_LAZY_FRAME_CACHE_SIZE,
+    ) -> None:
+        if cache_size < 1:
+            raise ValueError("cache_size must be >= 1")
+        try:
+            import cv2
+        except ModuleNotFoundError:
+            _raise_io_unsupported(
+                "sam3_mlx.model.io_utils.LazyVideoFileFrames",
+                reason="optional-dependency",
+                detail="Video-file decoding requires the [video] OpenCV extra.",
+                alternative="pip install 'sam3_mlx[video]'",
+            )
+        self.path = Path(video_path)
+        self.frame_paths = (self.path,)
+        self._cv2 = cv2
+        self._capture = cv2.VideoCapture(str(self.path))
+        if not self._capture.isOpened():
+            raise ValueError(f"Could not open video: {self.path}")
+        self._length = int(self._capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.orig_height = int(self._capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.orig_width = int(self._capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        if self._length <= 0:
+            self._capture.release()
+            raise RuntimeError(f"No frames could be decoded from video: {self.path}")
+        self._cache_size = int(cache_size)
+        self._cache: OrderedDict[int, Image.Image] = OrderedDict()
+        self._lock = Lock()
+        self._closed = False
+        self.images = None
+        first = self[0]
+        if self.orig_height <= 0 or self.orig_width <= 0:
+            self.orig_height, self.orig_width = first.height, first.width
+
+    def __len__(self) -> int:
+        return self._length
+
+    def __getitem__(self, index: int) -> Image.Image:
+        if index < 0 or index >= self._length:
+            raise IndexError(index)
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("LazyVideoFileFrames is closed")
+            cached = self._cache.get(index)
+            if cached is not None:
+                self._cache.move_to_end(index)
+                return cached
+            self._capture.set(self._cv2.CAP_PROP_POS_FRAMES, index)
+            ok, frame_bgr = self._capture.read()
+            if not ok:
+                raise RuntimeError(
+                    f"Could not decode frame {index} from video: {self.path}"
+                )
+            frame_rgb = self._cv2.cvtColor(frame_bgr, self._cv2.COLOR_BGR2RGB)
+            frame = Image.fromarray(frame_rgb).copy()
+            self._cache[index] = frame
+            while len(self._cache) > self._cache_size:
+                self._cache.popitem(last=False)
+            return frame
+
+    @property
+    def frames(self) -> tuple[Image.Image, ...]:
+        """Materialize all frames (tests/debug only; defeats lazy loading)."""
+        return tuple(self[index] for index in range(len(self)))
+
+    def close(self) -> None:
+        with self._lock:
+            if not self._closed:
+                self._capture.release()
+                self._closed = True
+                self._cache.clear()
+
+
 def load_resource_as_video_frames(
     resource_path: str | Path | Sequence[Image.Image],
     image_size: int,
@@ -88,6 +250,7 @@ def load_resource_as_video_frames(
         raise ValueError("image_size must be positive.")
     if offload_video_to_cpu not in (False, True):
         raise TypeError("offload_video_to_cpu must be a bool.")
+    _validate_video_loader_type(video_loader_type)
 
     if isinstance(resource_path, Sequence) and not isinstance(
         resource_path, (str, bytes, Path)
@@ -170,6 +333,9 @@ def load_video_frames(
         raise ValueError("image_size must be positive.")
     if offload_video_to_cpu not in (False, True):
         raise TypeError("offload_video_to_cpu must be a bool.")
+    # Reject unsupported backends before dummy/folder shortcuts so misconfigured
+    # callers fail even when decoding is not required for the resource type.
+    _validate_video_loader_type(video_loader_type)
 
     video_path_str = os.fspath(video_path)
     dummy_match = re.fullmatch(r"<load-(dummy|zero)-video-(\d+)>", video_path_str)
@@ -233,10 +399,16 @@ def load_video_frames(
             video_loader_type=video_loader_type,
             materialize_mlx_frames=materialize_mlx_frames,
         )
-    except Exception as exc:
+    except (OSError, ValueError, RuntimeError) as exc:
+        # Preserve permission/decoder/value errors with their original type for
+        # real filesystem paths. Extensionless unknown tokens still map to the
+        # unsupported-resource surface.
+        candidate = Path(video_path_str)
+        if candidate.exists() or candidate.suffix.lower() in VIDEO_EXTS:
+            raise
         _raise_io_unsupported(
             "sam3_mlx.model.io_utils.load_video_frames(unknown_resource)",
-            reason="torchcodec",
+            reason="port-gap",
             detail=(
                 "Only video files and image folders are supported; "
                 f"failed to load {video_path_str!r} as video: {exc}"
@@ -327,18 +499,18 @@ def load_video_frames_from_image_folder(
         ]
         frames = tuple(frame for frame, _ in payloads)
         images = mx.stack([tensor for _, tensor in payloads], axis=0)
-    else:
-        frames = tuple(_load_rgb_image(path) for path in frame_paths)
-        images = None
-    _validate_uniform_frame_dimensions(frames, source=str(folder))
-    first = frames[0]
-    return VideoFrames(
-        frames=frames,
-        orig_height=first.height,
-        orig_width=first.width,
-        frame_paths=tuple(frame_paths),
-        images=images,
-    )
+        _validate_uniform_frame_dimensions(frames, source=str(folder))
+        first = frames[0]
+        return VideoFrames(
+            frames=frames,
+            orig_height=first.height,
+            orig_width=first.width,
+            frame_paths=tuple(frame_paths),
+            images=images,
+        )
+
+    # Selected-frame path: keep paths and a bounded host RGB cache only.
+    return LazyImageFolderFrames(frame_paths)
 
 
 def load_video_frames_from_video_file(
@@ -361,6 +533,7 @@ def load_video_frames_from_video_file(
             detail="The OpenCV decoder currently loads video-file frames synchronously.",
             alternative="async_loading_frames=False",
         )
+    _validate_video_loader_type(video_loader_type)
     if video_loader_type == "cv2":
         return load_video_frames_from_video_file_using_cv2(
             video_path=str(video_path),
@@ -370,17 +543,16 @@ def load_video_frames_from_video_file(
             offload_video_to_cpu=offload_video_to_cpu,
             materialize_mlx_frames=materialize_mlx_frames,
         )
-    if video_loader_type == "torchcodec":
-        return AsyncVideoFileLoaderWithTorchCodec(
-            video_path=str(video_path),
-            image_size=image_size,
-            offload_video_to_cpu=offload_video_to_cpu,
-            img_mean=img_mean,
-            img_std=img_std,
-            gpu_acceleration=gpu_acceleration,
-            gpu_device=gpu_device,
-        )
-    raise RuntimeError("video_loader_type must be either 'cv2' or 'torchcodec'")
+    # video_loader_type == "torchcodec"
+    return AsyncVideoFileLoaderWithTorchCodec(
+        video_path=str(video_path),
+        image_size=image_size,
+        offload_video_to_cpu=offload_video_to_cpu,
+        img_mean=img_mean,
+        img_std=img_std,
+        gpu_acceleration=gpu_acceleration,
+        gpu_device=gpu_device,
+    )
 
 
 def load_video_frames_from_video_file_using_cv2(
@@ -393,14 +565,19 @@ def load_video_frames_from_video_file_using_cv2(
 ) -> VideoFrames:
     """Decode a video file with OpenCV and expose normalized MLX image tensors."""
     _validate_image_loading_args(image_size, offload_video_to_cpu)
+    if not materialize_mlx_frames:
+        return LazyVideoFileFrames(video_path)
     try:
         import cv2
     except ModuleNotFoundError:
         _raise_io_unsupported(
             "sam3_mlx.model.io_utils.load_video_frames_from_video_file_using_cv2",
-            reason="torchcodec",
-            detail="Video-file decoding requires optional OpenCV support.",
-            alternative="Use an image folder or install OpenCV for the MLX video loader.",
+            reason="optional-dependency",
+            detail=(
+                "Video-file decoding requires optional OpenCV support. "
+                "Install with: pip install 'sam3_mlx[video]'."
+            ),
+            alternative="Use an image folder, or install the [video] extra (OpenCV).",
         )
 
     path = Path(video_path)
@@ -473,6 +650,8 @@ class AsyncImageFrameLoader:
         self._frames: list[Image.Image | None] = [None] * len(self.frame_paths)
         self._image_tensors: list[Any | None] = [None] * len(self.frame_paths)
         self._lock = Lock()
+        self._closed = False
+        self._cancel_event = Event()
         self.exception: BaseException | None = None
 
         first = self.__getitem__(0)
@@ -484,9 +663,12 @@ class AsyncImageFrameLoader:
         def _load_frames() -> None:
             try:
                 for index in range(len(self.frame_paths)):
+                    if self._cancel_event.is_set():
+                        return
                     self.__getitem__(index)
             except BaseException as exc:
-                self.exception = exc
+                if not self._cancel_event.is_set():
+                    self.exception = exc
 
         self.thread = Thread(target=_load_frames, daemon=True)
         self.thread.start()
@@ -495,9 +677,13 @@ class AsyncImageFrameLoader:
         return len(self.frame_paths)
 
     def __getitem__(self, index: int) -> Image.Image:
+        if self._closed:
+            raise RuntimeError("AsyncImageFrameLoader is closed")
         if self.exception is not None:
             raise RuntimeError("Failure in frame loading thread") from self.exception
         with self._lock:
+            if self._closed:
+                raise RuntimeError("AsyncImageFrameLoader is closed")
             frame = self._frames[index]
             if frame is None:
                 if self.materialize_mlx_frames:
@@ -523,6 +709,17 @@ class AsyncImageFrameLoader:
                 self._image_tensors[index] = tensor
             return frame
 
+    def get_image_tensor(self, index: int):
+        """Return one normalized MLX frame for legacy tensor-based callers."""
+        if not self.materialize_mlx_frames:
+            raise RuntimeError("This loader was created without MLX frame tensors.")
+        self[index]
+        with self._lock:
+            tensor = self._image_tensors[index]
+            if tensor is None:
+                raise RuntimeError(f"Frame tensor {index} was not materialized.")
+            return tensor
+
     @property
     def frames(self) -> tuple[Image.Image, ...]:
         self.wait()
@@ -546,16 +743,34 @@ class AsyncImageFrameLoader:
         if self.exception is not None:
             raise RuntimeError("Failure in frame loading thread") from self.exception
 
+    def close(self, *, join_timeout: float | None = None) -> None:
+        """Stop background loading and release retained frame buffers."""
+        self._cancel_event.set()
+        self._closed = True
+        thread = self.thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=join_timeout)
+        if thread is not None and thread.is_alive():
+            raise RuntimeError("Async frame loader did not stop before close timeout.")
+        self.thread = None
+        with self._lock:
+            self._frames = [None] * len(self.frame_paths)
+            self._image_tensors = [None] * len(self.frame_paths)
+
     def __getstate__(self) -> dict[str, Any]:
         self.wait()
         state = self.__dict__.copy()
         state["_lock"] = None
         state["thread"] = None
+        state["_cancel_event"] = None
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         self.__dict__.update(state)
         self._lock = Lock()
+        self._cancel_event = Event()
+        if self._closed:
+            self._cancel_event.set()
 
 
 class TorchCodecDecoder:

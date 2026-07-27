@@ -60,23 +60,27 @@ For local development from a checkout:
 uv sync
 ```
 
-Plotting dependencies are optional:
+Optional extras:
 
 ```bash
-pip install "sam3-mlx[viz]"
+pip install "sam3-mlx[viz]"     # matplotlib plotting helpers
+pip install "sam3-mlx[video]"   # OpenCV video-file decoding
 ```
 
 Or, from a local checkout:
 
 ```bash
-uv sync --extra viz
+uv sync --extra viz --extra video
 ```
 
-Checkpoint conversion helpers are included for advanced use, but PyTorch is not
-installed by a `sam3-mlx` extra in this release. Use a separate compatible
-PyTorch environment before running `sam3_mlx.convert`. Conversion requires an
-immutable 40-character Hugging Face commit via `--source-revision` and writes
-`conversion-manifest.json` with source/output hashes, key counts, and dtypes.
+Default image weights download from a **pinned** `mlx-community/sam3-image`
+revision and are verified against a package-embedded SHA-256 before load. For
+stronger provenance, convert from the official PyTorch checkpoint with
+`convert_from_pytorch=True` and an immutable `--source-revision`; that path
+writes `conversion-manifest.json` with source/output hashes, key counts, and
+dtypes. The `0.1.2` release evidence also compares all 1,400 canonical tensors
+in the pinned published artifact with a fresh conversion. PyTorch is not
+installed by a `sam3-mlx` extra—use a separate environment for conversion.
 
 Verify the install:
 
@@ -125,11 +129,18 @@ predictor; that path requires a locally converted checkpoint
 download and conversion are not wired up yet.
 
 The video slice accepts image paths, image folders, PIL image sequences, and
-OpenCV-decodable video files. It performs independent framewise inference:
-`out_obj_ids` are frame-local detection IDs, not persistent identities.
-Cross-frame `remove_object` behavior is rejected until temporal association is
-implemented. Mixed-resolution frame collections and unsupported CPU-offload
-controls fail explicitly.
+OpenCV-decodable video files (requires `pip install "sam3-mlx[video]"`). It
+performs independent framewise inference: `out_obj_ids` are frame-local
+detection IDs, not persistent identities. Cross-frame `remove_object` behavior
+is rejected until temporal association is implemented. Mixed-resolution frame
+collections and unsupported CPU-offload controls fail explicitly. Session
+propagation cannot be mutated mid-stream (except cancellation). Selected-frame
+mode does not retain full-resolution output history, and image-folder sessions
+decode host RGB frames through a bounded on-demand cache rather than keeping
+every frame resident.
+
+Experimental SAM 3.1 multiplex builders live under `sam3_mlx.experimental` and
+are not part of the stable 0.1.x top-level API.
 
 Checkpoint loading requires complete model coverage by default. For controlled
 development experiments only, `build_sam3_image_model` accepts
@@ -149,10 +160,10 @@ Unsupported paths raise `Sam3MlxUnsupportedError`:
   multi-GPU video, and TorchCodec decoding are unavailable.
 - **Training is currently not supported.** Training loops, autograd, distributed
   execution, and the official eval toolkit are not available yet.
-- **No release-grade model parity claim yet.** The repository has preprocessing
-  and component parity tests, but no checked-in end-to-end image-model evidence
-  artifact with pinned weights, prompts, IoU/error metrics, latency, and memory.
-  See [`PARITY.md`](PARITY.md).
+- **Parity is scoped to the SAM 3 image runtime.** The `0.1.2` receipt covers
+  pinned official-vs-MLX image outputs, including text and geometric prompts at
+  1008/672/504. It does not extend to SAM 3.1 multiplex/temporal tracking,
+  training, or unsupported APIs. See [`PARITY.md`](PARITY.md).
 
 ## Attribution
 

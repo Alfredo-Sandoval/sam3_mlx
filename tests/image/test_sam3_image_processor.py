@@ -404,3 +404,109 @@ def test_batch_geometric_prompt_fails_fast_until_interactive_batch_contract_exis
 
     assert exc.value.reason == "image-interactivity"
     assert "add_geometric_prompt(batch_state)" in exc.value.feature
+
+
+def test_set_image_after_batch_clears_batch_metadata():
+    model = _FakeModel()
+    processor = Sam3Processor(model, resolution=14)
+    state = processor.set_image_batch(
+        [
+            Image.new("RGB", (4, 2), color=(255, 0, 0)),
+            Image.new("RGB", (2, 4), color=(0, 255, 0)),
+        ]
+    )
+    state["geometric_prompt"] = {"stale": True}
+    state["boxes"] = mx.zeros((1, 4), dtype=mx.float32)
+    state["scores"] = mx.zeros((1,), dtype=mx.float32)
+
+    state = processor.set_image(Image.new("RGB", (6, 8), color=(0, 0, 255)), state)
+
+    assert "original_heights" not in state
+    assert "original_widths" not in state
+    assert state["original_height"] == 8
+    assert state["original_width"] == 6
+    assert "geometric_prompt" not in state
+    assert "boxes" not in state
+    assert "scores" not in state
+    assert image_processor._batch_original_sizes(state) is None
+    assert state["backbone_out"]["image_batch"].shape == (1, 3, 14, 14)
+
+
+def test_set_image_clears_prior_geometric_prompt():
+    class _Prompt:
+        def __init__(self):
+            self.boxes = []
+
+        def append_boxes(self, boxes, labels):
+            self.boxes.append((boxes, labels))
+
+    class _PromptModel(_FakeModel):
+        def _get_dummy_prompt(self, num_prompts=1):
+            self.dummy_prompt_sizes.append(num_prompts)
+            return _Prompt()
+
+    model = _PromptModel(
+        outputs={
+            "pred_boxes": mx.zeros((1, 1, 4), dtype=mx.float32),
+            "pred_logits": mx.full((1, 1, 1), -10.0, dtype=mx.float32),
+            "pred_masks": mx.zeros((1, 1, 1, 1), dtype=mx.float32),
+            "presence_logit_dec": mx.zeros((1, 1), dtype=mx.float32),
+        }
+    )
+    processor = Sam3Processor(model, resolution=14)
+    state = processor.set_image(Image.new("RGB", (4, 4), color=(255, 0, 0)))
+    processor.add_geometric_prompt(
+        [0.5, 0.5, 0.25, 0.25],
+        True,
+        state,
+        run_grounding=False,
+    )
+    assert "geometric_prompt" in state
+    assert len(state["geometric_prompt"].boxes) == 1
+
+    state = processor.set_image(Image.new("RGB", (5, 5), color=(0, 255, 0)), state)
+    assert "geometric_prompt" not in state
+
+    state = processor.set_text_prompt("visual", state, run_grounding=False)
+    assert isinstance(state["geometric_prompt"], _Prompt)
+    assert state["geometric_prompt"].boxes == []
+    assert model.dummy_prompt_sizes[-1] == 1
+
+
+def test_reset_all_prompts_removes_semantic_seg():
+    processor = Sam3Processor(_FakeModel(), resolution=14)
+    state = {
+        "backbone_out": {
+            "image_batch": mx.zeros((1, 3, 4, 4), dtype=mx.float32),
+            "language_features": mx.zeros((1, 1, 1), dtype=mx.float32),
+            "language_mask": mx.zeros((1, 1), dtype=mx.bool_),
+            "language_embeds": mx.zeros((1, 1, 1), dtype=mx.float32),
+        },
+        "geometric_prompt": object(),
+        "boxes": mx.zeros((1, 4), dtype=mx.float32),
+        "masks": mx.zeros((1, 1, 1), dtype=mx.bool_),
+        "masks_logits": mx.zeros((1, 1, 1), dtype=mx.float32),
+        "mask_logits": mx.zeros((1, 1, 1), dtype=mx.float32),
+        "semantic_seg": mx.zeros((1, 1, 4, 4), dtype=mx.float32),
+        "scores": mx.zeros((1,), dtype=mx.float32),
+        "original_height": 4,
+        "original_width": 4,
+    }
+
+    processor.reset_all_prompts(state)
+
+    for key in (
+        "geometric_prompt",
+        "boxes",
+        "masks",
+        "masks_logits",
+        "mask_logits",
+        "semantic_seg",
+        "scores",
+    ):
+        assert key not in state
+    for key in ("language_features", "language_mask", "language_embeds"):
+        assert key not in state["backbone_out"]
+    # Size metadata is image identity, not a prompt/result; reset leaves it.
+    assert state["original_height"] == 4
+    assert state["original_width"] == 4

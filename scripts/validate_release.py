@@ -8,6 +8,7 @@ import sys
 import tarfile
 import tempfile
 import zipfile
+from email.parser import BytesParser
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +32,10 @@ def _run(command: list[str], *, cwd: Path) -> None:
 def _inspect_wheel(wheel: Path) -> None:
     with zipfile.ZipFile(wheel) as archive:
         members = set(archive.namelist())
+        metadata_name = next(
+            name for name in members if name.endswith(".dist-info/METADATA")
+        )
+        metadata = BytesParser().parsebytes(archive.read(metadata_name))
     missing = sorted(REQUIRED_WHEEL_MEMBERS - members)
     excluded = sorted(
         member
@@ -41,6 +46,13 @@ def _inspect_wheel(wheel: Path) -> None:
         raise RuntimeError(
             f"Wheel content mismatch: missing={missing}, excluded_present={excluded}"
         )
+    requires_dist = metadata.get_all("Requires-Dist", [])
+    if not any(
+        requirement.startswith("opencv-python-headless")
+        and 'extra == "video"' in requirement
+        for requirement in requires_dist
+    ):
+        raise RuntimeError("Wheel metadata is missing the [video] OpenCV extra.")
 
 
 def _inspect_sdist(sdist: Path) -> None:
@@ -69,7 +81,7 @@ def _validate_installed_wheel(wheel: Path, python: str, workspace: Path) -> None
             "install",
             "--python",
             str(environment_python),
-            str(wheel),
+            f"{wheel}[video]",
         ],
         cwd=workspace,
     )
@@ -77,13 +89,15 @@ def _validate_installed_wheel(wheel: Path, python: str, workspace: Path) -> None
 import importlib.resources
 import importlib.util
 import json
+import tempfile
+from pathlib import Path
+import cv2
+import numpy as np
 import sam3_mlx
 
 expected_exports = {
     "Sam3MlxUnsupportedError",
     "build_sam3_image_model",
-    "build_sam3_multiplex_video_model",
-    "build_sam3_multiplex_video_predictor",
     "build_sam3_predictor",
     "build_sam3_video_model",
     "build_sam3_video_predictor",
@@ -91,6 +105,11 @@ expected_exports = {
     "download_ckpt_from_hf",
 }
 assert set(sam3_mlx.__all__) == expected_exports
+# Experimental multiplex builders remain importable but are not stable __all__.
+import sam3_mlx.experimental as experimental
+
+assert hasattr(experimental, "build_sam3_multiplex_video_model")
+assert hasattr(experimental, "build_sam3_multiplex_video_predictor")
 asset = importlib.resources.files("sam3_mlx").joinpath(
     "assets/bpe_simple_vocab_16e6.txt.gz"
 )
@@ -101,6 +120,27 @@ assert model.device == "mlx"
 assert model.training is False
 for module in ("sam3_mlx.agent", "sam3_mlx.eval", "sam3_mlx.train"):
     assert importlib.util.find_spec(module) is None, module
+# The built wheel's [video] extra must install a working decoder path.
+from sam3_mlx.model.io_utils import load_video_frames_from_video_file
+with tempfile.TemporaryDirectory() as temp_dir:
+    video_path = Path(temp_dir) / "fixture.avi"
+    writer = cv2.VideoWriter(
+        str(video_path),
+        cv2.VideoWriter_fourcc(*"MJPG"),
+        5.0,
+        (8, 6),
+    )
+    assert writer.isOpened()
+    writer.write(np.zeros((6, 8, 3), dtype=np.uint8))
+    writer.release()
+    frames = load_video_frames_from_video_file(
+        video_path,
+        image_size=14,
+        materialize_mlx_frames=False,
+    )
+    assert len(frames) == 1
+    assert frames[0].size == (8, 6)
+    frames.close()
 print(json.dumps({"exports": sorted(expected_exports), "model": type(model).__name__}))
 """
     _run(
