@@ -147,10 +147,10 @@ class Sam3VideoPredictor(LifecycleSafeSam3BasePredictor):
         )
 
     def _get_session_stats(self) -> str:
-        live_session_strs = []
-        for sid, session in self._all_inference_states.items():
-            num_frames = session["state"]["num_frames"]
-            live_session_strs.append(f"'{sid}' ({num_frames} frames)")
+        live_session_strs = [
+            f"'{session_id}' ({num_frames} frames)"
+            for session_id, num_frames in self._live_session_frame_counts()
+        ]
         return f"live sessions: [{', '.join(live_session_strs)}], runtime: MLX"
 
     def _get_torch_and_gpu_properties(self) -> str:
