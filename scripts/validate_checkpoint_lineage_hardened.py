@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate hard-pinned, replayable semantic checkpoint-lineage evidence."""
+"""Generate hard-pinned, source-bound semantic checkpoint-lineage evidence."""
 
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ from sam3_mlx.release_contract import (  # noqa: E402
     PACKAGE_VERSION,
     sha256_path,
 )
+from sam3_mlx.source_binding import validate_attestation_only_worktree  # noqa: E402
 
 LINEAGE_SCHEMA_VERSION = 2
 CONVERT_MODULE = REPO_ROOT / "sam3_mlx" / "convert.py"
@@ -173,6 +174,12 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
 
+    try:
+        source_commit, _ = validate_attestation_only_worktree(REPO_ROOT)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if args.out.suffix != ".json":
+        raise SystemExit("--out must end in .json.")
     if args.official_revision != OFFICIAL_CHECKPOINT_REVISION:
         raise SystemExit(
             "Official checkpoint revision does not match the frozen release pin."
@@ -216,10 +223,19 @@ def main() -> None:
         and comparison["exact_tensor_count"] == CHECKPOINT_TENSOR_COUNT
     )
     passed = comparison["semantic_match"] and counts_match_contract
+
+    try:
+        final_source_commit, _ = validate_attestation_only_worktree(REPO_ROOT)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if final_source_commit != source_commit:
+        raise SystemExit("sam3_mlx source commit changed during lineage execution.")
+
     report = {
         "schema_version": LINEAGE_SCHEMA_VERSION,
         "status": "passed" if passed else "failed",
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source_commit": source_commit,
         "lineage_runner_sha256": sha256_path(Path(__file__)),
         "converter_module_sha256": sha256_path(CONVERT_MODULE),
         "source": {
@@ -247,7 +263,16 @@ def main() -> None:
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
-    print(json.dumps({"wrote": str(args.out), "status": report["status"]}, indent=2))
+    print(
+        json.dumps(
+            {
+                "wrote": str(args.out),
+                "source_commit": source_commit,
+                "status": report["status"],
+            },
+            indent=2,
+        )
+    )
     if not passed:
         raise SystemExit(1)
 
