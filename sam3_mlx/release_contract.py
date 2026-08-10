@@ -10,7 +10,10 @@ import hashlib
 import json
 import math
 from pathlib import Path
-from typing import Mapping, TypedDict
+from typing import Mapping, TypedDict, cast
+
+
+JsonObject = dict[str, object]
 
 PACKAGE_VERSION = "0.1.2"
 REPORT_SCHEMA_VERSION = 2
@@ -45,6 +48,74 @@ class OracleBindings(TypedDict):
     cpu_adapters: list[str]
     oracle_runner_sha256: str
     release_contract_sha256: str
+
+
+def require_json_object(
+    value: object,
+    *,
+    field: str,
+    error_type: type[ValueError] = ValueError,
+) -> JsonObject:
+    """Validate one raw JSON object and preserve unknown nested values."""
+
+    if not isinstance(value, dict):
+        raise error_type(f"{field} must be a JSON object.")
+    raw_value = cast(dict[object, object], value)
+    normalized: JsonObject = {}
+    for key, item in raw_value.items():
+        if not isinstance(key, str):
+            raise error_type(f"{field} must use string keys.")
+        normalized[key] = item
+    return normalized
+
+
+def require_json_list(
+    value: object,
+    *,
+    field: str,
+    error_type: type[ValueError] = ValueError,
+) -> list[object]:
+    """Validate one raw JSON list while keeping element validation at its owner."""
+
+    if not isinstance(value, list):
+        raise error_type(f"{field} must be a JSON list.")
+    return list(cast(list[object], value))
+
+
+def require_json_string(
+    value: object,
+    *,
+    field: str,
+    error_type: type[ValueError] = ValueError,
+) -> str:
+    if not isinstance(value, str) or not value:
+        raise error_type(f"{field} must be a non-empty string.")
+    return value
+
+
+def require_json_nonnegative_int(
+    value: object,
+    *,
+    field: str,
+    error_type: type[ValueError] = ValueError,
+) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise error_type(f"{field} must be a non-negative integer.")
+    return value
+
+
+def require_json_finite_number(
+    value: object,
+    *,
+    field: str,
+    error_type: type[ValueError] = ValueError,
+) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise error_type(f"{field} must be a finite number.")
+    number = float(value)
+    if not math.isfinite(number):
+        raise error_type(f"{field} must be a finite number.")
+    return number
 
 
 OFFICIAL_CODE_REPO = "https://github.com/facebookresearch/sam3"

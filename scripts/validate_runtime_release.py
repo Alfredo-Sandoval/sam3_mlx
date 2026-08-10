@@ -31,12 +31,24 @@ import math
 import os
 import statistics
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TypedDict, cast
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from sam3_mlx.release_contract import (  # noqa: E402
+    JsonObject,
+    require_json_finite_number,
+    require_json_list,
+    require_json_nonnegative_int,
+    require_json_object,
+    require_json_string,
+)
 
 REQUIRED_RECEIPT_FIELDS = {
     "schema_version",
@@ -83,6 +95,30 @@ RELEASE_THRESHOLDS = {
 
 class ReceiptError(ValueError):
     """Raised when a parity receipt fails schema or binding checks."""
+
+
+ThresholdContract = dict[str, float]
+
+
+class TestEnvironment(TypedDict):
+    python_version: str
+    mlx_version: str | None
+    platform: str
+    machine: str
+
+
+class SkipDetail(TypedDict):
+    nodeid: str
+    reason: str
+    owner: str
+    disposition: str
+
+
+class ReportStats(TypedDict):
+    passed: int
+    failed: int
+    skipped: int
+    skip_details: list[SkipDetail]
 
 
 def _run(command: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -142,17 +178,41 @@ def _validate_receipt_git_binding(receipt_commit: str) -> str:
 
 def _package_version() -> str:
     # Prefer installed metadata; fall back to importlib on editable installs.
-    try:
-        from importlib.metadata import version
+    from importlib.metadata import PackageNotFoundError, version
 
+    try:
         return version("sam3-mlx")
-    except Exception:
+    except PackageNotFoundError:
         import sam3_mlx
 
         return sam3_mlx.__version__
 
 
-def _test_environment(python_command: list[str]) -> dict[str, str | None]:
+def _require_object(value: object, *, field: str) -> JsonObject:
+    return require_json_object(value, field=field, error_type=ReceiptError)
+
+
+def _require_list(value: object, *, field: str) -> list[object]:
+    return require_json_list(value, field=field, error_type=ReceiptError)
+
+
+def _require_string(value: object, *, field: str) -> str:
+    return require_json_string(value, field=field, error_type=ReceiptError)
+
+
+def _load_json_object(path: Path, *, label: str) -> JsonObject:
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ReceiptError(f"Could not read {label} {path}: {exc}") from exc
+    return _require_object(value, field=label)
+
+
+def _require_nonnegative_int(value: object, *, field: str) -> int:
+    return require_json_nonnegative_int(value, field=field, error_type=ReceiptError)
+
+
+def _test_environment(python_command: list[str]) -> TestEnvironment:
     """Read release metadata from the interpreter that will execute pytest."""
 
     probe = (
@@ -170,13 +230,36 @@ def _test_environment(python_command: list[str]) -> dict[str, str | None]:
         "}, sort_keys=True))\n"
     )
     completed = _run([*python_command, "-c", probe], cwd=REPO_ROOT)
-    metadata = json.loads(completed.stdout)
+    metadata = _require_object(
+        json.loads(completed.stdout),
+        field="test interpreter environment metadata",
+    )
     required = {"python_version", "mlx_version", "platform", "machine"}
-    if not isinstance(metadata, dict) or set(metadata) != required:
+    if set(metadata) != required:
         raise ReceiptError(
             f"Test interpreter returned invalid environment metadata: {metadata!r}."
         )
-    return metadata
+    python_version = _require_string(
+        metadata.get("python_version"),
+        field="test interpreter python_version",
+    )
+    platform_name = _require_string(
+        metadata.get("platform"),
+        field="test interpreter platform",
+    )
+    machine = _require_string(
+        metadata.get("machine"),
+        field="test interpreter machine",
+    )
+    mlx_version = metadata.get("mlx_version")
+    if mlx_version is not None and not isinstance(mlx_version, str):
+        raise ReceiptError("test interpreter mlx_version must be a string or null.")
+    return {
+        "python_version": python_version,
+        "mlx_version": mlx_version,
+        "platform": platform_name,
+        "machine": machine,
+    }
 
 
 def _sha256(path: Path) -> str:
@@ -196,7 +279,7 @@ def _redact_repo_path(text: str) -> str:
     return text.replace(str(REPO_ROOT), "<repo>")
 
 
-def _evidence_path(value: Any, *, root: Path) -> Path:
+def _evidence_path(value: object, *, root: Path) -> Path:
     if not isinstance(value, str) or not value:
         raise ReceiptError("Evidence paths must be non-empty strings.")
     path = Path(value)
@@ -214,21 +297,17 @@ def _evidence_path(value: Any, *, root: Path) -> Path:
     return resolved
 
 
-def _require_finite_number(value: Any, *, field: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ReceiptError(f"{field} must be a finite number.")
-    number = float(value)
-    if not math.isfinite(number):
-        raise ReceiptError(f"{field} must be a finite number.")
-    return number
+def _require_finite_number(value: object, *, field: str) -> float:
+    return require_json_finite_number(value, field=field, error_type=ReceiptError)
 
 
 def _validate_parity_case(
-    case: dict[str, Any],
+    case: JsonObject,
     *,
-    thresholds: dict[str, Any],
+    thresholds: ThresholdContract,
 ) -> None:
-    name = case.get("name", "<unnamed>")
+    name_value = case.get("name")
+    name = name_value if isinstance(name_value, str) and name_value else "<unnamed>"
     official_count = case.get("official_detection_count")
     mlx_count = case.get("mlx_detection_count")
     if (
@@ -247,8 +326,8 @@ def _validate_parity_case(
     ):
         raise ReceiptError(f"Parity case {name!r} does not satisfy count parity.")
 
-    matches = case.get("matches")
-    if not isinstance(matches, list) or len(matches) != official_count:
+    matches = _require_list(case.get("matches"), field=f"Parity case {name!r} matches")
+    if len(matches) != official_count:
         raise ReceiptError(
             f"Parity case {name!r} match count does not equal detection count."
         )
@@ -266,9 +345,8 @@ def _validate_parity_case(
     official_indices: set[int] = set()
     mlx_indices: set[int] = set()
     ious: list[float] = []
-    for match in matches:
-        if not isinstance(match, dict):
-            raise ReceiptError(f"Parity case {name!r} contains an invalid match.")
+    for raw_match in matches:
+        match = _require_object(raw_match, field=f"Parity case {name!r} match")
         official_index = match.get("official_index")
         mlx_index = match.get("mlx_index")
         if (
@@ -332,7 +410,7 @@ def _nearest_rank_percentile(values: list[float], quantile: float) -> float:
     return ordered[index]
 
 
-def _validate_performance(performance: dict[str, Any], *, profile: str) -> None:
+def _validate_performance(performance: JsonObject, *, profile: str) -> None:
     if performance.get("status") != "passed":
         raise ReceiptError(f"Parity profile {profile!r} performance must pass.")
     repetitions = performance.get("repetitions")
@@ -353,14 +431,24 @@ def _validate_performance(performance: dict[str, Any], *, profile: str) -> None:
         or peak_memory <= 0
     ):
         raise ReceiptError(f"Parity profile {profile!r} peak memory is invalid.")
-    latencies = performance.get("latency_by_resolution_s")
-    if not isinstance(latencies, dict) or set(latencies) != {"1008", "672", "504"}:
+    latencies = _require_object(
+        performance.get("latency_by_resolution_s"),
+        field=f"Parity profile {profile!r} latency_by_resolution_s",
+    )
+    if set(latencies) != {"1008", "672", "504"}:
         raise ReceiptError(
             f"Parity profile {profile!r} must measure 1008, 672, and 504."
         )
-    for resolution, summary in latencies.items():
-        samples = summary.get("samples") if isinstance(summary, dict) else None
-        if not isinstance(samples, list) or len(samples) != repetitions:
+    for resolution, raw_summary in latencies.items():
+        summary = _require_object(
+            raw_summary,
+            field=f"Parity profile {profile!r} resolution {resolution}",
+        )
+        samples = _require_list(
+            summary.get("samples"),
+            field=f"Parity profile {profile!r} resolution {resolution} samples",
+        )
+        if len(samples) != repetitions:
             raise ReceiptError(
                 f"Parity profile {profile!r} resolution {resolution} "
                 "sample count is invalid."
@@ -393,7 +481,7 @@ def _validate_performance(performance: dict[str, Any], *, profile: str) -> None:
 
 
 def validate_receipt(
-    receipt: dict[str, Any],
+    receipt: JsonObject,
     *,
     expected_commit: str | None = None,
     require_passed: bool = True,
@@ -408,7 +496,7 @@ def validate_receipt(
             f"Unsupported receipt schema_version={receipt.get('schema_version')!r}"
         )
 
-    checkpoint = receipt.get("checkpoint") or {}
+    checkpoint = _require_object(receipt.get("checkpoint"), field="Receipt checkpoint")
     missing_ckpt = sorted(REQUIRED_CHECKPOINT_FIELDS - set(checkpoint))
     if missing_ckpt:
         raise ReceiptError(f"Receipt checkpoint missing fields: {missing_ckpt}")
@@ -420,54 +508,69 @@ def validate_receipt(
             f"Receipt checkpoint fields must be non-empty: {empty_checkpoint_fields}"
         )
 
-    tests = receipt.get("tests") or {}
+    tests = _require_object(receipt.get("tests"), field="Receipt tests")
     missing_tests = sorted(REQUIRED_TESTS_FIELDS - set(tests))
     if missing_tests:
         raise ReceiptError(f"Receipt tests missing fields: {missing_tests}")
-    if not isinstance(tests.get("skip_details"), list):
-        raise ReceiptError("Receipt tests.skip_details must be a list.")
-    for item in tests["skip_details"]:
+    skip_details = _require_list(
+        tests.get("skip_details"),
+        field="Receipt tests.skip_details",
+    )
+    for raw_item in skip_details:
+        item = _require_object(raw_item, field="Receipt tests.skip_details entry")
         required_skip_fields = {"nodeid", "reason", "owner", "disposition"}
-        if not isinstance(item, dict) or not required_skip_fields.issubset(item):
+        if not required_skip_fields.issubset(item):
             raise ReceiptError(
                 "Each skip_details entry must include nodeid, reason, owner, "
                 "and disposition."
             )
     for field in ("skipped", "deselected"):
         value = tests.get(field)
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise ReceiptError(f"Receipt tests.{field} must be a non-negative integer.")
-    recorded_skips = tests["skipped"] + tests["deselected"]
-    if recorded_skips != len(tests["skip_details"]):
+        _require_nonnegative_int(value, field=f"Receipt tests.{field}")
+    skipped_count = _require_nonnegative_int(
+        tests.get("skipped"),
+        field="Receipt tests.skipped",
+    )
+    deselected_count = _require_nonnegative_int(
+        tests.get("deselected"),
+        field="Receipt tests.deselected",
+    )
+    recorded_skips = skipped_count + deselected_count
+    if recorded_skips != len(skip_details):
         raise ReceiptError(
             "Receipt skip/deselection counts must match skip_details entries."
         )
-    counts = tests.get("counts")
-    if not isinstance(counts, dict):
-        raise ReceiptError("Receipt tests.counts must be an object.")
+    counts = _require_object(tests.get("counts"), field="Receipt tests.counts")
     required_counts = {"call_passed", "call_failed", "call_skipped"}
-    if set(counts) != required_counts or any(
-        isinstance(counts[field], bool)
-        or not isinstance(counts[field], int)
-        or counts[field] < 0
-        for field in required_counts
-    ):
+    if set(counts) != required_counts:
         raise ReceiptError("Receipt tests.counts must contain non-negative integers.")
+    call_passed = _require_nonnegative_int(
+        counts.get("call_passed"),
+        field="Receipt tests.counts.call_passed",
+    )
+    call_failed = _require_nonnegative_int(
+        counts.get("call_failed"),
+        field="Receipt tests.counts.call_failed",
+    )
+    call_skipped = _require_nonnegative_int(
+        counts.get("call_skipped"),
+        field="Receipt tests.counts.call_skipped",
+    )
     exit_code = tests.get("exit_code")
     if isinstance(exit_code, bool) or not isinstance(exit_code, int):
         raise ReceiptError("Receipt tests.exit_code must be an integer.")
     if (
         tests.get("passed") is not (exit_code == 0)
         or tests.get("failed") is not (exit_code != 0)
-        or (exit_code == 0 and counts["call_failed"] != 0)
-        or (exit_code != 0 and counts["call_failed"] < 1)
-        or counts["call_skipped"] != tests.get("skipped")
+        or (exit_code == 0 and call_failed != 0)
+        or (exit_code != 0 and call_failed < 1)
+        or call_skipped != skipped_count
     ):
         raise ReceiptError(
             "Receipt test booleans, exit code, and outcome counts are inconsistent."
         )
 
-    parity = receipt.get("parity") or {}
+    parity = _require_object(receipt.get("parity"), field="Receipt parity")
     if "status" not in parity:
         raise ReceiptError("Receipt parity.status is required.")
     if parity["status"] not in {"passed", "failed", "not_run", "skipped"}:
@@ -492,48 +595,64 @@ def validate_receipt(
     if require_passed and not parity.get("cases"):
         raise ReceiptError("Release receipt parity.cases must be non-empty.")
     if require_passed:
-        thresholds = parity.get("thresholds") or {}
+        thresholds_object = _require_object(
+            parity.get("thresholds"),
+            field="Receipt parity thresholds",
+        )
         required_thresholds = {
             "mask_iou_min",
             "mask_iou_mean_min",
             "box_l_inf_max",
             "score_abs_max",
         }
-        if any(thresholds.get(field) is None for field in required_thresholds):
+        if any(thresholds_object.get(field) is None for field in required_thresholds):
             raise ReceiptError("Release receipt parity thresholds must be measured.")
-        performance = receipt.get("performance") or {}
+        performance = _require_object(
+            receipt.get("performance"),
+            field="Receipt performance",
+        )
         if performance.get("status") != "passed":
             raise ReceiptError("Release receipt performance.status must be 'passed'.")
         if not receipt.get("mlx_version"):
             raise ReceiptError("Release receipt mlx_version must be recorded.")
-        if counts["call_passed"] < 1 or counts["call_failed"] != 0:
+        if call_passed < 1 or call_failed != 0:
             raise ReceiptError("Release receipt must record a passing test suite.")
         if evidence_root is None:
             raise ReceiptError(
                 "Release receipt validation requires an evidence repository root."
             )
-        reports = parity.get("reports")
-        if not isinstance(reports, list) or len(reports) != 2:
+        reports = _require_list(parity.get("reports"), field="Receipt parity reports")
+        if len(reports) != 2:
             raise ReceiptError(
                 "Release receipt must reference exactly two parity reports."
             )
-        report_paths = []
-        for report in reports:
-            if not isinstance(report, dict) or set(report) != {"path", "sha256"}:
+        report_paths: list[Path] = []
+        for raw_report in reports:
+            report = _require_object(
+                raw_report, field="Receipt parity report reference"
+            )
+            if set(report) != {"path", "sha256"}:
                 raise ReceiptError(
                     "Parity report references must contain path and sha256."
                 )
-            report_path = _evidence_path(report["path"], root=evidence_root)
-            if _sha256(report_path) != report["sha256"]:
+            report_path = _evidence_path(report.get("path"), root=evidence_root)
+            recorded_sha256 = _require_string(
+                report.get("sha256"),
+                field="Receipt parity report sha256",
+            )
+            if _sha256(report_path) != recorded_sha256:
                 raise ReceiptError(
-                    f"Parity report digest mismatch: {report['path']!r}."
+                    f"Parity report digest mismatch: {report.get('path')!r}."
                 )
             report_paths.append(report_path)
         lineage_path = _evidence_path(
             checkpoint.get("lineage_report"),
             root=evidence_root,
         )
-        if _sha256(lineage_path) != checkpoint.get("lineage_report_sha256"):
+        if _sha256(lineage_path) != _require_string(
+            checkpoint.get("lineage_report_sha256"),
+            field="Receipt checkpoint lineage_report_sha256",
+        ):
             raise ReceiptError("Checkpoint lineage report digest mismatch.")
         projection = _measured_evidence_projection(
             parity_report_paths=report_paths,
@@ -547,10 +666,10 @@ def validate_receipt(
                 )
 
 
-def _parse_pytest_report_log(report_path: Path) -> dict[str, Any]:
+def _parse_pytest_report_log(report_path: Path) -> ReportStats:
     """Parse a pytest --report-log JSONL file into skip/deselection details."""
     passed = failed = skipped = 0
-    skip_details: list[dict[str, str]] = []
+    skip_details: list[SkipDetail] = []
     if not report_path.exists():
         return {
             "passed": 0,
@@ -561,7 +680,7 @@ def _parse_pytest_report_log(report_path: Path) -> dict[str, Any]:
     for line in report_path.read_text().splitlines():
         if not line.strip():
             continue
-        event = json.loads(line)
+        event = _require_object(json.loads(line), field="pytest report log event")
         if event.get("$report_type") != "TestReport":
             # Newer pytest-reportlog uses "when"/"outcome" on TestReport only.
             if event.get("nodeid") and event.get("when") == "call":
@@ -581,13 +700,16 @@ def _parse_pytest_report_log(report_path: Path) -> dict[str, Any]:
             skipped += 1
             longrepr = event.get("longrepr")
             reason = ""
-            if isinstance(longrepr, (list, tuple)) and longrepr:
-                reason = str(longrepr[-1])
+            if isinstance(longrepr, (list, tuple)):
+                parts = list(cast(list[object] | tuple[object, ...], longrepr))
+                if parts:
+                    reason = str(parts[-1])
             elif longrepr is not None:
                 reason = str(longrepr)
+            nodeid_text = nodeid if isinstance(nodeid, str) else str(nodeid)
             skip_details.append(
                 {
-                    "nodeid": nodeid,
+                    "nodeid": nodeid_text,
                     "reason": reason or "skipped",
                     "owner": "unassigned",
                     "disposition": "unreviewed",
@@ -606,7 +728,7 @@ def generate_stub_receipt(
     pytest_command: list[str],
     test_python_command: list[str],
     checkpoint_path: str | None,
-) -> dict[str, Any]:
+) -> JsonObject:
     """Create a schema-complete receipt without claiming e2e parity.
 
     Full upstream comparison should replace parity.status with measured metrics
@@ -646,7 +768,7 @@ def generate_stub_receipt(
             capture_output=True,
             env=pytest_env,
         )
-        report_stats = {
+        report_stats: ReportStats = {
             "passed": 0,
             "failed": 0 if completed.returncode == 0 else 1,
             "skipped": 0,
@@ -730,10 +852,13 @@ def _measured_evidence_projection(
     parity_report_paths: list[Path],
     lineage_report_path: Path,
     evidence_root: Path,
-) -> dict[str, dict[str, Any]]:
+) -> dict[str, JsonObject]:
     """Load measured reports and reconstruct the canonical receipt projection."""
-    reports = [json.loads(path.read_text()) for path in parity_report_paths]
-    lineage = json.loads(lineage_report_path.read_text())
+    reports = [
+        _load_json_object(path, label="measured parity report")
+        for path in parity_report_paths
+    ]
+    lineage = _load_json_object(lineage_report_path, label="checkpoint lineage report")
     if not reports or any(report.get("status") != "passed" for report in reports):
         raise ReceiptError("Every parity report must have status='passed'.")
     profiles = {report.get("case_profile") for report in reports}
@@ -741,30 +866,47 @@ def _measured_evidence_projection(
         raise ReceiptError(
             "Release parity requires both example and independent holdout profiles."
         )
-    if lineage.get("status") != "passed" or not (
-        (lineage.get("comparison") or {}).get("semantic_match")
+    comparison = _require_object(lineage.get("comparison"), field="lineage comparison")
+    if (
+        lineage.get("status") != "passed"
+        or comparison.get("semantic_match") is not True
     ):
         raise ReceiptError("Checkpoint lineage report must be a semantic pass.")
 
-    source = lineage["source"]
-    published = lineage["published_artifact"]
+    source = _require_object(lineage.get("source"), field="lineage source")
+    published = _require_object(
+        lineage.get("published_artifact"),
+        field="lineage published_artifact",
+    )
     official_code_revisions = {
-        report["official_code"]["revision"] for report in reports
+        _require_string(
+            _require_object(
+                report.get("official_code"),
+                field="parity report official_code",
+            ).get("revision"),
+            field="parity report official_code revision",
+        )
+        for report in reports
     }
     if len(official_code_revisions) != 1:
         raise ReceiptError("Parity reports disagree on official code revision.")
+    threshold_objects = [
+        _require_object(report.get("thresholds"), field="parity report thresholds")
+        for report in reports
+    ]
     threshold_contracts = {
-        json.dumps(report["thresholds"], sort_keys=True) for report in reports
+        json.dumps(threshold_object, sort_keys=True)
+        for threshold_object in threshold_objects
     }
     if len(threshold_contracts) != 1:
         raise ReceiptError("Parity reports disagree on threshold contract.")
-    thresholds = reports[0]["thresholds"]
+    thresholds_object = threshold_objects[0]
     required_thresholds = set(RELEASE_THRESHOLDS)
-    if set(thresholds) != required_thresholds:
+    if set(thresholds_object) != required_thresholds:
         raise ReceiptError("Parity reports contain an invalid threshold contract.")
-    thresholds = {
+    thresholds: ThresholdContract = {
         field: _require_finite_number(
-            thresholds[field],
+            thresholds_object.get(field),
             field=f"Parity threshold {field}",
         )
         for field in sorted(required_thresholds)
@@ -773,53 +915,104 @@ def _measured_evidence_projection(
         raise ReceiptError("Parity reports do not use the fixed release thresholds.")
 
     for report in reports:
-        if report["official_checkpoint"]["revision"] != source["revision"]:
+        official_checkpoint = _require_object(
+            report.get("official_checkpoint"),
+            field="parity report official_checkpoint",
+        )
+        converted_checkpoint = _require_object(
+            report.get("converted_checkpoint"),
+            field="parity report converted_checkpoint",
+        )
+        case_entries = _require_list(report.get("cases"), field="parity report cases")
+        if official_checkpoint.get("revision") != source.get("revision"):
             raise ReceiptError("Parity and lineage official revisions disagree.")
-        if report["official_checkpoint"]["sha256"] != source["checkpoint_sha256"]:
+        if official_checkpoint.get("sha256") != source.get("checkpoint_sha256"):
             raise ReceiptError(
                 "Parity and lineage official checkpoint hashes disagree."
             )
-        if (
-            report["converted_checkpoint"]["revision"] != published["revision"]
-            or report["converted_checkpoint"]["sha256"]
-            != published["checkpoint_sha256"]
-        ):
+        if converted_checkpoint.get("revision") != published.get(
+            "revision"
+        ) or converted_checkpoint.get("sha256") != published.get("checkpoint_sha256"):
             raise ReceiptError("Parity and lineage converted artifacts disagree.")
-        cases = report.get("cases")
-        if not isinstance(cases, list) or not cases:
+        if not case_entries:
             raise ReceiptError("Every parity report must contain parity cases.")
-        if {case.get("resolution") for case in cases} != {1008, 672, 504}:
+        case_objects = [
+            _require_object(case, field="parity report case") for case in case_entries
+        ]
+        if {case.get("resolution") for case in case_objects} != {1008, 672, 504}:
             raise ReceiptError(
                 "Every parity profile must cover 1008, 672, and 504 resolutions."
             )
-        for case in cases:
+        for case in case_objects:
             _validate_parity_case(case, thresholds=thresholds)
         _validate_performance(
-            report.get("performance") or {},
-            profile=report["case_profile"],
+            _require_object(
+                report.get("performance"), field="parity report performance"
+            ),
+            profile=_require_string(
+                report.get("case_profile"),
+                field="parity report case_profile",
+            ),
         )
 
-    cases = []
+    cases: list[JsonObject] = []
     for report, path in zip(reports, parity_report_paths, strict=True):
-        for case in report["cases"]:
+        report_cases = _require_list(report.get("cases"), field="parity report cases")
+        case_profile = _require_string(
+            report.get("case_profile"), field="parity report case_profile"
+        )
+        image = _require_object(report.get("image"), field="parity report image")
+        for raw_case in report_cases:
+            case = _require_object(raw_case, field="parity report case")
             cases.append(
                 {
                     **case,
-                    "profile": report["case_profile"],
-                    "image_sha256": report["image"]["sha256"],
+                    "profile": case_profile,
+                    "image_sha256": _require_string(
+                        image.get("sha256"),
+                        field="parity report image sha256",
+                    ),
                     "report": _repo_relative(path, root=evidence_root),
                 }
             )
-    performance_runs = [
-        {
-            "profile": report["case_profile"],
-            "image_sha256": report["image"]["sha256"],
-            **report["performance"],
-        }
-        for report in reports
-    ]
+    performance_runs: list[JsonObject] = []
+    for report in reports:
+        performance = _require_object(
+            report.get("performance"), field="parity report performance"
+        )
+        image = _require_object(report.get("image"), field="parity report image")
+        performance_runs.append(
+            {
+                "profile": _require_string(
+                    report.get("case_profile"),
+                    field="parity report case_profile",
+                ),
+                "image_sha256": _require_string(
+                    image.get("sha256"),
+                    field="parity report image sha256",
+                ),
+                **performance,
+            }
+        )
 
-    measurement_boundaries = {run["measurement_boundary"] for run in performance_runs}
+    measurement_boundaries = {
+        _require_string(
+            run.get("measurement_boundary"),
+            field="parity performance measurement_boundary",
+        )
+        for run in performance_runs
+    }
+    lineage_reproduction = _require_object(
+        lineage.get("reproduction"),
+        field="lineage reproduction",
+    )
+    peak_memory_values = [
+        _require_nonnegative_int(
+            run.get("peak_active_memory_bytes"),
+            field="parity performance peak_active_memory_bytes",
+        )
+        for run in performance_runs
+    ]
     if len(measurement_boundaries) != 1:
         raise ReceiptError("Parity reports disagree on the performance boundary.")
     return {
@@ -831,7 +1024,10 @@ def _measured_evidence_projection(
             "converted_repo": published["repo"],
             "artifact_revision": published["revision"],
             "converted_sha256": published["checkpoint_sha256"],
-            "conversion_manifest_sha256": lineage["reproduction"]["manifest_sha256"],
+            "conversion_manifest_sha256": _require_string(
+                lineage_reproduction.get("manifest_sha256"),
+                field="lineage reproduction manifest_sha256",
+            ),
             "lineage_report": _repo_relative(
                 lineage_report_path,
                 root=evidence_root,
@@ -857,20 +1053,18 @@ def _measured_evidence_projection(
         "performance": {
             "status": "passed",
             "runs": performance_runs,
-            "peak_active_memory_bytes": max(
-                run["peak_active_memory_bytes"] for run in performance_runs
-            ),
+            "peak_active_memory_bytes": max(peak_memory_values),
             "measurement_boundary": measurement_boundaries.pop(),
         },
     }
 
 
 def promote_measured_receipt(
-    receipt: dict[str, Any],
+    receipt: JsonObject,
     *,
     parity_report_paths: list[Path],
     lineage_report_path: Path,
-) -> dict[str, Any]:
+) -> JsonObject:
     """Promote a passing test receipt using validated measured evidence."""
 
     projection = _measured_evidence_projection(
@@ -878,7 +1072,8 @@ def promote_measured_receipt(
         lineage_report_path=lineage_report_path,
         evidence_root=REPO_ROOT,
     )
-    receipt["status"] = "passed" if receipt["tests"]["passed"] else "failed"
+    tests = _require_object(receipt.get("tests"), field="Receipt tests")
+    receipt["status"] = "passed" if tests.get("passed") is True else "failed"
     receipt.update(projection)
     return receipt
 
@@ -976,7 +1171,10 @@ def main() -> None:
         print(json.dumps({"wrote": str(args.receipt), "status": receipt["status"]}))
         validate_receipt(
             receipt,
-            expected_commit=receipt["git_commit"],
+            expected_commit=_require_string(
+                receipt.get("git_commit"),
+                field="Receipt git_commit",
+            ),
             require_passed=bool(args.parity_report),
             evidence_root=REPO_ROOT,
         )
@@ -990,7 +1188,7 @@ def main() -> None:
             f"Receipt not found: {args.receipt}. Generate one with --generate "
             "on a capable host, or pass --receipt."
         )
-    receipt = json.loads(args.receipt.read_text())
+    receipt = _load_json_object(args.receipt, label="runtime release receipt")
     if not args.allow_not_passed and not _git_is_clean():
         raise SystemExit(
             "Release receipt validation requires a clean Git worktree. Commit "
@@ -1014,7 +1212,10 @@ def main() -> None:
             {
                 "receipt": str(args.receipt),
                 "status": receipt.get("status"),
-                "parity_status": (receipt.get("parity") or {}).get("status"),
+                "parity_status": _require_object(
+                    receipt.get("parity"),
+                    field="Receipt parity",
+                ).get("status"),
                 "git_commit": receipt.get("git_commit"),
             },
             indent=2,

@@ -10,7 +10,7 @@ import math
 from pathlib import Path
 import re
 import sys
-from typing import Any
+from typing import TypedDict
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -32,6 +32,7 @@ from sam3_mlx.release_contract import (  # noqa: E402
     ORACLE_CPU_ADAPTERS,
     ORACLE_PRECISION,
     PACKAGE_VERSION,
+    JsonObject,
     RELEASE_CONFIDENCE_THRESHOLD,
     RELEASE_IMAGES,
     RELEASE_RESOLUTIONS,
@@ -39,6 +40,11 @@ from sam3_mlx.release_contract import (  # noqa: E402
     REPORT_SCHEMA_VERSION,
     build_oracle_bindings,
     canonical_json_sha256,
+    require_json_finite_number,
+    require_json_list,
+    require_json_nonnegative_int,
+    require_json_object,
+    require_json_string,
     sha256_path,
     validate_exact_mapping,
 )
@@ -54,17 +60,50 @@ class EvidenceAuditError(ValueError):
     """Raised when checked-in evidence does not satisfy the frozen contract."""
 
 
-def _load_json(path: Path, *, label: str) -> dict[str, Any]:
+class CaseSpec(TypedDict):
+    name: str
+    resolution: object
+    prompt: object
+    geometric_prompts: object
+
+
+def _require_object(value: object, *, field: str) -> JsonObject:
+    return require_json_object(value, field=field, error_type=EvidenceAuditError)
+
+
+def _require_list(value: object, *, field: str) -> list[object]:
+    return require_json_list(value, field=field, error_type=EvidenceAuditError)
+
+
+def _require_string(value: object, *, field: str) -> str:
+    return require_json_string(value, field=field, error_type=EvidenceAuditError)
+
+
+def _require_nonnegative_int(value: object, *, field: str) -> int:
+    return require_json_nonnegative_int(
+        value,
+        field=field,
+        error_type=EvidenceAuditError,
+    )
+
+
+def _require_finite_number(value: object, *, field: str) -> float:
+    return require_json_finite_number(
+        value,
+        field=field,
+        error_type=EvidenceAuditError,
+    )
+
+
+def _load_json(path: Path, *, label: str) -> JsonObject:
     try:
         value = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
         raise EvidenceAuditError(f"Could not read {label} {path}: {exc}") from exc
-    if not isinstance(value, dict):
-        raise EvidenceAuditError(f"{label} must be a JSON object: {path}.")
-    return value
+    return _require_object(value, field=label)
 
 
-def _repo_file(value: Any, *, label: str) -> Path:
+def _repo_file(value: object, *, label: str) -> Path:
     if not isinstance(value, str) or not value:
         raise EvidenceAuditError(f"{label} path must be a non-empty string.")
     path = Path(value)
@@ -88,13 +127,13 @@ def _repo_relative(path: Path) -> str:
     return str(path.resolve().relative_to(REPO_ROOT.resolve()))
 
 
-def _require_sha256(value: Any, *, label: str) -> str:
+def _require_sha256(value: object, *, label: str) -> str:
     if not isinstance(value, str) or not _SHA256_PATTERN.fullmatch(value):
         raise EvidenceAuditError(f"{label} must be a lowercase SHA-256 digest.")
     return value
 
 
-def _require_exact(observed: Any, expected: Any, *, label: str) -> None:
+def _require_exact(observed: object, expected: object, *, label: str) -> None:
     if observed != expected:
         raise EvidenceAuditError(
             f"{label} does not match the release contract: "
@@ -102,18 +141,21 @@ def _require_exact(observed: Any, expected: Any, *, label: str) -> None:
         )
 
 
-def _case_specs(cases: Any, *, profile: str) -> list[dict[str, Any]]:
-    if not isinstance(cases, list):
-        raise EvidenceAuditError(f"{profile} report cases must be a list.")
-    names = tuple(case.get("name") for case in cases if isinstance(case, dict))
+def _case_specs(cases: object, *, profile: str) -> list[CaseSpec]:
+    case_list = _require_list(cases, field=f"{profile} report cases")
+    case_objects = [
+        _require_object(case, field=f"{profile} report case") for case in case_list
+    ]
+    names = tuple(
+        _require_string(case.get("name"), field=f"{profile} case name")
+        for case in case_objects
+    )
     _require_exact(names, EXPECTED_CASE_NAMES[profile], label=f"{profile} case order")
-    specs = []
-    for case in cases:
-        if not isinstance(case, dict):
-            raise EvidenceAuditError(f"{profile} report contains a non-object case.")
+    specs: list[CaseSpec] = []
+    for case in case_objects:
         specs.append(
             {
-                "name": case.get("name"),
+                "name": _require_string(case.get("name"), field=f"{profile} case name"),
                 "resolution": case.get("resolution"),
                 "prompt": case.get("prompt"),
                 "geometric_prompts": case.get("geometric_prompts"),
@@ -122,26 +164,28 @@ def _case_specs(cases: Any, *, profile: str) -> list[dict[str, Any]]:
     return specs
 
 
-def _case_spec_sha256(specs: list[dict[str, Any]]) -> str:
+def _case_spec_sha256(specs: list[CaseSpec]) -> str:
     payload = (json.dumps(specs, indent=2) + "\n").encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
 
-def _validate_case_semantics(cases: list[dict[str, Any]], *, profile: str) -> None:
-    by_name = {case["name"]: case for case in cases}
+def _validate_case_semantics(cases: list[JsonObject], *, profile: str) -> None:
+    by_name = {
+        _require_string(case.get("name"), field=f"{profile} case name"): case
+        for case in cases
+    }
     for case in cases:
-        _require_exact(
-            case.get("status"), "passed", label=f"case {case['name']} status"
-        )
+        case_name = _require_string(case.get("name"), field=f"{profile} case name")
+        _require_exact(case.get("status"), "passed", label=f"case {case_name} status")
         _require_exact(
             case.get("detection_count_match"),
             True,
-            label=f"case {case['name']} count parity",
+            label=f"case {case_name} count parity",
         )
         _require_exact(
             case.get("official_detection_count"),
             case.get("mlx_detection_count"),
-            label=f"case {case['name']} detection counts",
+            label=f"case {case_name} detection counts",
         )
 
     nonsense = by_name["text_nonsense_1008"]
@@ -153,50 +197,69 @@ def _validate_case_semantics(cases: list[dict[str, Any]], *, profile: str) -> No
     _require_exact(nonsense.get("matches"), [], label=f"{profile} negative matches")
 
     if profile == "example":
+        positive_prompts = _require_list(
+            by_name["positive_box_1008"].get("geometric_prompts"),
+            field="positive_box_1008 geometric_prompts",
+        )
         _require_exact(
-            by_name["positive_box_1008"]["geometric_prompts"][0]["label"],
+            _require_object(positive_prompts[0], field="positive_box_1008 prompt").get(
+                "label"
+            ),
             True,
             label="positive box label",
         )
+        mixed_prompts = _require_list(
+            by_name["positive_negative_box_1008"].get("geometric_prompts"),
+            field="positive_negative_box_1008 geometric_prompts",
+        )
         labels = [
-            prompt["label"]
-            for prompt in by_name["positive_negative_box_1008"]["geometric_prompts"]
+            _require_object(prompt, field="positive_negative_box_1008 prompt").get(
+                "label"
+            )
+            for prompt in mixed_prompts
         ]
         _require_exact(labels, [True, False], label="positive/negative box labels")
     for case in cases:
-        if case["name"].startswith("text_"):
+        case_name = _require_string(case.get("name"), field=f"{profile} case name")
+        if case_name.startswith("text_"):
             if not isinstance(case.get("prompt"), str) or not case["prompt"]:
-                raise EvidenceAuditError(f"Text case {case['name']} has no prompt.")
+                raise EvidenceAuditError(f"Text case {case_name} has no prompt.")
             _require_exact(
                 case.get("geometric_prompts"),
                 [],
-                label=f"text case {case['name']} geometric prompts",
+                label=f"text case {case_name} geometric prompts",
             )
 
 
 def _validate_oracle(
-    oracle: Any,
+    oracle: object,
     *,
-    report: dict[str, Any],
-    specs: list[dict[str, Any]],
+    report: JsonObject,
+    specs: list[CaseSpec],
 ) -> None:
-    if not isinstance(oracle, dict):
-        raise EvidenceAuditError("Report oracle metadata must be an object.")
+    oracle_object = _require_object(oracle, field="report oracle")
+    report_image = _require_object(report.get("image"), field="report image")
     expected_bindings = build_oracle_bindings(
-        image_sha256=report["image"]["sha256"],
+        image_sha256=_require_string(
+            report_image.get("sha256"), field="report image sha256"
+        ),
         case_spec_sha256=_case_spec_sha256(specs),
-        confidence_threshold=report["confidence_threshold"],
+        confidence_threshold=_require_finite_number(
+            report.get("confidence_threshold"),
+            field="report confidence_threshold",
+        ),
         oracle_runner_sha256=sha256_path(HARDENED_ORACLE),
     )
-    bindings = oracle.get("bindings")
-    if not isinstance(bindings, dict):
-        raise EvidenceAuditError("Oracle metadata is missing complete bindings.")
+    bindings = _require_object(
+        oracle_object.get("bindings"),
+        field="oracle bindings",
+    )
     try:
         validate_exact_mapping(bindings, expected_bindings, label="oracle bindings")
     except ValueError as exc:
         raise EvidenceAuditError(str(exc)) from exc
     _require_exact(
-        oracle.get("cache_key"),
+        oracle_object.get("cache_key"),
         canonical_json_sha256(expected_bindings),
         label="oracle cache key",
     )
@@ -212,27 +275,36 @@ def _validate_oracle(
         "release_contract_sha256": expected_bindings["release_contract_sha256"],
     }
     for field, expected in duplicate_fields.items():
-        _require_exact(oracle.get(field), expected, label=f"oracle {field}")
+        _require_exact(oracle_object.get(field), expected, label=f"oracle {field}")
 
-    oracle_cases = oracle.get("cases")
-    if not isinstance(oracle_cases, list) or len(oracle_cases) != len(specs):
+    oracle_cases = _require_list(oracle_object.get("cases"), field="oracle cases")
+    if len(oracle_cases) != len(specs):
         raise EvidenceAuditError("Oracle case metadata count is invalid.")
+    report_cases = [
+        _require_object(case, field="report case")
+        for case in _require_list(report.get("cases"), field="report cases")
+    ]
     for oracle_case, spec, report_case in zip(
-        oracle_cases, specs, report["cases"], strict=True
+        oracle_cases, specs, report_cases, strict=True
     ):
-        _require_exact(oracle_case.get("name"), spec["name"], label="oracle case name")
+        oracle_case_object = _require_object(oracle_case, field="oracle case")
         _require_exact(
-            oracle_case.get("resolution"),
+            oracle_case_object.get("name"),
+            spec["name"],
+            label="oracle case name",
+        )
+        _require_exact(
+            oracle_case_object.get("resolution"),
             spec["resolution"],
             label=f"oracle {spec['name']} resolution",
         )
         _require_exact(
-            oracle_case.get("detection_count"),
-            report_case["official_detection_count"],
+            oracle_case_object.get("detection_count"),
+            report_case.get("official_detection_count"),
             label=f"oracle {spec['name']} detection count",
         )
         for timing_field in ("image_latency_s", "prompt_latency_s"):
-            timing = oracle_case.get(timing_field)
+            timing = oracle_case_object.get(timing_field)
             if (
                 isinstance(timing, bool)
                 or not isinstance(timing, (int, float))
@@ -242,9 +314,10 @@ def _validate_oracle(
                 raise EvidenceAuditError(
                     f"Oracle {spec['name']} {timing_field} is invalid."
                 )
-    environment = oracle.get("environment")
-    if not isinstance(environment, dict):
-        raise EvidenceAuditError("Oracle environment metadata is missing.")
+    environment = _require_object(
+        oracle_object.get("environment"),
+        field="oracle environment",
+    )
     _require_exact(environment.get("machine"), "arm64", label="oracle machine")
 
 
@@ -252,7 +325,7 @@ def _validate_report(
     report_path: Path,
     *,
     expected_profile: str,
-) -> dict[str, Any]:
+) -> JsonObject:
     report = _load_json(report_path, label=f"{expected_profile} parity report")
     _require_exact(
         report.get("schema_version"),
@@ -309,13 +382,19 @@ def _validate_report(
         label=f"{expected_profile} thresholds",
     )
 
-    cases = report.get("cases")
-    specs = _case_specs(cases, profile=expected_profile)
-    _validate_case_semantics(cases, profile=expected_profile)
+    cases = _require_list(report.get("cases"), field=f"{expected_profile} report cases")
+    case_objects = [
+        _require_object(case, field=f"{expected_profile} report case") for case in cases
+    ]
+    specs = _case_specs(case_objects, profile=expected_profile)
+    _validate_case_semantics(case_objects, profile=expected_profile)
     _validate_oracle(report.get("oracle"), report=report, specs=specs)
 
-    raw_evidence = report.get("raw_evidence")
-    if not isinstance(raw_evidence, dict) or set(raw_evidence) != {"path", "sha256"}:
+    raw_evidence = _require_object(
+        report.get("raw_evidence"),
+        field=f"{expected_profile} raw evidence",
+    )
+    if set(raw_evidence) != {"path", "sha256"}:
         raise EvidenceAuditError(
             f"{expected_profile} report must reference one raw evidence bundle."
         )
@@ -340,12 +419,15 @@ def _validate_report(
     expected_metadata = {
         "profile": expected_profile,
         "report_path": _repo_relative(report_path),
-        "image": report["image"],
+        "image": report.get("image"),
         "case_specs": specs,
-        "oracle_cache_key": report["oracle"]["cache_key"],
-        "official_code": report["official_code"],
-        "official_checkpoint": report["official_checkpoint"],
-        "converted_checkpoint": report["converted_checkpoint"],
+        "oracle_cache_key": _require_object(
+            report.get("oracle"),
+            field=f"{expected_profile} report oracle",
+        ).get("cache_key"),
+        "official_code": report.get("official_code"),
+        "official_checkpoint": report.get("official_checkpoint"),
+        "converted_checkpoint": report.get("converted_checkpoint"),
         "confidence_threshold": RELEASE_CONFIDENCE_THRESHOLD,
         "thresholds": RELEASE_THRESHOLDS,
     }
@@ -376,18 +458,22 @@ def _validate_report(
     ]
     _require_exact(
         replayed_cases,
-        cases,
+        case_objects,
         label=f"{expected_profile} replayed parity cases",
     )
 
-    host = report.get("host")
-    if not isinstance(host, dict):
-        raise EvidenceAuditError(f"{expected_profile} host metadata is missing.")
+    host = _require_object(report.get("host"), field=f"{expected_profile} host")
     _require_exact(host.get("machine"), "arm64", label=f"{expected_profile} host")
-    performance = report.get("performance")
-    if not isinstance(performance, dict) or performance.get("status") != "passed":
+    performance = _require_object(
+        report.get("performance"),
+        field=f"{expected_profile} performance",
+    )
+    if performance.get("status") != "passed":
         raise EvidenceAuditError(f"{expected_profile} performance did not pass.")
-    resolutions = performance.get("latency_by_resolution_s")
+    resolutions = _require_object(
+        performance.get("latency_by_resolution_s"),
+        field=f"{expected_profile} latency_by_resolution_s",
+    )
     _require_exact(
         set(resolutions or {}),
         {str(value) for value in RELEASE_RESOLUTIONS},
@@ -396,10 +482,8 @@ def _validate_report(
     return report
 
 
-def _validate_lineage(receipt: dict[str, Any]) -> dict[str, Any]:
-    checkpoint = receipt.get("checkpoint")
-    if not isinstance(checkpoint, dict):
-        raise EvidenceAuditError("Receipt checkpoint section is missing.")
+def _validate_lineage(receipt: JsonObject) -> JsonObject:
+    checkpoint = _require_object(receipt.get("checkpoint"), field="receipt checkpoint")
     lineage_path = _repo_file(
         checkpoint.get("lineage_report"), label="checkpoint lineage report"
     )
@@ -441,17 +525,16 @@ def _validate_lineage(receipt: dict[str, Any]) -> dict[str, Any]:
         label="lineage published artifact",
     )
 
-    reproduction = lineage.get("reproduction")
-    if not isinstance(reproduction, dict):
-        raise EvidenceAuditError("Lineage reproduction section is missing.")
+    reproduction = _require_object(
+        lineage.get("reproduction"),
+        field="lineage reproduction",
+    )
     _require_exact(
         reproduction.get("converter_version"),
         PACKAGE_VERSION,
         label="lineage converter version",
     )
-    manifest = reproduction.get("manifest")
-    if not isinstance(manifest, dict):
-        raise EvidenceAuditError("Lineage must embed the reproduction manifest.")
+    manifest = _require_object(reproduction.get("manifest"), field="lineage manifest")
     manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode(
         "utf-8"
     )
@@ -466,7 +549,7 @@ def _validate_lineage(receipt: dict[str, Any]) -> dict[str, Any]:
         manifest_digest,
         label="receipt conversion manifest digest",
     )
-    required_manifest = {
+    required_manifest: dict[str, object] = {
         "architecture": "sam3-image",
         "source_repo": OFFICIAL_CHECKPOINT_REPO,
         "source_revision": OFFICIAL_CHECKPOINT_REVISION,
@@ -479,10 +562,11 @@ def _validate_lineage(receipt: dict[str, Any]) -> dict[str, Any]:
     for field, expected in required_manifest.items():
         _require_exact(manifest.get(field), expected, label=f"manifest {field}")
 
-    comparison = lineage.get("comparison")
-    if not isinstance(comparison, dict):
-        raise EvidenceAuditError("Lineage comparison section is missing.")
-    required_comparison = {
+    comparison = _require_object(
+        lineage.get("comparison"),
+        field="lineage comparison",
+    )
+    required_comparison: dict[str, object] = {
         "published_tensor_count": CHECKPOINT_TENSOR_COUNT,
         "reproduced_tensor_count": CHECKPOINT_TENSOR_COUNT,
         "exact_tensor_count": CHECKPOINT_TENSOR_COUNT,
@@ -499,7 +583,7 @@ def _validate_lineage(receipt: dict[str, Any]) -> dict[str, Any]:
     return lineage
 
 
-def audit_release_evidence(receipt_path: Path) -> dict[str, Any]:
+def audit_release_evidence(receipt_path: Path) -> JsonObject:
     receipt = _load_json(receipt_path, label="runtime release receipt")
     _require_exact(receipt.get("schema_version"), 1, label="receipt schema")
     _require_exact(receipt.get("status"), "passed", label="receipt status")
@@ -513,9 +597,7 @@ def audit_release_evidence(receipt_path: Path) -> dict[str, Any]:
     if not receipt.get("mlx_version"):
         raise EvidenceAuditError("Receipt must record the MLX version.")
 
-    checkpoint = receipt.get("checkpoint")
-    if not isinstance(checkpoint, dict):
-        raise EvidenceAuditError("Receipt checkpoint section is missing.")
+    checkpoint = _require_object(receipt.get("checkpoint"), field="receipt checkpoint")
     expected_checkpoint = {
         "architecture": "sam3-image",
         "artifact_revision": MLX_CHECKPOINT_REVISION,
@@ -531,10 +613,8 @@ def audit_release_evidence(receipt_path: Path) -> dict[str, Any]:
             checkpoint.get(field), expected, label=f"receipt checkpoint {field}"
         )
 
-    tests = receipt.get("tests")
-    if not isinstance(tests, dict):
-        raise EvidenceAuditError("Receipt tests section is missing.")
-    required_test_values = {
+    tests = _require_object(receipt.get("tests"), field="receipt tests")
+    required_test_values: dict[str, object] = {
         "exit_code": 0,
         "passed": True,
         "failed": False,
@@ -544,15 +624,17 @@ def audit_release_evidence(receipt_path: Path) -> dict[str, Any]:
     }
     for field, expected in required_test_values.items():
         _require_exact(tests.get(field), expected, label=f"receipt tests {field}")
-    counts = tests.get("counts")
-    if not isinstance(counts, dict) or counts.get("call_failed") != 0:
+    counts = _require_object(tests.get("counts"), field="receipt tests counts")
+    if counts.get("call_failed") != 0:
         raise EvidenceAuditError("Receipt test outcome counts are invalid.")
-    if not isinstance(counts.get("call_passed"), int) or counts["call_passed"] < 1:
+    call_passed = _require_nonnegative_int(
+        counts.get("call_passed"),
+        field="receipt tests counts call_passed",
+    )
+    if call_passed < 1:
         raise EvidenceAuditError("Receipt must record at least one passing test.")
 
-    parity = receipt.get("parity")
-    if not isinstance(parity, dict):
-        raise EvidenceAuditError("Receipt parity section is missing.")
+    parity = _require_object(receipt.get("parity"), field="receipt parity")
     _require_exact(parity.get("status"), "passed", label="receipt parity status")
     _require_exact(parity.get("mode"), "official-torch-vs-mlx", label="parity mode")
     _require_exact(
@@ -565,18 +647,19 @@ def audit_release_evidence(receipt_path: Path) -> dict[str, Any]:
         parity.get("validation_profile"), "holdout", label="validation profile"
     )
 
-    report_refs = parity.get("reports")
-    if not isinstance(report_refs, list) or len(report_refs) != 2:
+    report_refs = _require_list(parity.get("reports"), field="receipt parity reports")
+    if len(report_refs) != 2:
         raise EvidenceAuditError("Receipt must reference exactly two parity reports.")
-    reports: dict[str, dict[str, Any]] = {}
+    reports: dict[str, JsonObject] = {}
     report_paths: dict[str, Path] = {}
-    for reference in report_refs:
-        if not isinstance(reference, dict) or set(reference) != {"path", "sha256"}:
+    for raw_reference in report_refs:
+        reference = _require_object(raw_reference, field="parity report reference")
+        if set(reference) != {"path", "sha256"}:
             raise EvidenceAuditError(
                 "Parity report references must contain path and sha256."
             )
-        path = _repo_file(reference["path"], label="parity report")
-        digest = _require_sha256(reference["sha256"], label="parity report digest")
+        path = _repo_file(reference.get("path"), label="parity report")
+        digest = _require_sha256(reference.get("sha256"), label="parity report digest")
         _require_exact(sha256_path(path), digest, label=f"parity report {path} digest")
         candidate = _load_json(path, label="parity report")
         profile = candidate.get("case_profile")
@@ -584,21 +667,32 @@ def audit_release_evidence(receipt_path: Path) -> dict[str, Any]:
             raise EvidenceAuditError(
                 f"Invalid or duplicate parity profile: {profile!r}."
             )
-        reports[profile] = _validate_report(path, expected_profile=profile)
-        report_paths[profile] = path
+        profile_name = _require_string(profile, field="parity report case_profile")
+        reports[profile_name] = _validate_report(path, expected_profile=profile_name)
+        report_paths[profile_name] = path
     _require_exact(
         set(reports), set(EXPECTED_CASE_NAMES), label="parity report profiles"
     )
 
-    projected_cases = []
+    projected_cases: list[JsonObject] = []
     for profile in ("example", "holdout"):
         report = reports[profile]
-        for case in report["cases"]:
+        report_cases = _require_list(
+            report.get("cases"), field=f"{profile} report cases"
+        )
+        report_image = _require_object(
+            report.get("image"), field=f"{profile} report image"
+        )
+        for raw_case in report_cases:
+            case = _require_object(raw_case, field=f"{profile} report case")
             projected_cases.append(
                 {
                     **case,
                     "profile": profile,
-                    "image_sha256": report["image"]["sha256"],
+                    "image_sha256": _require_string(
+                        report_image.get("sha256"),
+                        field=f"{profile} image sha256",
+                    ),
                     "report": _repo_relative(report_paths[profile]),
                 }
             )
@@ -609,22 +703,40 @@ def audit_release_evidence(receipt_path: Path) -> dict[str, Any]:
     performance_runs = [
         {
             "profile": profile,
-            "image_sha256": reports[profile]["image"]["sha256"],
-            **reports[profile]["performance"],
+            "image_sha256": _require_string(
+                _require_object(
+                    reports[profile].get("image"),
+                    field=f"{profile} report image",
+                ).get("sha256"),
+                field=f"{profile} image sha256",
+            ),
+            **_require_object(
+                reports[profile].get("performance"),
+                field=f"{profile} report performance",
+            ),
         }
         for profile in ("example", "holdout")
     ]
     measurement_boundaries = {
-        run.get("measurement_boundary") for run in performance_runs
+        _require_string(
+            run.get("measurement_boundary"),
+            field="performance measurement_boundary",
+        )
+        for run in performance_runs
     }
     if len(measurement_boundaries) != 1:
         raise EvidenceAuditError("Parity reports disagree on performance boundary.")
-    expected_performance = {
+    peak_memory_values = [
+        _require_nonnegative_int(
+            run.get("peak_active_memory_bytes"),
+            field="performance peak_active_memory_bytes",
+        )
+        for run in performance_runs
+    ]
+    expected_performance: JsonObject = {
         "status": "passed",
         "runs": performance_runs,
-        "peak_active_memory_bytes": max(
-            run["peak_active_memory_bytes"] for run in performance_runs
-        ),
+        "peak_active_memory_bytes": max(peak_memory_values),
         "measurement_boundary": measurement_boundaries.pop(),
     }
     _require_exact(
@@ -638,12 +750,27 @@ def audit_release_evidence(receipt_path: Path) -> dict[str, Any]:
         "status": "passed",
         "receipt": _repo_relative(receipt_path),
         "git_commit": git_commit,
-        "test_count": counts["call_passed"],
+        "test_count": call_passed,
         "profiles": sorted(reports),
-        "case_count": sum(len(report["cases"]) for report in reports.values()),
-        "lineage_tensor_count": lineage["comparison"]["exact_tensor_count"],
+        "case_count": sum(
+            len(_require_list(report.get("cases"), field="report cases"))
+            for report in reports.values()
+        ),
+        "lineage_tensor_count": _require_nonnegative_int(
+            _require_object(
+                lineage.get("comparison"),
+                field="lineage comparison",
+            ).get("exact_tensor_count"),
+            field="lineage exact_tensor_count",
+        ),
         "raw_evidence": {
-            profile: reports[profile]["raw_evidence"]["sha256"]
+            profile: _require_string(
+                _require_object(
+                    reports[profile].get("raw_evidence"),
+                    field=f"{profile} raw evidence",
+                ).get("sha256"),
+                field=f"{profile} raw evidence sha256",
+            )
             for profile in sorted(reports)
         },
     }
