@@ -1,7 +1,19 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
 from importlib.metadata import PackageNotFoundError, version as _package_version
+from typing import TYPE_CHECKING
 import warnings
+
+if TYPE_CHECKING:
+    from sam3_mlx._unsupported import Sam3MlxUnsupportedError
+    from sam3_mlx.model_builder import (
+        build_sam3_image_model,
+        build_sam3_predictor,
+        build_sam3_video_model,
+        build_sam3_video_predictor,
+        build_tracker,
+        download_ckpt_from_hf,
+    )
 
 try:
     __version__ = _package_version("sam3_mlx")
@@ -27,7 +39,7 @@ _EXPERIMENTAL_EXPORTS = {
 }
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> object:
     if name == "Sam3MlxUnsupportedError":
         from sam3_mlx._unsupported import Sam3MlxUnsupportedError
 

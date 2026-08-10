@@ -17,7 +17,7 @@ Tracker port status:
 from __future__ import annotations
 
 from collections import OrderedDict
-from typing import Any
+from typing import Any, cast
 
 import mlx.core as mx
 import numpy as np
@@ -28,6 +28,7 @@ from sam3_mlx.model.data_misc import interpolate
 from sam3_mlx.model.io_utils import load_resource_as_video_frames
 from sam3_mlx.model.sam3_tracker_base import (
     NO_OBJ_SCORE,
+    PointInputs,
     Sam3TrackerBase,
     concat_points,
 )
@@ -443,7 +444,10 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         if clear_old_points:
             point_inputs = None
         else:
-            point_inputs = point_inputs_per_frame.get(frame_idx)
+            point_inputs = cast(
+                PointInputs | None,
+                point_inputs_per_frame.get(frame_idx),
+            )
         point_inputs = concat_points(point_inputs, points, labels)
 
         point_inputs_per_frame[frame_idx] = point_inputs
@@ -1214,6 +1218,10 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
             "object_score_logits": current_out["object_score_logits"],
         }
         if self.use_memory_selection:
+            if "iou_score" not in current_out or "eff_iou_score" not in current_out:
+                raise RuntimeError(
+                    "Memory-selection tracking output is missing its score fields."
+                )
             compact_current_out["iou_score"] = current_out["iou_score"]
             compact_current_out["eff_iou_score"] = current_out["eff_iou_score"]
         _eval_tree(compact_current_out, pred_masks)

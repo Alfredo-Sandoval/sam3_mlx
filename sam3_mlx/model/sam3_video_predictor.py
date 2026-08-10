@@ -1,12 +1,72 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Protocol, TypeAlias, cast
+
+from PIL import Image
 
 from sam3_mlx._unsupported import raise_unsupported
 from sam3_mlx.convert import MLX_COMMUNITY_REPO
 from sam3_mlx.model.lifecycle_predictor import LifecycleSafeSam3BasePredictor
+
+if TYPE_CHECKING:
+    from sam3_mlx.model_builder import ComputeDevice, PathLikeStr
+    from sam3_mlx.model.sam3_video_inference import (
+        Sam3VideoInferenceWithInstanceInteractivity,
+    )
+
+
+VideoResourcePath: TypeAlias = str | Path | Sequence[Image.Image]
+
+
+class _VideoRuntimeOptionsValidator(Protocol):
+    def __call__(
+        self,
+        feature_prefix: str,
+        *,
+        compile: bool,
+        device: ComputeDevice,
+        has_presence_token: bool,
+        geo_encoder_use_img_cross_attn: bool,
+        strict_state_dict_loading: bool,
+        apply_temporal_disambiguation: bool,
+    ) -> None: ...
+
+
+class _Sam3VideoModelBuilder(Protocol):
+    def __call__(
+        self,
+        checkpoint_path: PathLikeStr | None = None,
+        load_from_HF: bool = True,
+        bpe_path: PathLikeStr | None = None,
+        has_presence_token: bool = True,
+        geo_encoder_use_img_cross_attn: bool = True,
+        strict_state_dict_loading: bool = True,
+        apply_temporal_disambiguation: bool = True,
+        device: ComputeDevice = "mlx",
+        compile: bool = False,
+        image_model: object | None = None,
+        image_size: int = 1008,
+        confidence_threshold: float = 0.5,
+        hf_repo: str = MLX_COMMUNITY_REPO,
+        local_weights_dir: str | None = None,
+        convert_from_pytorch: bool = False,
+        enable_segmentation: bool = True,
+        processor_factory: Callable[..., object] | None = None,
+        frame_feature_cache_size: int = 4,
+        conversion_source_revision: str | None = None,
+    ) -> Sam3VideoInferenceWithInstanceInteractivity: ...
+
+
+class _BaseStartSessionMethod(Protocol):
+    def __call__(
+        self,
+        resource_path: VideoResourcePath,
+        session_id: str | None = None,
+        offload_video_to_cpu: bool = False,
+        offload_state_to_cpu: bool = False,
+    ) -> dict[str, str]: ...
 
 
 class Sam3VideoPredictor(LifecycleSafeSam3BasePredictor):
@@ -18,29 +78,29 @@ class Sam3VideoPredictor(LifecycleSafeSam3BasePredictor):
 
     def __init__(
         self,
-        checkpoint_path=None,
-        bpe_path=None,
-        has_presence_token=True,
-        geo_encoder_use_img_cross_attn=True,
-        strict_state_dict_loading=True,
+        checkpoint_path: PathLikeStr | None = None,
+        bpe_path: PathLikeStr | None = None,
+        has_presence_token: bool = True,
+        geo_encoder_use_img_cross_attn: bool = True,
+        strict_state_dict_loading: bool = True,
         async_loading_frames: bool = False,
         video_loader_type: str = "cv2",
         apply_temporal_disambiguation: bool = True,
         compile: bool = False,
         *,
-        image_model=None,
-        video_model=None,
-        model=None,
+        image_model: object | None = None,
+        video_model: object | None = None,
+        model: object | None = None,
         resolution: int = 1008,
         confidence_threshold: float = 0.5,
-        device="mlx",
-        load_from_HF=True,
-        hf_repo=MLX_COMMUNITY_REPO,
-        local_weights_dir=None,
-        convert_from_pytorch=False,
-        conversion_source_revision=None,
-        enable_segmentation=True,
-        processor_factory: Callable[..., Any] | None = None,
+        device: ComputeDevice = "mlx",
+        load_from_HF: bool = True,
+        hf_repo: str = MLX_COMMUNITY_REPO,
+        local_weights_dir: str | None = None,
+        convert_from_pytorch: bool = False,
+        conversion_source_revision: str | None = None,
+        enable_segmentation: bool = True,
+        processor_factory: Callable[..., object] | None = None,
         frame_feature_cache_size: int = 4,
     ) -> None:
         super().__init__()
@@ -51,12 +111,18 @@ class Sam3VideoPredictor(LifecycleSafeSam3BasePredictor):
             if image_model is not None:
                 raise ValueError("Use only one of model= or image_model=.")
             image_model = model
-        from sam3_mlx.model_builder import (
-            _validate_sam3_video_runtime_options,
-            build_sam3_video_model,
+        import sam3_mlx.model_builder as model_builder
+
+        validate_runtime_options = cast(
+            _VideoRuntimeOptionsValidator,
+            getattr(model_builder, "_validate_sam3_video_runtime_options"),
+        )
+        build_sam3_video_model = cast(
+            _Sam3VideoModelBuilder,
+            model_builder.build_sam3_video_model,
         )
 
-        _validate_sam3_video_runtime_options(
+        validate_runtime_options(
             "sam3_mlx.model.sam3_video_predictor.Sam3VideoPredictor",
             compile=compile,
             device=device,
@@ -115,7 +181,7 @@ class Sam3VideoPredictor(LifecycleSafeSam3BasePredictor):
 
     def start_session(
         self,
-        resource_path,
+        resource_path: VideoResourcePath,
         session_id: str | None = None,
         offload_video_to_cpu: bool = False,
         offload_state_to_cpu: bool = False,
@@ -139,7 +205,11 @@ class Sam3VideoPredictor(LifecycleSafeSam3BasePredictor):
                 ),
                 alternative="Construct the predictor with async_loading_frames=False.",
             )
-        return super().start_session(
+        base_start_session = cast(
+            _BaseStartSessionMethod,
+            getattr(super(), "start_session"),
+        )
+        return base_start_session(
             resource_path=resource_path,
             session_id=session_id,
             offload_video_to_cpu=offload_video_to_cpu,
@@ -160,7 +230,12 @@ class Sam3VideoPredictor(LifecycleSafeSam3BasePredictor):
 class Sam3VideoPredictorMultiGPU(Sam3VideoPredictor):
     """Official SAM3 multi-GPU predictor name reserved as an unsupported shim."""
 
-    def __init__(self, *model_args, gpus_to_use=None, **model_kwargs) -> None:
+    def __init__(
+        self,
+        *model_args: object,
+        gpus_to_use: object | None = None,
+        **model_kwargs: object,
+    ) -> None:
         del model_args, gpus_to_use, model_kwargs
         raise_unsupported(
             "sam3_mlx.model.sam3_video_predictor.Sam3VideoPredictorMultiGPU",

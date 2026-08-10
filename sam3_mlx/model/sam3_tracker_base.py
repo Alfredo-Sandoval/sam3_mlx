@@ -16,18 +16,26 @@ Tracker port status:
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping, Sequence
+from typing import (
+    NoReturn,
+    NotRequired,
+    Protocol,
+    Required,
+    TypeAlias,
+    TypedDict,
+    TypeGuard,
+    cast,
+    overload,
+)
 
 import mlx.core as mx
-import mlx.nn as nn
+from mlx import nn
 import numpy as np
 
 from sam3_mlx._unsupported import raise_unsupported
-from sam3_mlx.model.data_misc import interpolate
-from sam3_mlx.model.sam3_tracker_utils import (
-    get_1d_sine_pe,
-    select_closest_cond_frames,
-)
+import sam3_mlx.model.data_misc as _data_misc
+import sam3_mlx.model.sam3_tracker_utils as _tracker_utils
 from sam3_mlx.sam.mask_decoder import MaskDecoder, MLP
 from sam3_mlx.sam.prompt_encoder import PromptEncoder
 from sam3_mlx.sam.transformer import TwoWayTransformer
@@ -36,12 +44,207 @@ from sam3_mlx.sam.transformer import TwoWayTransformer
 # a large negative value as a placeholder score for missing objects
 NO_OBJ_SCORE = -1024.0
 
+ArrayLike: TypeAlias = mx.array | np.ndarray
 
-def _is_mlx_array(value: Any) -> bool:
+
+class PointInputs(TypedDict):
+    point_coords: mx.array
+    point_labels: mx.array
+
+
+class _NumpyPointInputs(TypedDict):
+    point_coords: np.ndarray
+    point_labels: np.ndarray
+
+
+class TrackerFrameOutput(TypedDict):
+    pred_masks: Required[mx.array]
+    pred_masks_high_res: Required[mx.array]
+    obj_ptr: Required[mx.array]
+    object_score_logits: Required[mx.array]
+    iou_score: NotRequired[mx.array]
+    eff_iou_score: NotRequired[mx.array | int | float]
+    maskmem_features: Required[mx.array | None]
+    maskmem_pos_enc: Required[list[mx.array] | None]
+    point_inputs: NotRequired[PointInputs | None]
+    mask_inputs: NotRequired[mx.array | None]
+
+
+class _TrackerFrameOutputPartial(TypedDict, total=False):
+    pred_masks: mx.array
+    pred_masks_high_res: mx.array
+    obj_ptr: mx.array
+    object_score_logits: mx.array
+    iou_score: mx.array
+    eff_iou_score: mx.array | int | float
+    maskmem_features: mx.array | None
+    maskmem_pos_enc: list[mx.array] | None
+    point_inputs: PointInputs | None
+    mask_inputs: mx.array | None
+
+
+class _MemoryFrameOutput(TypedDict):
+    maskmem_features: mx.array
+    maskmem_pos_enc: list[mx.array]
+    obj_ptr: mx.array
+    object_score_logits: mx.array
+    pred_masks: mx.array
+
+
+class TrackerOutputState(TypedDict):
+    cond_frame_outputs: dict[int, TrackerFrameOutput]
+    non_cond_frame_outputs: dict[int, TrackerFrameOutput]
+
+
+class BackboneFeatureOutput(TypedDict):
+    backbone_fpn: list[mx.array]
+    vision_pos_enc: list[mx.array]
+
+
+class ImageBackboneOutput(TypedDict, total=False):
+    tracker_backbone_out: BackboneFeatureOutput
+    sam2_backbone_out: BackboneFeatureOutput
+
+
+class TrackingBackboneOutput(TypedDict):
+    backbone_fpn: list[mx.array] | None
+    vision_pos_enc: list[mx.array] | None
+    num_frames: int
+    init_cond_frames: list[int]
+    frames_not_in_init_cond: list[int]
+    frames_to_add_correction_pt: list[int]
+    point_inputs_per_frame: dict[int, PointInputs]
+    mask_inputs_per_frame: dict[int, mx.array]
+
+
+class MemoryEncoderOutput(TypedDict):
+    vision_features: mx.array
+    vision_pos_enc: list[mx.array]
+
+
+class SamMaskDecoderExtraArgs(TypedDict, total=False):
+    dynamic_multimask_via_stability: bool
+    dynamic_multimask_stability_delta: float
+    dynamic_multimask_stability_thresh: float
+
+
+class _WeightedArray(Protocol):
+    weight: mx.array
+
+
+class _ArrayModule(Protocol):
+    def __call__(self, x: mx.array) -> mx.array: ...
+
+
+class _ArrayMethods(Protocol):
+    def reshape(self, *shape: int | tuple[int, ...]) -> mx.array: ...
+
+    def transpose(self, *axes: int) -> mx.array: ...
+
+
+class _ImageBackbone(Protocol):
+    def forward_image(self, img_batch: mx.array) -> ImageBackboneOutput: ...
+
+
+class _TrackerEncoder(Protocol):
+    def __call__(
+        self,
+        *,
+        src: list[mx.array],
+        src_key_padding_mask: list[mx.array | None],
+        src_pos: list[mx.array],
+        prompt: mx.array,
+        prompt_pos: mx.array,
+        prompt_key_padding_mask: mx.array | None,
+        feat_sizes: list[tuple[int, int]],
+        num_obj_ptr_tokens: int,
+    ) -> dict[str, mx.array]: ...
+
+
+class _TrackerTransformer(Protocol):
+    decoder: object | None
+    d_model: int
+    encoder: _TrackerEncoder
+
+
+class _MaskMemoryEncoder(Protocol):
+    def __call__(
+        self,
+        pix_feat: mx.array,
+        masks: mx.array,
+        skip_mask_sigmoid: bool = False,
+    ) -> MemoryEncoderOutput: ...
+
+
+class _TrackerFindInput(Protocol):
+    img_ids: mx.array
+
+
+class _TrackerInput(Protocol):
+    img_batch: mx.array
+    find_inputs: Sequence[_TrackerFindInput]
+
+
+class _OptionalTrackerAttributes(Protocol):
+    cond_frame_spatial_embedding: mx.array | None
+    cond_frame_obj_ptr_embedding: mx.array | None
+    prob_to_dropout_spatial_mem: float
+    iter_use_prev_mask_pred: bool
+    add_all_frames_to_correct_as_cond: bool
+
+
+class _Interpolate(Protocol):
+    def __call__(
+        self,
+        input: mx.array,
+        size: tuple[int, int] | None = None,
+        scale_factor: float | tuple[float, float] | None = None,
+        mode: str = "nearest",
+        align_corners: bool | None = None,
+        antialias: bool = False,
+    ) -> mx.array: ...
+
+
+class _SinePositionEncoding(Protocol):
+    def __call__(
+        self, pos_inds: mx.array, dim: int, temperature: int = 10000
+    ) -> mx.array: ...
+
+
+class _SelectClosestCondFrames(Protocol):
+    def __call__(
+        self,
+        frame_idx: int,
+        cond_frame_outputs: Mapping[int, TrackerFrameOutput],
+        max_cond_frame_num: int,
+        keep_first_cond_frame: bool = False,
+    ) -> tuple[
+        dict[int, TrackerFrameOutput],
+        dict[int, TrackerFrameOutput],
+    ]: ...
+
+
+_interpolate = cast(_Interpolate, getattr(_data_misc, "interpolate"))
+_get_1d_sine_pe = cast(_SinePositionEncoding, getattr(_tracker_utils, "get_1d_sine_pe"))
+_select_closest_cond_frames = cast(
+    _SelectClosestCondFrames,
+    getattr(_tracker_utils, "select_closest_cond_frames"),
+)
+
+
+def _reshape(array: mx.array, *shape: int | tuple[int, ...]) -> mx.array:
+    return cast(_ArrayMethods, array).reshape(*shape)
+
+
+def _transpose(array: mx.array, *axes: int) -> mx.array:
+    return cast(_ArrayMethods, array).transpose(*axes)
+
+
+def _is_mlx_array(value: object) -> TypeGuard[mx.array]:
     return type(value).__module__.startswith("mlx.")
 
 
-def _trunc_normal(shape, std: float = 0.02) -> mx.array:
+def _trunc_normal(shape: tuple[int, ...], std: float = 0.02) -> mx.array:
     """timm ``trunc_normal_(std=...)`` equivalent (mean 0, truncated at +/-2 std).
 
     These tensors are learned parameters that the checkpoint overwrites at load
@@ -51,7 +254,7 @@ def _trunc_normal(shape, std: float = 0.02) -> mx.array:
     return mx.random.truncated_normal(lower=-2.0, upper=2.0, shape=shape) * std
 
 
-def _unsupported_tracker_base(method: str):
+def _unsupported_tracker_base(method: str) -> NoReturn:
     raise_unsupported(
         f"sam3_mlx.model.sam3_tracker_base.Sam3TrackerBase.{method}",
         reason="video-tracker",
@@ -69,33 +272,35 @@ def _unsupported_tracker_base(method: str):
 class Sam3TrackerBase(nn.Module):
     def __init__(
         self,
-        backbone,
-        transformer,
-        maskmem_backbone,
-        num_maskmem=7,  # default: 1 current frame + 6 previous frames
-        image_size=1008,
-        backbone_stride=14,  # stride of the image backbone output
-        max_cond_frames_in_attn=-1,
-        keep_first_cond_frame=False,
-        multimask_output_in_sam=False,
-        multimask_min_pt_num=1,
-        multimask_max_pt_num=1,
-        multimask_output_for_tracking=False,
-        forward_backbone_per_frame_for_eval=False,
-        memory_temporal_stride_for_eval=1,
-        offload_output_to_cpu_for_eval=False,
-        trim_past_non_cond_mem_for_eval=False,
-        non_overlap_masks_for_mem_enc=False,
-        max_obj_ptrs_in_encoder=16,
-        sam_mask_decoder_extra_args=None,
-        compile_all_components=False,
-        use_memory_selection=False,
-        mf_threshold=0.01,
-    ):
+        backbone: object | None,
+        transformer: object,
+        maskmem_backbone: object,
+        num_maskmem: int = 7,  # default: 1 current frame + 6 previous frames
+        image_size: int = 1008,
+        backbone_stride: int = 14,  # stride of the image backbone output
+        max_cond_frames_in_attn: int = -1,
+        keep_first_cond_frame: bool = False,
+        multimask_output_in_sam: bool = False,
+        multimask_min_pt_num: int = 1,
+        multimask_max_pt_num: int = 1,
+        multimask_output_for_tracking: bool = False,
+        forward_backbone_per_frame_for_eval: bool = False,
+        memory_temporal_stride_for_eval: int = 1,
+        offload_output_to_cpu_for_eval: bool = False,
+        trim_past_non_cond_mem_for_eval: bool = False,
+        non_overlap_masks_for_mem_enc: bool = False,
+        max_obj_ptrs_in_encoder: int = 16,
+        sam_mask_decoder_extra_args: SamMaskDecoderExtraArgs | None = None,
+        compile_all_components: bool = False,
+        use_memory_selection: bool = False,
+        mf_threshold: float = 0.01,
+    ) -> None:
         super().__init__()
 
         # Part 1: the image backbone
-        self.backbone = backbone
+        self.backbone: _ImageBackbone | None = (
+            None if backbone is None else cast(_ImageBackbone, backbone)
+        )
         self.num_feature_levels = 3
         self.max_obj_ptrs_in_encoder = max_obj_ptrs_in_encoder
         # A conv layer to downsample the GT mask prompt to stride 4 (the same
@@ -105,18 +310,19 @@ class Sam3TrackerBase(nn.Module):
 
         # Part 2: encoder-only transformer fusing current frame visual features
         # with memories from past frames
-        assert transformer.decoder is None, "transformer should be encoder-only"
-        self.transformer = transformer
-        self.hidden_dim = transformer.d_model
+        tracker_transformer = cast(_TrackerTransformer, transformer)
+        assert tracker_transformer.decoder is None, "transformer should be encoder-only"
+        self.transformer = tracker_transformer
+        self.hidden_dim: int = tracker_transformer.d_model
 
         # Part 3: memory encoder for the previous frame's outputs
-        self.maskmem_backbone = maskmem_backbone
+        self.maskmem_backbone = cast(_MaskMemoryEncoder, maskmem_backbone)
         self.mem_dim = self.hidden_dim
-        if hasattr(self.maskmem_backbone, "out_proj") and hasattr(
-            self.maskmem_backbone.out_proj, "weight"
-        ):
+        out_proj = getattr(self.maskmem_backbone, "out_proj", None)
+        if out_proj is not None and hasattr(out_proj, "weight"):
             # if there is compression of memories along channel dim
-            self.mem_dim = self.maskmem_backbone.out_proj.weight.shape[0]
+            weighted_out_proj = cast(_WeightedArray, out_proj)
+            self.mem_dim = weighted_out_proj.weight.shape[0]
         self.num_maskmem = num_maskmem  # Number of memories accessible
 
         # Temporal encoding of the memories
@@ -151,6 +357,13 @@ class Sam3TrackerBase(nn.Module):
         self.no_obj_ptr = _trunc_normal((1, self.hidden_dim))
         self.no_obj_embed_spatial = _trunc_normal((1, self.mem_dim))
 
+        self.sam_prompt_embed_dim: int
+        self.sam_image_embedding_size: int
+        self.sam_prompt_encoder: PromptEncoder
+        self.sam_mask_decoder: MaskDecoder
+        self.obj_ptr_proj: _ArrayModule
+        self.obj_ptr_tpos_proj: _ArrayModule
+
         self._build_sam_heads()
         self.max_cond_frames_in_attn = max_cond_frames_in_attn
         self.keep_first_cond_frame = keep_first_cond_frame
@@ -171,7 +384,7 @@ class Sam3TrackerBase(nn.Module):
     def device(self):
         return "mlx"
 
-    def _build_sam_heads(self):
+    def _build_sam_heads(self) -> None:
         """Build SAM-style prompt encoder and mask decoder."""
         self.sam_prompt_embed_dim = self.hidden_dim
         self.sam_image_embedding_size = self.image_size // self.backbone_stride
@@ -210,25 +423,39 @@ class Sam3TrackerBase(nn.Module):
         # a linear projection on temporal positional encoding in object pointers
         self.obj_ptr_tpos_proj = nn.Linear(self.hidden_dim, self.mem_dim)
 
-    def _get_tpos_enc(self, rel_pos_list, device=None, max_abs_pos=None, dummy=False):
+    def _get_tpos_enc(
+        self,
+        rel_pos_list: Sequence[int],
+        device: object | None = None,
+        max_abs_pos: int | None = None,
+        dummy: bool = False,
+    ) -> mx.array:
         del device  # MLX runtime is explicit; no torch-style device movement.
         if dummy:
             return mx.zeros((len(rel_pos_list), self.mem_dim))
 
         t_diff_max = max_abs_pos - 1 if max_abs_pos is not None else 1
-        pos_enc = mx.array(rel_pos_list, dtype=mx.float32) / t_diff_max
-        pos_enc = get_1d_sine_pe(pos_enc, dim=self.hidden_dim)
+        pos_enc = mx.array(list(rel_pos_list), dtype=mx.float32) / t_diff_max
+        pos_enc = _get_1d_sine_pe(pos_enc, dim=self.hidden_dim)
         return self.obj_ptr_tpos_proj(pos_enc)
 
     def _forward_sam_heads(
         self,
-        backbone_features,
-        point_inputs=None,
-        mask_inputs=None,
-        high_res_features=None,
-        multimask_output=False,
-        gt_masks=None,
-    ):
+        backbone_features: mx.array,
+        point_inputs: PointInputs | None = None,
+        mask_inputs: mx.array | None = None,
+        high_res_features: list[mx.array] | None = None,
+        multimask_output: bool = False,
+        gt_masks: mx.array | None = None,
+    ) -> tuple[
+        mx.array,
+        mx.array,
+        mx.array,
+        mx.array,
+        mx.array,
+        mx.array,
+        mx.array,
+    ]:
         """Forward SAM prompt encoder + mask decoder for one frame.
 
         ``backbone_features`` is [B, C, H, W] with C=hidden_dim and
@@ -261,7 +488,7 @@ class Sam3TrackerBase(nn.Module):
             if tuple(mask_inputs.shape[-2:]) != tuple(
                 self.sam_prompt_encoder.mask_input_size
             ):
-                sam_mask_prompt = interpolate(
+                sam_mask_prompt = _interpolate(
                     mask_inputs.astype(mx.float32),
                     size=self.sam_prompt_encoder.mask_input_size,
                     align_corners=False,
@@ -297,12 +524,12 @@ class Sam3TrackerBase(nn.Module):
         is_obj_appearing = object_score_logits > 0
         # spatial-memory mask is a hard obj/no-obj choice, matching the prediction
         low_res_multimasks = mx.where(
-            is_obj_appearing.reshape(B, 1, 1, 1),
+            _reshape(is_obj_appearing, B, 1, 1, 1),
             low_res_multimasks,
             NO_OBJ_SCORE,
         )
         low_res_multimasks = low_res_multimasks.astype(mx.float32)
-        high_res_multimasks = interpolate(
+        high_res_multimasks = _interpolate(
             low_res_multimasks,
             size=(self.image_size, self.image_size),
             mode="bilinear",
@@ -337,7 +564,20 @@ class Sam3TrackerBase(nn.Module):
             object_score_logits,
         )
 
-    def _use_mask_as_output(self, backbone_features, high_res_features, mask_inputs):
+    def _use_mask_as_output(
+        self,
+        backbone_features: mx.array,
+        high_res_features: list[mx.array] | None,
+        mask_inputs: mx.array,
+    ) -> tuple[
+        mx.array,
+        mx.array,
+        mx.array,
+        mx.array,
+        mx.array,
+        mx.array,
+        mx.array,
+    ]:
         """Convert binary mask prompts directly into SAM-style mask outputs."""
         if len(mask_inputs.shape) != 4 or mask_inputs.shape[1] != 1:
             raise ValueError("mask_inputs must have shape [B, 1, H, W].")
@@ -345,7 +585,7 @@ class Sam3TrackerBase(nn.Module):
         out_scale, out_bias = 20.0, -10.0
         mask_inputs_float = mask_inputs.astype(mx.float32)
         high_res_masks = mask_inputs_float * out_scale + out_bias
-        low_res_masks = interpolate(
+        low_res_masks = _interpolate(
             high_res_masks,
             size=(
                 high_res_masks.shape[-2] // self.backbone_stride * 4,
@@ -358,9 +598,13 @@ class Sam3TrackerBase(nn.Module):
 
         # ``mask_downsample`` is a raw MLX Conv2d to preserve checkpoint key
         # names, so call it at its NHWC boundary and return to NCHW for SAM.
-        mask_prompt = self.mask_downsample(
-            mask_inputs_float.transpose(0, 2, 3, 1)
-        ).transpose(0, 3, 1, 2)
+        mask_prompt = _transpose(
+            self.mask_downsample(_transpose(mask_inputs_float, 0, 2, 3, 1)),
+            0,
+            3,
+            1,
+            2,
+        )
         _, _, _, _, _, obj_ptr, _ = self._forward_sam_heads(
             backbone_features=backbone_features,
             mask_inputs=mask_prompt,
@@ -369,7 +613,7 @@ class Sam3TrackerBase(nn.Module):
         )
 
         is_obj_appearing = mx.any(
-            mask_inputs.reshape(mask_inputs.shape[0], -1).astype(mx.float32) > 0.0,
+            _reshape(mask_inputs, mask_inputs.shape[0], -1).astype(mx.float32) > 0.0,
             axis=1,
         )[:, None]
         lambda_is_obj_appearing = is_obj_appearing.astype(mx.float32)
@@ -387,13 +631,13 @@ class Sam3TrackerBase(nn.Module):
             object_score_logits,
         )
 
-    def forward(self, *args, **kwargs):
+    def forward(self, *args: object, **kwargs: object) -> NoReturn:
         _unsupported_tracker_base("forward")
 
-    def __call__(self, *args, **kwargs):
+    def __call__(self, *args: object, **kwargs: object) -> NoReturn:
         _unsupported_tracker_base("__call__")
 
-    def forward_image(self, img_batch):
+    def forward_image(self, img_batch: mx.array) -> BackboneFeatureOutput:
         """Get tracker visual features from the SAM3 image backbone."""
         if self.backbone is None:
             raise RuntimeError(
@@ -430,7 +674,14 @@ class Sam3TrackerBase(nn.Module):
         )
         return backbone_out
 
-    def _prepare_backbone_features(self, backbone_out):
+    def _prepare_backbone_features(
+        self, backbone_out: BackboneFeatureOutput
+    ) -> tuple[
+        BackboneFeatureOutput,
+        list[mx.array],
+        list[mx.array],
+        list[tuple[int, int]],
+    ]:
         """Prepare and flatten visual features into official ``(HW, B, C)`` form."""
         backbone_out = backbone_out.copy()
         assert len(backbone_out["backbone_fpn"]) == len(backbone_out["vision_pos_enc"])
@@ -438,19 +689,23 @@ class Sam3TrackerBase(nn.Module):
 
         feature_maps = backbone_out["backbone_fpn"][-self.num_feature_levels :]
         vision_pos_embeds = backbone_out["vision_pos_enc"][-self.num_feature_levels :]
-        feat_sizes = [(x.shape[-2], x.shape[-1]) for x in vision_pos_embeds]
-        vision_feats = [
-            x.reshape(x.shape[0], x.shape[1], -1).transpose(2, 0, 1)
+        feat_sizes: list[tuple[int, int]] = [
+            (x.shape[-2], x.shape[-1]) for x in vision_pos_embeds
+        ]
+        vision_feats: list[mx.array] = [
+            _transpose(_reshape(x, x.shape[0], x.shape[1], -1), 2, 0, 1)
             for x in feature_maps
         ]
         vision_pos_embeds = [
-            x.reshape(x.shape[0], x.shape[1], -1).transpose(2, 0, 1)
+            _transpose(_reshape(x, x.shape[0], x.shape[1], -1), 2, 0, 1)
             for x in vision_pos_embeds
         ]
 
         return backbone_out, vision_feats, vision_pos_embeds, feat_sizes
 
-    def _prepare_backbone_features_per_frame(self, img_batch, img_ids):
+    def _prepare_backbone_features_per_frame(
+        self, img_batch: mx.array, img_ids: ArrayLike
+    ) -> tuple[mx.array, list[mx.array], list[mx.array], list[tuple[int, int]]]:
         """Compute backbone features for the requested image ids."""
         img_ids_np = np.asarray(img_ids).reshape(-1).astype(np.int64)
         if img_ids_np.size == 0:
@@ -475,7 +730,9 @@ class Sam3TrackerBase(nn.Module):
 
         return image, vision_feats, vision_pos_embeds, feat_sizes
 
-    def cal_mem_score(self, object_score_logits, iou_score):
+    def cal_mem_score(
+        self, object_score_logits: mx.array, iou_score: mx.array
+    ) -> mx.array:
         object_score_norm = mx.where(
             object_score_logits > 0,
             mx.sigmoid(object_score_logits) * 2 - 1,  # rescale to [0, 1]
@@ -484,7 +741,14 @@ class Sam3TrackerBase(nn.Module):
         score_per_frame = (object_score_norm * iou_score).mean()
         return score_per_frame
 
-    def frame_filter(self, output_dict, track_in_reverse, frame_idx, num_frames, r):
+    def frame_filter(
+        self,
+        output_dict: TrackerOutputState,
+        track_in_reverse: bool,
+        frame_idx: int,
+        num_frames: int,
+        r: int,
+    ) -> list[int]:
         if (frame_idx == 0 and not track_in_reverse) or (
             frame_idx == num_frames - 1 and track_in_reverse
         ):
@@ -502,7 +766,7 @@ class Sam3TrackerBase(nn.Module):
             step = r
             must_include = frame_idx + 1
 
-        valid_indices = []
+        valid_indices: list[int] = []
         for i in range(start, end, step):
             out = output_dict["non_cond_frame_outputs"].get(i)
             if out is None or "eff_iou_score" not in out:
@@ -527,16 +791,16 @@ class Sam3TrackerBase(nn.Module):
 
     def _prepare_memory_conditioned_features(
         self,
-        frame_idx,
-        is_init_cond_frame,
-        current_vision_feats,
-        current_vision_pos_embeds,
-        feat_sizes,
-        output_dict,
-        num_frames,
-        track_in_reverse=False,
-        use_prev_mem_frame=True,
-    ):
+        frame_idx: int,
+        is_init_cond_frame: bool,
+        current_vision_feats: list[mx.array],
+        current_vision_pos_embeds: list[mx.array],
+        feat_sizes: list[tuple[int, int]],
+        output_dict: TrackerOutputState,
+        num_frames: int,
+        track_in_reverse: bool = False,
+        use_prev_mem_frame: bool = True,
+    ) -> mx.array:
         """Fuse current-frame visual features with previous spatial memories."""
         B = current_vision_feats[-1].shape[1]
         C = self.hidden_dim
@@ -544,24 +808,27 @@ class Sam3TrackerBase(nn.Module):
         training = bool(getattr(self, "training", False))
 
         if self.num_maskmem == 0:
-            return current_vision_feats[-1].transpose(1, 2, 0).reshape(B, C, H, W)
+            return _reshape(_transpose(current_vision_feats[-1], 1, 2, 0), B, C, H, W)
 
         num_obj_ptr_tokens = 0
         tpos_sign_mul = -1 if track_in_reverse else 1
         if not is_init_cond_frame and use_prev_mem_frame:
-            to_cat_prompt = []
-            to_cat_prompt_mask = []
-            to_cat_prompt_pos_embed = []
+            to_cat_prompt: list[mx.array] = []
+            to_cat_prompt_mask: list[mx.array | None] = []
+            to_cat_prompt_pos_embed: list[mx.array] = []
 
             assert len(output_dict["cond_frame_outputs"]) > 0
             cond_outputs = output_dict["cond_frame_outputs"]
-            selected_cond_outputs, unselected_cond_outputs = select_closest_cond_frames(
-                frame_idx,
-                cond_outputs,
-                self.max_cond_frames_in_attn,
-                keep_first_cond_frame=self.keep_first_cond_frame,
+            selected_cond_outputs, unselected_cond_outputs = (
+                _select_closest_cond_frames(
+                    frame_idx,
+                    cond_outputs,
+                    self.max_cond_frames_in_attn,
+                    keep_first_cond_frame=self.keep_first_cond_frame,
+                )
             )
-            t_pos_and_prevs = [
+            valid_indices: list[int] = []
+            t_pos_and_prevs: list[tuple[int, TrackerFrameOutput | None, bool]] = [
                 ((frame_idx - t) * tpos_sign_mul, out, True)
                 for t, out in selected_cond_outputs.items()
             ]
@@ -569,7 +836,11 @@ class Sam3TrackerBase(nn.Module):
             r = 1 if training else self.memory_temporal_stride_for_eval
             if self.use_memory_selection:
                 valid_indices = self.frame_filter(
-                    output_dict, track_in_reverse, frame_idx, num_frames, r
+                    output_dict,
+                    track_in_reverse,
+                    frame_idx,
+                    num_frames,
+                    r,
                 )
 
             for t_pos in range(1, self.num_maskmem):
@@ -598,22 +869,25 @@ class Sam3TrackerBase(nn.Module):
             for t_pos, prev, is_selected_cond_frame in t_pos_and_prevs:
                 if prev is None:
                     continue
-                feats = prev["maskmem_features"]
+                memory_frame = cast(_MemoryFrameOutput, prev)
+                feats = memory_frame["maskmem_features"]
                 seq_len = feats.shape[-2] * feats.shape[-1]
                 to_cat_prompt.append(
-                    feats.reshape(B, self.mem_dim, seq_len).transpose(2, 0, 1)
+                    _transpose(_reshape(feats, B, self.mem_dim, seq_len), 2, 0, 1)
                 )
                 to_cat_prompt_mask.append(mx.zeros((B, seq_len), dtype=mx.bool_))
 
-                maskmem_enc = prev["maskmem_pos_enc"][-1]
-                maskmem_enc = maskmem_enc.reshape(B, self.mem_dim, seq_len).transpose(
-                    2, 0, 1
+                maskmem_enc = memory_frame["maskmem_pos_enc"][-1]
+                maskmem_enc = _transpose(
+                    _reshape(maskmem_enc, B, self.mem_dim, seq_len), 2, 0, 1
                 )
-                if (
-                    is_selected_cond_frame
-                    and getattr(self, "cond_frame_spatial_embedding", None) is not None
-                ):
-                    maskmem_enc = maskmem_enc + self.cond_frame_spatial_embedding
+                cond_frame_spatial_embedding = getattr(
+                    cast(_OptionalTrackerAttributes, self),
+                    "cond_frame_spatial_embedding",
+                    None,
+                )
+                if is_selected_cond_frame and cond_frame_spatial_embedding is not None:
+                    maskmem_enc = maskmem_enc + cond_frame_spatial_embedding
 
                 t = t_pos if not is_selected_cond_frame else 0
                 maskmem_enc = (
@@ -621,17 +895,17 @@ class Sam3TrackerBase(nn.Module):
                 )
                 to_cat_prompt_pos_embed.append(maskmem_enc)
 
-            prob_drop = getattr(self, "prob_to_dropout_spatial_mem", 0.0)
+            prob_drop = getattr(
+                cast(_OptionalTrackerAttributes, self),
+                "prob_to_dropout_spatial_mem",
+                0.0,
+            )
             if training and prob_drop > 0:
                 _unsupported_tracker_base(
                     "_prepare_memory_conditioned_features(training_spatial_mem_dropout)"
                 )
 
-            max_obj_ptrs_in_encoder = (
-                self.max_obj_ptrs_in_encoder
-                if num_frames is None
-                else min(num_frames, self.max_obj_ptrs_in_encoder)
-            )
+            max_obj_ptrs_in_encoder = min(num_frames, self.max_obj_ptrs_in_encoder)
             if not training:
                 ptr_cond_outputs = {
                     t: out
@@ -640,15 +914,17 @@ class Sam3TrackerBase(nn.Module):
                 }
             else:
                 ptr_cond_outputs = selected_cond_outputs
-            pos_and_ptrs = [
-                ((frame_idx - t) * tpos_sign_mul, out["obj_ptr"], True)
-                for t, out in ptr_cond_outputs.items()
-            ]
+            pos_and_ptrs: list[tuple[int, mx.array, bool]] = []
+            for t, out in ptr_cond_outputs.items():
+                memory_frame = cast(_MemoryFrameOutput, out)
+                pos_and_ptrs.append(
+                    ((frame_idx - t) * tpos_sign_mul, memory_frame["obj_ptr"], True)
+                )
 
             for t_diff in range(1, max_obj_ptrs_in_encoder):
                 if not self.use_memory_selection:
                     t = frame_idx + t_diff if track_in_reverse else frame_idx - t_diff
-                    if t < 0 or (num_frames is not None and t >= num_frames):
+                    if t < 0 or t >= num_frames:
                         break
                 else:
                     if -t_diff <= -len(valid_indices):
@@ -659,15 +935,25 @@ class Sam3TrackerBase(nn.Module):
                     t, unselected_cond_outputs.get(t)
                 )
                 if out is not None:
-                    pos_and_ptrs.append((t_diff, out["obj_ptr"], False))
+                    memory_frame = cast(_MemoryFrameOutput, out)
+                    pos_and_ptrs.append((t_diff, memory_frame["obj_ptr"], False))
 
             if len(pos_and_ptrs) > 0:
                 pos_list, ptrs_list, is_selected_cond_frame_list = zip(*pos_and_ptrs)
-                obj_ptrs = mx.stack(ptrs_list, axis=0)
-                if getattr(self, "cond_frame_obj_ptr_embedding", None) is not None:
-                    obj_ptrs = obj_ptrs + self.cond_frame_obj_ptr_embedding * mx.array(
-                        is_selected_cond_frame_list, dtype=mx.float32
-                    ).reshape(-1, 1, 1)
+                obj_ptrs = mx.stack(list(ptrs_list), axis=0)
+                cond_frame_obj_ptr_embedding = getattr(
+                    cast(_OptionalTrackerAttributes, self),
+                    "cond_frame_obj_ptr_embedding",
+                    None,
+                )
+                if cond_frame_obj_ptr_embedding is not None:
+                    obj_ptrs = (
+                        obj_ptrs
+                        + cond_frame_obj_ptr_embedding
+                        * mx.array(is_selected_cond_frame_list, dtype=mx.float32)[
+                            :, None, None
+                        ]
+                    )
 
                 obj_pos = self._get_tpos_enc(
                     pos_list,
@@ -679,9 +965,9 @@ class Sam3TrackerBase(nn.Module):
 
                 if self.mem_dim < C:
                     tokens_per_ptr = C // self.mem_dim
-                    obj_ptrs = obj_ptrs.reshape(-1, B, tokens_per_ptr, self.mem_dim)
-                    obj_ptrs = obj_ptrs.transpose(0, 2, 1, 3).reshape(
-                        -1, B, self.mem_dim
+                    obj_ptrs = _reshape(obj_ptrs, -1, B, tokens_per_ptr, self.mem_dim)
+                    obj_ptrs = _reshape(
+                        _transpose(obj_ptrs, 0, 2, 1, 3), -1, B, self.mem_dim
                     )
                     obj_pos = mx.repeat(obj_pos, tokens_per_ptr, axis=0)
                 to_cat_prompt.append(obj_ptrs)
@@ -692,7 +978,7 @@ class Sam3TrackerBase(nn.Module):
                 num_obj_ptr_tokens = 0
         else:
             pix_feat_with_mem = current_vision_feats[-1] + self.no_mem_embed
-            return pix_feat_with_mem.transpose(1, 2, 0).reshape(B, C, H, W)
+            return _reshape(_transpose(pix_feat_with_mem, 1, 2, 0), B, C, H, W)
 
         prompt = mx.concat(to_cat_prompt, axis=0)
         prompt_mask = None
@@ -707,26 +993,26 @@ class Sam3TrackerBase(nn.Module):
             feat_sizes=feat_sizes,
             num_obj_ptr_tokens=num_obj_ptr_tokens,
         )
-        return encoder_out["memory"].transpose(1, 2, 0).reshape(B, C, H, W)
+        return _reshape(_transpose(encoder_out["memory"], 1, 2, 0), B, C, H, W)
 
     def _encode_new_memory(
         self,
-        image,
-        current_vision_feats,
-        feat_sizes,
-        pred_masks_high_res,
-        object_score_logits,
-        is_mask_from_pts,
-        output_dict=None,
-        is_init_cond_frame=False,
-    ):
+        image: mx.array,
+        current_vision_feats: list[mx.array],
+        feat_sizes: list[tuple[int, int]],
+        pred_masks_high_res: mx.array,
+        object_score_logits: mx.array,
+        is_mask_from_pts: bool,
+        output_dict: TrackerOutputState | None = None,
+        is_init_cond_frame: bool = False,
+    ) -> tuple[mx.array, list[mx.array]]:
         """Encode the current image + prediction into a spatial memory feature."""
         del image, output_dict, is_init_cond_frame
         B = current_vision_feats[-1].shape[1]  # batch size on this frame
         C = self.hidden_dim
         H, W = feat_sizes[-1]  # top-level (lowest-resolution) feature size
         # top-level feature, (HW)BC => BCHW
-        pix_feat = current_vision_feats[-1].transpose(1, 2, 0).reshape(B, C, H, W)
+        pix_feat = _reshape(_transpose(current_vision_feats[-1], 1, 2, 0), B, C, H, W)
         if self.non_overlap_masks_for_mem_enc:
             pred_masks_high_res = self._apply_non_overlapping_constraints(
                 pred_masks_high_res
@@ -744,7 +1030,7 @@ class Sam3TrackerBase(nn.Module):
             mask_for_mem = mask_for_mem + self.sigmoid_bias_for_mem_enc
 
         # our tracker always uses the SimpleMaskEncoder memory backbone
-        maskmem_out = self.maskmem_backbone(
+        maskmem_out: MemoryEncoderOutput = self.maskmem_backbone(
             pix_feat, mask_for_mem, skip_mask_sigmoid=True
         )
         maskmem_features = self._maybe_clone(maskmem_out["vision_features"])
@@ -753,24 +1039,33 @@ class Sam3TrackerBase(nn.Module):
         # predicted to be occluded (no object appearing)
         is_obj_appearing = (object_score_logits > 0).astype(mx.float32)
         maskmem_features = maskmem_features + (
-            1 - is_obj_appearing.reshape(B, 1, 1, 1)
-        ) * self.no_obj_embed_spatial.reshape(1, self.mem_dim, 1, 1)
+            1 - _reshape(is_obj_appearing, B, 1, 1, 1)
+        ) * _reshape(self.no_obj_embed_spatial, 1, self.mem_dim, 1, 1)
 
         return maskmem_features, maskmem_pos_enc
 
-    def forward_tracking(self, backbone_out, input, return_dict=False):
+    def forward_tracking(
+        self,
+        backbone_out: TrackingBackboneOutput,
+        input: _TrackerInput,
+        return_dict: bool = False,
+    ) -> TrackerOutputState | list[TrackerFrameOutput]:
         """Forward tracking over precomputed frame features."""
         img_feats_already_computed = backbone_out["backbone_fpn"] is not None
+        vision_feats: list[mx.array] = []
+        vision_pos_embeds: list[mx.array] = []
+        feat_sizes: list[tuple[int, int]] = []
         if img_feats_already_computed:
+            feature_backbone_out = cast(BackboneFeatureOutput, backbone_out)
             _, vision_feats, vision_pos_embeds, feat_sizes = (
-                self._prepare_backbone_features(backbone_out)
+                self._prepare_backbone_features(feature_backbone_out)
             )
 
         num_frames = backbone_out["num_frames"]
         init_cond_frames = backbone_out["init_cond_frames"]
         frames_to_add_correction_pt = backbone_out["frames_to_add_correction_pt"]
         processing_order = init_cond_frames + backbone_out["frames_not_in_init_cond"]
-        output_dict = {
+        output_dict: TrackerOutputState = {
             "cond_frame_outputs": {},
             "non_cond_frame_outputs": {},
         }
@@ -811,36 +1106,42 @@ class Sam3TrackerBase(nn.Module):
 
         if return_dict:
             return output_dict
-        all_frame_outputs = {}
-        all_frame_outputs.update(output_dict["cond_frame_outputs"])
-        all_frame_outputs.update(output_dict["non_cond_frame_outputs"])
-        all_frame_outputs = [all_frame_outputs[t] for t in range(num_frames)]
+        all_frame_outputs_by_frame: dict[int, TrackerFrameOutput] = {}
+        all_frame_outputs_by_frame.update(output_dict["cond_frame_outputs"])
+        all_frame_outputs_by_frame.update(output_dict["non_cond_frame_outputs"])
+        all_frame_outputs = [all_frame_outputs_by_frame[t] for t in range(num_frames)]
         return [
-            {k: v for k, v in frame_out.items() if k != "obj_ptr"}
+            cast(
+                TrackerFrameOutput,
+                {k: v for k, v in frame_out.items() if k != "obj_ptr"},
+            )
             for frame_out in all_frame_outputs
         ]
 
     def track_step(
         self,
-        frame_idx,
-        is_init_cond_frame,
-        current_vision_feats,
-        current_vision_pos_embeds,
-        feat_sizes,
-        image,
-        point_inputs,
-        mask_inputs,
-        output_dict,
-        num_frames,
-        track_in_reverse=False,
-        run_mem_encoder=True,
-        prev_sam_mask_logits=None,
-        use_prev_mem_frame=True,
-    ):
-        current_out = {"point_inputs": point_inputs, "mask_inputs": mask_inputs}
+        frame_idx: int,
+        is_init_cond_frame: bool,
+        current_vision_feats: list[mx.array],
+        current_vision_pos_embeds: list[mx.array],
+        feat_sizes: list[tuple[int, int]],
+        image: mx.array,
+        point_inputs: PointInputs | None,
+        mask_inputs: mx.array | None,
+        output_dict: TrackerOutputState,
+        num_frames: int,
+        track_in_reverse: bool = False,
+        run_mem_encoder: bool = True,
+        prev_sam_mask_logits: mx.array | None = None,
+        use_prev_mem_frame: bool = True,
+    ) -> TrackerFrameOutput:
+        current_out: _TrackerFrameOutputPartial = {
+            "point_inputs": point_inputs,
+            "mask_inputs": mask_inputs,
+        }
         if len(current_vision_feats) > 1:
-            high_res_features = [
-                x.transpose(1, 2, 0).reshape(x.shape[1], x.shape[2], *s)
+            high_res_features: list[mx.array] | None = [
+                _reshape(_transpose(x, 1, 2, 0), x.shape[1], x.shape[2], *s)
                 for x, s in zip(current_vision_feats[:-1], feat_sizes[:-1])
             ]
         else:
@@ -848,9 +1149,12 @@ class Sam3TrackerBase(nn.Module):
 
         if mask_inputs is not None:
             sam_outputs = self._use_mask_as_output(
-                current_vision_feats[-1]
-                .transpose(1, 2, 0)
-                .reshape(-1, self.hidden_dim, *feat_sizes[-1]),
+                _reshape(
+                    _transpose(current_vision_feats[-1], 1, 2, 0),
+                    -1,
+                    self.hidden_dim,
+                    *feat_sizes[-1],
+                ),
                 high_res_features,
                 mask_inputs,
             )
@@ -921,14 +1225,18 @@ class Sam3TrackerBase(nn.Module):
         if self.offload_output_to_cpu_for_eval and not getattr(self, "training", False):
             _unsupported_tracker_base("track_step(offload_output_to_cpu_for_eval=True)")
 
-        def _trim_past_out(past_out):
-            if past_out is None:
-                return None
-            return {
-                "pred_masks": past_out["pred_masks"],
-                "obj_ptr": past_out["obj_ptr"],
-                "object_score_logits": past_out["object_score_logits"],
-            }
+        def _trim_past_out(
+            past_out: TrackerFrameOutput,
+        ) -> TrackerFrameOutput:
+            complete_past_out = cast(_MemoryFrameOutput, past_out)
+            return cast(
+                TrackerFrameOutput,
+                {
+                    "pred_masks": complete_past_out["pred_masks"],
+                    "obj_ptr": complete_past_out["obj_ptr"],
+                    "object_score_logits": complete_past_out["object_score_logits"],
+                },
+            )
 
         if self.trim_past_non_cond_mem_for_eval and not getattr(
             self, "training", False
@@ -954,9 +1262,11 @@ class Sam3TrackerBase(nn.Module):
                         _trim_past_out(past_out)
                     )
 
-        return current_out
+        return cast(TrackerFrameOutput, current_out)
 
-    def _use_multimask(self, is_init_cond_frame, point_inputs):
+    def _use_multimask(
+        self, is_init_cond_frame: bool, point_inputs: PointInputs | None
+    ) -> bool:
         """Whether to use multimask output in the SAM head."""
         num_pts = 0 if point_inputs is None else point_inputs["point_labels"].shape[1]
         multimask_output = (
@@ -966,16 +1276,16 @@ class Sam3TrackerBase(nn.Module):
         )
         return multimask_output
 
-    def _apply_non_overlapping_constraints(self, pred_masks):
+    def _apply_non_overlapping_constraints(self, pred_masks: mx.array) -> mx.array:
         """Suppress non-winning object logits at overlapping spatial locations."""
         batch_size = pred_masks.shape[0]
         if batch_size == 1:
             return pred_masks
 
-        max_obj_inds = mx.argmax(pred_masks, axis=0).reshape(
-            (1,) + pred_masks.shape[1:]
+        max_obj_inds = _reshape(
+            mx.argmax(pred_masks, axis=0), (1,) + pred_masks.shape[1:]
         )
-        batch_obj_inds = mx.arange(batch_size).reshape(batch_size, 1, 1, 1)
+        batch_obj_inds = _reshape(mx.arange(batch_size), batch_size, 1, 1, 1)
         keep = max_obj_inds == batch_obj_inds
         return mx.where(
             keep,
@@ -983,26 +1293,62 @@ class Sam3TrackerBase(nn.Module):
             mx.minimum(pred_masks, mx.array(-10.0, dtype=pred_masks.dtype)),
         )
 
-    def _compile_all_components(self):
+    def _compile_all_components(self) -> NoReturn:
         _unsupported_tracker_base("_compile_all_components")
 
-    def _maybe_clone(self, x):
+    @overload
+    def _maybe_clone(self, x: mx.array) -> mx.array: ...
+
+    @overload
+    def _maybe_clone(self, x: np.ndarray) -> np.ndarray: ...
+
+    def _maybe_clone(self, x: ArrayLike) -> ArrayLike:
         return mx.array(x) if _is_mlx_array(x) else np.array(x, copy=True)
 
 
-def concat_points(old_point_inputs, new_points, new_labels):
+@overload
+def _concat_points(
+    old_point_inputs: PointInputs | None,
+    new_points: mx.array,
+    new_labels: mx.array,
+) -> PointInputs: ...
+
+
+@overload
+def _concat_points(
+    old_point_inputs: _NumpyPointInputs | None,
+    new_points: np.ndarray,
+    new_labels: np.ndarray,
+) -> _NumpyPointInputs: ...
+
+
+def _concat_points(
+    old_point_inputs: PointInputs | _NumpyPointInputs | None,
+    new_points: ArrayLike,
+    new_labels: ArrayLike,
+) -> PointInputs | _NumpyPointInputs:
     """Add new point coordinates and labels to previous point inputs."""
 
     if old_point_inputs is None:
         points, labels = new_points, new_labels
     elif _is_mlx_array(new_points):
-        points = mx.concat([old_point_inputs["point_coords"], new_points], axis=1)
-        labels = mx.concat([old_point_inputs["point_labels"], new_labels], axis=1)
+        old_coords = cast(mx.array, old_point_inputs["point_coords"])
+        old_labels = cast(mx.array, old_point_inputs["point_labels"])
+        points = mx.concat([old_coords, new_points], axis=1)
+        labels = mx.concat([old_labels, cast(mx.array, new_labels)], axis=1)
     else:
-        points = np.concatenate([old_point_inputs["point_coords"], new_points], axis=1)
-        labels = np.concatenate([old_point_inputs["point_labels"], new_labels], axis=1)
+        old_coords = cast(np.ndarray, old_point_inputs["point_coords"])
+        old_labels = cast(np.ndarray, old_point_inputs["point_labels"])
+        points = np.concatenate([old_coords, cast(np.ndarray, new_points)], axis=1)
+        labels = np.concatenate([old_labels, cast(np.ndarray, new_labels)], axis=1)
 
-    return {"point_coords": points, "point_labels": labels}
+    return cast(
+        PointInputs | _NumpyPointInputs,
+        {"point_coords": points, "point_labels": labels},
+    )
+
+
+concat_points = _concat_points
 
 
 __all__ = [

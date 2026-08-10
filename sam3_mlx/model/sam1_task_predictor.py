@@ -370,9 +370,14 @@ class SAM3InteractiveImagePredictor(nn.Module):
                 "An image must be set with .set_image(...) before mask prediction."
             )
 
-        concat_points = (
-            (point_coords, point_labels) if point_coords is not None else None
-        )
+        if point_coords is None:
+            concat_points = None
+        elif point_labels is None:
+            raise AssertionError(
+                "point_labels must be supplied if point_coords is supplied."
+            )
+        else:
+            concat_points = (point_coords, point_labels)
         if boxes is not None:
             box_coords = boxes.reshape(-1, 2, 2)
             box_labels = mx.broadcast_to(

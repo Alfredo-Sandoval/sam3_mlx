@@ -6,10 +6,10 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, TypeGuard
 
 
-def _is_coco_json(data: Dict[str, Any]) -> bool:
+def _is_coco_json(data: object) -> TypeGuard[Dict[str, Any]]:
     return isinstance(data, dict) and any(
         key in data for key in ("images", "annotations", "categories")
     )
