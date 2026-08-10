@@ -58,22 +58,6 @@ def _validate_offload_video_to_cpu(offload_video_to_cpu: bool) -> None:
         raise TypeError("offload_video_to_cpu must be a bool.")
 
 
-def _validate_video_loader_type(video_loader_type: str) -> str:
-    if video_loader_type not in io_utils.SUPPORTED_VIDEO_LOADER_TYPES:
-        raise RuntimeError(
-            "video_loader_type must be either 'cv2' or 'torchcodec'; "
-            f"got {video_loader_type!r}."
-        )
-    return video_loader_type
-
-
-def _sort_frame_paths(frame_paths: list[Path]) -> list[Path]:
-    try:
-        return sorted(frame_paths, key=lambda path: int(path.stem))
-    except ValueError:
-        return sorted(frame_paths, key=lambda path: path.name)
-
-
 class AsyncVideoFrameLoader:
     """Legacy async JPEG-folder loader returning normalized MLX CHW tensors.
 
@@ -102,7 +86,7 @@ class AsyncVideoFrameLoader:
                 materialize_mlx_frames=True,
             ),
         )
-        self.img_paths = [os.fspath(path) for path in img_paths]
+        self.img_paths: list[str | os.PathLike[str]] = list(img_paths)
         self.video_height = self._loader.video_height
         self.video_width = self._loader.video_width
         self.compute_device = compute_device
@@ -152,7 +136,7 @@ def load_video_frames(
     """
     _validate_compute_device(compute_device)
     _validate_offload_video_to_cpu(offload_video_to_cpu)
-    _validate_video_loader_type(video_loader_type)
+    io_utils.validate_video_loader_type(video_loader_type)
 
     video_path_str = os.fspath(video_path)
     if Path(video_path_str).is_dir():
@@ -214,7 +198,7 @@ def load_video_frames_from_jpg_images(
         ]
         if not frame_paths:
             raise RuntimeError(f"no images found in {folder}")
-        frame_paths = _sort_frame_paths(frame_paths)
+        frame_paths = io_utils.sort_frame_paths(frame_paths)
         loader = AsyncVideoFrameLoader(
             [str(p) for p in frame_paths],
             image_size,
@@ -252,7 +236,7 @@ def load_video_frames_from_video_file(
     """Decode a video file through the canonical OpenCV loader."""
     _validate_compute_device(compute_device)
     _validate_offload_video_to_cpu(offload_video_to_cpu)
-    _validate_video_loader_type(video_loader_type)
+    io_utils.validate_video_loader_type(video_loader_type)
     frames = cast(
         _CanonicalVideoFrames,
         io_utils.load_video_frames_from_video_file(

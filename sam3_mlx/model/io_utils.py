@@ -36,7 +36,7 @@ VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 SUPPORTED_VIDEO_LOADER_TYPES = frozenset({"cv2", "torchcodec"})
 
 
-def _validate_video_loader_type(video_loader_type: str) -> str:
+def validate_video_loader_type(video_loader_type: str) -> str:
     if video_loader_type not in SUPPORTED_VIDEO_LOADER_TYPES:
         raise RuntimeError(
             "video_loader_type must be either 'cv2' or 'torchcodec'; "
@@ -250,7 +250,7 @@ def load_resource_as_video_frames(
         raise ValueError("image_size must be positive.")
     if offload_video_to_cpu not in (False, True):
         raise TypeError("offload_video_to_cpu must be a bool.")
-    _validate_video_loader_type(video_loader_type)
+    validate_video_loader_type(video_loader_type)
 
     if isinstance(resource_path, Sequence) and not isinstance(
         resource_path, (str, bytes, Path)
@@ -335,7 +335,7 @@ def load_video_frames(
         raise TypeError("offload_video_to_cpu must be a bool.")
     # Reject unsupported backends before dummy/folder shortcuts so misconfigured
     # callers fail even when decoding is not required for the resource type.
-    _validate_video_loader_type(video_loader_type)
+    validate_video_loader_type(video_loader_type)
 
     video_path_str = os.fspath(video_path)
     dummy_match = re.fullmatch(r"<load-(dummy|zero)-video-(\d+)>", video_path_str)
@@ -477,7 +477,7 @@ def load_video_frames_from_image_folder(
     frame_paths = [p for p in folder.iterdir() if p.suffix.lower() in IMAGE_EXTS]
     if not frame_paths:
         raise RuntimeError(f"no images found in {folder}")
-    frame_paths = _sort_frame_paths(frame_paths)
+    frame_paths = sort_frame_paths(frame_paths)
     if async_loading_frames:
         return AsyncImageFrameLoader(
             frame_paths,
@@ -533,7 +533,7 @@ def load_video_frames_from_video_file(
             detail="The OpenCV decoder currently loads video-file frames synchronously.",
             alternative="async_loading_frames=False",
         )
-    _validate_video_loader_type(video_loader_type)
+    validate_video_loader_type(video_loader_type)
     if video_loader_type == "cv2":
         return load_video_frames_from_video_file_using_cv2(
             video_path=str(video_path),
@@ -1017,7 +1017,7 @@ def _validate_uniform_frame_dimensions(
             )
 
 
-def _sort_frame_paths(frame_paths: list[Path]) -> list[Path]:
+def sort_frame_paths(frame_paths: list[Path]) -> list[Path]:
     try:
         return sorted(frame_paths, key=lambda path: int(path.stem))
     except ValueError:
