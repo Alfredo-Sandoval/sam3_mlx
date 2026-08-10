@@ -1,12 +1,36 @@
+import importlib
+from typing import Protocol, cast
+
 import mlx.core as mx
 import numpy as np
 import pytest
 
 from sam3_mlx.mlx_runtime import to_numpy
 from sam3_mlx.train.loss import loss_fns
-from sam3_mlx.train.loss.mask_sampling import point_sample
-from sam3_mlx.train.loss.sigmoid_focal_loss import (
-    sigmoid_focal_loss as elementwise_sigmoid_focal_loss,
+import sam3_mlx.train.loss.mask_sampling as mask_sampling
+
+focal_loss_module = importlib.import_module("sam3_mlx.train.loss.sigmoid_focal_loss")
+
+
+class _PointSample(Protocol):
+    def __call__(
+        self, input: mx.array, point_coords: mx.array, **kwargs: object
+    ) -> mx.array: ...
+
+
+class _FocalLoss(Protocol):
+    def __call__(
+        self,
+        inputs: mx.array,
+        targets: mx.array,
+        alpha: float = 0.25,
+        gamma: float = 2.0,
+    ) -> mx.array: ...
+
+
+point_sample = cast(_PointSample, getattr(mask_sampling, "point_sample"))
+elementwise_sigmoid_focal_loss = cast(
+    _FocalLoss, getattr(focal_loss_module, "sigmoid_focal_loss")
 )
 
 

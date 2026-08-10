@@ -11,22 +11,100 @@ image-safe callable subset and fails fast for the tracking-only surfaces.
 
 from __future__ import annotations
 
+import importlib
+from collections.abc import Callable, Mapping, Sequence
+from typing import (
+    Generic,
+    NotRequired,
+    ParamSpec,
+    Protocol,
+    TypeAlias,
+    TypedDict,
+    TypeGuard,
+    cast,
+)
+
 import mlx.core as mx
-import mlx.nn as nn
+from mlx import nn
 import numpy as np
 
 from sam3_mlx._unsupported import raise_unsupported
-from sam3_mlx.model import box_ops
-from sam3_mlx.model.data_misc import interpolate
-from sam3_mlx.train.loss.mask_sampling import (
-    calculate_uncertainty,
-    get_uncertain_point_coords_with_randomness,
-    point_sample,
+from sam3_mlx.model import box_ops, data_misc
+import sam3_mlx.train.loss.mask_sampling as mask_sampling
+
+# The package exports a function with this submodule's name, so import the
+# module explicitly to retain access to both focal helpers.
+_sigmoid_focal_loss_module = importlib.import_module(
+    "sam3_mlx.train.loss.sigmoid_focal_loss"
 )
-from sam3_mlx.train.loss.sigmoid_focal_loss import (
-    sigmoid_focal_loss as _elementwise_sigmoid_focal_loss,
-    sigmoid_focal_loss_reduce as _reduced_sigmoid_focal_loss,
+
+
+class _Interpolate(Protocol):
+    def __call__(
+        self,
+        input: mx.array,
+        size: tuple[int, ...] | None = None,
+        scale_factor: float | None = None,
+        mode: str = "nearest",
+        align_corners: bool | None = None,
+        antialias: bool = False,
+    ) -> mx.array: ...
+
+
+class _PointSample(Protocol):
+    def __call__(
+        self, input: mx.array, point_coords: mx.array, **kwargs: object
+    ) -> mx.array: ...
+
+
+class _UncertainPoints(Protocol):
+    def __call__(
+        self,
+        logits: mx.array,
+        uncertainty_func: Callable[[mx.array], mx.array],
+        num_points: int,
+        oversample_ratio: int,
+        importance_sample_ratio: float,
+    ) -> mx.array: ...
+
+
+class _FocalLoss(Protocol):
+    def __call__(
+        self,
+        inputs: mx.array,
+        targets: mx.array,
+        alpha: float = 0.25,
+        gamma: float = 2.0,
+    ) -> mx.array: ...
+
+
+_interpolate = cast(_Interpolate, getattr(data_misc, "interpolate"))
+_calculate_uncertainty = cast(
+    Callable[[mx.array], mx.array], getattr(mask_sampling, "calculate_uncertainty")
 )
+_get_uncertain_points = cast(
+    _UncertainPoints,
+    getattr(mask_sampling, "get_uncertain_point_coords_with_randomness"),
+)
+_point_sample = cast(_PointSample, getattr(mask_sampling, "point_sample"))
+_elementwise_sigmoid_focal_loss = cast(
+    _FocalLoss, getattr(_sigmoid_focal_loss_module, "sigmoid_focal_loss")
+)
+_reduced_sigmoid_focal_loss = cast(
+    _FocalLoss, getattr(_sigmoid_focal_loss_module, "sigmoid_focal_loss_reduce")
+)
+_fast_diag_box_iou = cast(
+    Callable[[mx.array, mx.array], mx.array], getattr(box_ops, "fast_diag_box_iou")
+)
+_fast_diag_generalized_box_iou = cast(
+    Callable[[mx.array, mx.array], mx.array],
+    getattr(box_ops, "fast_diag_generalized_box_iou"),
+)
+
+interpolate = _interpolate
+calculate_uncertainty = _calculate_uncertainty
+get_uncertain_point_coords_with_randomness = _get_uncertain_points
+point_sample = _point_sample
 
 
 MLX_LOSS_FNS_BASE_COMMIT = "4794409a19afd9e3faeac66a2f1c4373ddf10f5b"
@@ -39,7 +117,101 @@ TRAINING_LOSS_CPU_BOUNDARIES = {
 }
 
 
-def _as_array(value, dtype=None) -> mx.array:
+ArrayValue: TypeAlias = (
+    mx.array | np.ndarray | bool | int | float | list[object] | tuple[object, ...]
+)
+MatchIndices: TypeAlias = (
+    tuple[mx.array, mx.array] | tuple[mx.array, mx.array, mx.array | None]
+)
+LossDict: TypeAlias = dict[str, mx.array]
+_LossArgs = ParamSpec("_LossArgs")
+
+
+class BoxesOutputMap(TypedDict):
+    pred_boxes: mx.array
+    pred_boxes_xyxy: mx.array
+    is_video_grounding_batch: NotRequired[bool]
+    Q_det: NotRequired[int]
+
+
+class BoxesTargetMap(TypedDict):
+    boxes: mx.array
+    boxes_xyxy: mx.array
+
+
+class MasksOutputMap(TypedDict):
+    pred_masks: mx.array
+    is_video_grounding_batch: NotRequired[bool]
+    Q_det: NotRequired[int]
+
+
+class MasksTargetMap(TypedDict):
+    masks: mx.array | None
+    is_valid_mask: mx.array
+
+
+class SemanticOutputMap(TypedDict):
+    semantic_seg: mx.array
+    presence_logit: NotRequired[mx.array]
+
+
+class SemanticTargetMap(TypedDict):
+    masks: mx.array
+    num_boxes: ArrayValue
+    semantic_masks: NotRequired[mx.array | None]
+
+
+class IABCEOutputMap(TypedDict):
+    pred_logits: mx.array
+    pred_boxes_xyxy: mx.array
+    is_video_grounding_batch: NotRequired[bool]
+    Q_det: NotRequired[int]
+    presence_logit_dec: NotRequired[mx.array]
+
+
+class IABCETargetArraysOutputMap(TypedDict):
+    pred_boxes_xyxy: mx.array
+
+
+class IABCETargetArraysTargetMap(TypedDict):
+    boxes_xyxy: mx.array
+
+
+class IABCETargetMap(TypedDict):
+    boxes_xyxy: mx.array
+    is_exhaustive: NotRequired[mx.array]
+    object_ids_padded: NotRequired[mx.array]
+    boxes_padded: NotRequired[mx.array]
+
+
+class _QDetMap(TypedDict):
+    Q_det: int
+
+
+class _PresenceTargetMap(TypedDict):
+    object_ids_padded: mx.array
+    boxes_padded: mx.array
+
+
+_Weights: TypeAlias = Mapping[str, float]
+
+
+_mx_eval = cast(Callable[[mx.array], None], getattr(mx, "eval"))
+
+
+def _reshape(value: mx.array, shape: Sequence[int]) -> mx.array:
+    return mx.reshape(value, shape)
+
+
+def _transpose(value: mx.array, axes: Sequence[int]) -> mx.array:
+    return mx.transpose(value, axes)
+
+
+def _is_int(value: object) -> TypeGuard[int]:
+    return isinstance(value, int)
+
+
+def _as_array(value: ArrayValue, dtype: mx.Dtype | None = None) -> mx.array:
     if isinstance(value, mx.array):
         return value.astype(dtype) if dtype is not None else value
     if dtype is None:
@@ -47,66 +219,68 @@ def _as_array(value, dtype=None) -> mx.array:
     return mx.array(value, dtype=dtype)
 
 
-def _as_float_array(value) -> mx.array:
+def _as_float_array(value: ArrayValue) -> mx.array:
     return _as_array(value, dtype=mx.float32)
 
 
-def _as_bool_array(value) -> mx.array:
+def _as_bool_array(value: ArrayValue) -> mx.array:
     return _as_array(value).astype(mx.bool_)
 
 
-def _to_numpy(value) -> np.ndarray:
+def _to_numpy(value: ArrayValue) -> np.ndarray:
     if isinstance(value, np.ndarray):
         return value
     if isinstance(value, mx.array):
-        mx.eval(value)
+        _mx_eval(value)
     return np.asarray(value)
 
 
-def _scalar_array(value, dtype=mx.float32) -> mx.array:
+def _scalar_array(value: bool | int | float, dtype: mx.Dtype = mx.float32) -> mx.array:
     return mx.array(value, dtype=dtype)
 
 
-def _num_boxes_array(num_boxes) -> mx.array:
+def _num_boxes_array(num_boxes: ArrayValue) -> mx.array:
     return mx.maximum(_as_float_array(num_boxes), _scalar_array(1.0))
 
 
-def _indices_target(indices):
-    if len(indices) >= 3:
+def _indices_target(indices: MatchIndices) -> mx.array | None:
+    if len(indices) == 3:
         return indices[2]
     return None
 
 
-def _gather_matched(values: mx.array, indices) -> mx.array:
+def _gather_matched(values: mx.array, indices: MatchIndices) -> mx.array:
     return values[indices[0], indices[1]]
 
 
-def _target_select(values: mx.array, indices) -> mx.array:
+def _target_select(values: mx.array, indices: MatchIndices) -> mx.array:
     target_idx = _indices_target(indices)
     return values if target_idx is None else values[target_idx]
 
 
-def _empty_scalar(dtype=mx.float32) -> mx.array:
+def _empty_scalar(dtype: mx.Dtype = mx.float32) -> mx.array:
     return mx.array(0.0, dtype=dtype)
 
 
-def _bce_with_logits(inputs, targets):
+def _bce_with_logits(inputs: ArrayValue, targets: ArrayValue) -> mx.array:
     inputs = _as_float_array(inputs)
     targets = _as_float_array(targets)
     max_val = mx.maximum(inputs, mx.zeros_like(inputs))
     return max_val - inputs * targets + mx.log(1 + mx.exp(-mx.abs(inputs)))
 
 
-def _l1_loss(inputs, targets):
+def _l1_loss(inputs: ArrayValue, targets: ArrayValue) -> mx.array:
     return mx.abs(_as_float_array(inputs) - _as_float_array(targets))
 
 
-def _mse_loss(inputs, targets):
+def _mse_loss(inputs: ArrayValue, targets: ArrayValue) -> mx.array:
     diff = _as_float_array(inputs) - _as_float_array(targets)
     return diff * diff
 
 
-def instance_masks_to_semantic_masks(instance_masks, num_instances):
+def instance_masks_to_semantic_masks(
+    instance_masks: ArrayValue, num_instances: ArrayValue
+) -> mx.array:
     """Convert collapsed instance masks into one semantic mask per image."""
 
     counts = _as_array(num_instances, dtype=mx.int64)
@@ -114,10 +288,10 @@ def instance_masks_to_semantic_masks(instance_masks, num_instances):
     # as MLX-native training runtime yet.
     counts_np = _to_numpy(counts).reshape(-1).astype(np.int64)
     if counts_np.sum() == 0:
-        return counts.reshape(counts.shape[0], 1, 1)
+        return _reshape(counts, (counts.shape[0], 1, 1))
 
     masks = _as_bool_array(instance_masks)
-    chunks = []
+    chunks: list[mx.array] = []
     start = 0
     for count in counts_np.tolist():
         stop = start + int(count)
@@ -130,7 +304,9 @@ def instance_masks_to_semantic_masks(instance_masks, num_instances):
     return mx.stack(chunks, axis=0)
 
 
-def accuracy(output, target, topk=(1,)):
+def accuracy(
+    output: ArrayValue, target: ArrayValue, topk: tuple[int, ...] = (1,)
+) -> list[mx.array]:
     """Compute precision@k for the specified values of k."""
 
     output = _as_float_array(output)
@@ -139,28 +315,34 @@ def accuracy(output, target, topk=(1,)):
         return [mx.array(0.0, dtype=output.dtype)]
     maxk = max(topk)
     batch_size = target.shape[0]
-    pred = mx.argsort(output, axis=1)[:, -maxk:][:, ::-1].transpose(1, 0)
-    correct = pred == target.reshape(1, -1)
-    results = []
+    pred = _transpose(mx.argsort(output, axis=1)[:, -maxk:][:, ::-1], (1, 0))
+    correct = mx.equal(pred, _reshape(target, (1, -1)))
+    results: list[mx.array] = []
     for k in topk:
-        correct_k = mx.sum(correct[:k].reshape(-1).astype(mx.float32))
+        correct_k = mx.sum(_reshape(correct[:k], (-1,)).astype(mx.float32))
         results.append(correct_k * (100.0 / batch_size))
     return results
 
 
-def _dice_loss(inputs, targets, num_boxes, loss_on_multimask=False, reduce=True):
+def _dice_loss(
+    inputs: ArrayValue,
+    targets: ArrayValue,
+    num_boxes: ArrayValue,
+    loss_on_multimask: bool = False,
+    reduce: bool = True,
+) -> mx.array:
     inputs = mx.sigmoid(_as_float_array(inputs))
     targets = _as_float_array(targets)
     num_boxes = _num_boxes_array(num_boxes)
     if loss_on_multimask:
         if inputs.ndim != 4 or targets.ndim != 4:
             raise AssertionError("multimask DICE expects inputs/targets with rank 4.")
-        inputs = inputs.reshape(*inputs.shape[:2], -1)
-        targets = targets.reshape(*targets.shape[:2], -1)
+        inputs = _reshape(inputs, (*inputs.shape[:2], -1))
+        targets = _reshape(targets, (*targets.shape[:2], -1))
         numerator = 2 * mx.sum(inputs * targets, axis=-1)
     else:
-        inputs = inputs.reshape(inputs.shape[0], -1)
-        targets = targets.reshape(targets.shape[0], -1)
+        inputs = _reshape(inputs, (inputs.shape[0], -1))
+        targets = _reshape(targets, (targets.shape[0], -1))
         numerator = 2 * mx.sum(inputs * targets, axis=1)
 
     denominator = mx.sum(inputs, axis=-1) + mx.sum(targets, axis=-1)
@@ -172,22 +354,28 @@ def _dice_loss(inputs, targets, num_boxes, loss_on_multimask=False, reduce=True)
     return mx.sum(loss) / num_boxes
 
 
-def dice_loss(inputs, targets, num_boxes, loss_on_multimask=False, reduce=True):
+def dice_loss(
+    inputs: ArrayValue,
+    targets: ArrayValue,
+    num_boxes: ArrayValue,
+    loss_on_multimask: bool = False,
+    reduce: bool = True,
+) -> mx.array:
     """DICE loss for binary masks, matching the official normalization."""
 
     return _dice_loss(inputs, targets, num_boxes, loss_on_multimask, reduce)
 
 
 def sigmoid_focal_loss(
-    inputs,
-    targets,
-    num_boxes,
+    inputs: ArrayValue,
+    targets: ArrayValue,
+    num_boxes: ArrayValue,
     alpha: float = 0.25,
-    gamma: float = 2,
-    loss_on_multimask=False,
-    reduce=True,
-    triton=True,
-):
+    gamma: float = 2.0,
+    loss_on_multimask: bool = False,
+    reduce: bool = True,
+    triton: bool = True,
+) -> mx.array:
     """Official-shaped sigmoid focal loss wrapper over the MLX implementation."""
 
     del triton
@@ -208,18 +396,18 @@ def sigmoid_focal_loss(
     if loss_on_multimask:
         if loss.ndim != 4:
             raise AssertionError("multimask focal loss expects rank-4 loss.")
-        return mx.mean(loss.reshape(*loss.shape[:2], -1), axis=-1) / num_boxes
+        return mx.mean(_reshape(loss, (*loss.shape[:2], -1)), axis=-1) / num_boxes
     return mx.sum(mx.mean(loss, axis=1)) / num_boxes
 
 
 def iou_loss(
-    inputs,
-    targets,
-    pred_ious,
-    num_boxes,
-    loss_on_multimask=False,
-    use_l1_loss=False,
-):
+    inputs: ArrayValue,
+    targets: ArrayValue,
+    pred_ious: ArrayValue,
+    num_boxes: ArrayValue,
+    loss_on_multimask: bool = False,
+    use_l1_loss: bool = False,
+) -> mx.array:
     """MSE or L1 loss between predicted IoUs and thresholded mask IoUs."""
 
     inputs = _as_float_array(inputs)
@@ -228,8 +416,8 @@ def iou_loss(
     if inputs.ndim != 4 or targets.ndim != 4:
         raise AssertionError("iou_loss expects rank-4 inputs and targets.")
 
-    pred_mask = inputs.reshape(*inputs.shape[:2], -1) > 0
-    gt_mask = targets.reshape(*targets.shape[:2], -1) > 0
+    pred_mask = _reshape(inputs, (*inputs.shape[:2], -1)) > 0
+    gt_mask = _reshape(targets, (*targets.shape[:2], -1)) > 0
     area_i = mx.sum((pred_mask & gt_mask).astype(mx.float32), axis=-1)
     area_u = mx.sum((pred_mask | gt_mask).astype(mx.float32), axis=-1)
     actual_ious = area_i / mx.maximum(area_u, _scalar_array(1.0))
@@ -244,47 +432,7 @@ def iou_loss(
     return mx.sum(loss) / _num_boxes_array(num_boxes)
 
 
-def _contrastive_align(logits, positive_map):
-    """Official contrastive align loss translated from Torch masking to MLX."""
-
-    logits = _as_float_array(logits)
-    positive_map = _as_bool_array(positive_map)
-    if logits.shape != positive_map.shape:
-        raise ValueError("logits and positive_map must have the same shape.")
-    if logits.ndim != 3:
-        raise ValueError("contrastive align expects rank-3 logits.")
-
-    positive_logits = mx.where(positive_map, -logits, mx.zeros_like(logits))
-    negative_logits = logits
-
-    boxes_with_pos = mx.any(positive_map, axis=2)
-    pos_term = mx.sum(positive_logits, axis=2)
-    neg_term = mx.logsumexp(negative_logits, axis=2)
-    nb_pos = mx.sum(positive_map.astype(mx.float32), axis=2) + 1e-6
-    box_to_token_loss = mx.sum(
-        mx.where(
-            boxes_with_pos,
-            pos_term / nb_pos + neg_term,
-            mx.zeros_like(pos_term),
-        )
-    )
-
-    tokens_with_pos = mx.any(positive_map, axis=1)
-    pos_term = mx.sum(positive_logits, axis=1)
-    neg_term = mx.logsumexp(negative_logits, axis=1)
-    nb_pos = mx.sum(positive_map.astype(mx.float32), axis=1) + 1e-6
-    tokens_to_boxes_loss = mx.sum(
-        mx.where(
-            tokens_with_pos,
-            pos_term / nb_pos + neg_term,
-            mx.zeros_like(pos_term),
-        )
-    )
-
-    return (box_to_token_loss + tokens_to_boxes_loss) / 2
-
-
-def segment_miou(source, target):
+def segment_miou(source: ArrayValue, target: ArrayValue) -> mx.array:
     """Compute mean IoU between paired semantic masks."""
 
     source = _as_bool_array(source)
@@ -294,10 +442,10 @@ def segment_miou(source, target):
     if source.ndim != 3:
         raise AssertionError("The masks must be 3D.")
 
-    flat_target = target.reshape(target.shape[0], -1)
+    flat_target = _reshape(target, (target.shape[0], -1))
     valid_mask = mx.any(flat_target, axis=1)
     valid_targets = mx.sum(valid_mask.astype(mx.float32))
-    flat_source = source.reshape(source.shape[0], -1)
+    flat_source = _reshape(source, (source.shape[0], -1))
     intersection = mx.sum((flat_source & flat_target).astype(mx.float32), axis=1)
     union = mx.sum((flat_source | flat_target).astype(mx.float32), axis=1)
     iou = intersection / (union + 1e-8)
@@ -309,45 +457,53 @@ def segment_miou(source, target):
     )
 
 
-def _get_src_permutation_idx(indices):
-    batch_ids = []
-    src_ids = []
-    for batch_index, (src, _target) in enumerate(indices):
-        src = _as_array(src, dtype=mx.int64)
-        batch_ids.append(mx.full(src.shape, batch_index, dtype=mx.int64))
-        src_ids.append(src)
-    if not batch_ids:
-        return mx.array([], dtype=mx.int64), mx.array([], dtype=mx.int64)
-    return mx.concat(batch_ids, axis=0), mx.concat(src_ids, axis=0)
-
-
-def _keep_only_trk_queries_in_match_inds(inds, Q_det):
+def _keep_only_trk_queries_in_match_inds(
+    inds: MatchIndices, Q_det: int
+) -> MatchIndices:
     batch_idx, src_idx, *rest = inds
     keep = src_idx >= Q_det
-    filtered = [batch_idx[keep], src_idx[keep] - Q_det]
-    filtered.extend(item[keep] if item is not None else None for item in rest)
-    return tuple(filtered)
+    keep_count = int(mx.sum(keep.astype(mx.int64)).item())
+    sorted_indices = mx.argsort(keep.astype(mx.int64))
+    keep_indices = sorted_indices[-keep_count:] if keep_count else sorted_indices[:0]
+    if len(inds) == 2:
+        return batch_idx[keep_indices], src_idx[keep_indices] - Q_det
+    target_idx = rest[0]
+    return (
+        batch_idx[keep_indices],
+        src_idx[keep_indices] - Q_det,
+        None if target_idx is None else target_idx[keep_indices],
+    )
 
 
-class LossWithWeights(nn.Module):
-    def __init__(self, weight_dict, compute_aux, supports_o2m_loss=True):
+class LossWithWeights(nn.Module, Generic[_LossArgs]):
+    def __init__(
+        self,
+        weight_dict: _Weights | None,
+        compute_aux: bool,
+        supports_o2m_loss: bool = True,
+    ) -> None:
         super().__init__()
-        self.weight_dict = weight_dict if weight_dict is not None else {}
+        self.weight_dict: _Weights = weight_dict if weight_dict is not None else {}
         self.compute_aux = compute_aux
         self.supports_o2m_loss = supports_o2m_loss
-        self.target_keys = []
+        self.target_keys: list[str] = []
 
-    def __call__(self, *args, is_aux=False, **kwargs):
+    def _call(self, *args: object, is_aux: bool = False, **kwargs: object) -> LossDict:
         if is_aux and not self.compute_aux:
             return {CORE_LOSS_KEY: _empty_scalar()}
-        losses = self.get_loss(*args, **kwargs)
+        get_loss = cast(Callable[..., LossDict], self.get_loss)
+        losses = get_loss(*args, **kwargs)
         losses[CORE_LOSS_KEY] = self.reduce_loss(losses)
         return losses
 
-    def get_loss(self, **kwargs):
+    # Loss subclasses accept different keyword contracts; keep the runtime
+    # dispatcher typed without forcing one subclass signature onto the others.
+    __call__: Callable[..., LossDict] = _call
+
+    def get_loss(self, *_args: _LossArgs.args, **_kwargs: _LossArgs.kwargs) -> LossDict:
         raise NotImplementedError
 
-    def reduce_loss(self, losses):
+    def reduce_loss(self, losses: LossDict) -> mx.array:
         reduced_loss = _empty_scalar()
         for loss_key, weight in self.weight_dict.items():
             if loss_key not in losses:
@@ -357,26 +513,34 @@ class LossWithWeights(nn.Module):
         return reduced_loss
 
 
-class Boxes(LossWithWeights):
+class Boxes(
+    LossWithWeights[[BoxesOutputMap, BoxesTargetMap, MatchIndices, ArrayValue]]
+):
     def __init__(
         self,
-        weight_dict=None,
-        compute_aux=True,
-        apply_loss_to_det_queries_in_video_grounding=True,
-    ):
+        weight_dict: _Weights | None = None,
+        compute_aux: bool = True,
+        apply_loss_to_det_queries_in_video_grounding: bool = True,
+    ) -> None:
         super().__init__(weight_dict, compute_aux)
         self.apply_loss_to_det_queries_in_video_grounding = (
             apply_loss_to_det_queries_in_video_grounding
         )
         self.target_keys.extend(["boxes", "boxes_xyxy"])
 
-    def get_loss(self, outputs, targets, indices, num_boxes):
+    def get_loss(
+        self,
+        outputs: BoxesOutputMap,
+        targets: BoxesTargetMap,
+        indices: MatchIndices,
+        num_boxes: ArrayValue,
+    ) -> LossDict:
         if (
             outputs.get("is_video_grounding_batch", False)
             and not self.apply_loss_to_det_queries_in_video_grounding
         ):
             indices = _keep_only_trk_queries_in_match_inds(
-                indices, Q_det=outputs["Q_det"]
+                indices, Q_det=cast(_QDetMap, outputs)["Q_det"]
             )
 
         if "pred_boxes" not in outputs:
@@ -387,7 +551,7 @@ class Boxes(LossWithWeights):
         target_boxes_giou = _target_select(targets["boxes_xyxy"], indices)
 
         loss_bbox = _l1_loss(src_boxes, target_boxes)
-        loss_giou = 1 - box_ops.fast_diag_generalized_box_iou(
+        loss_giou = 1 - _fast_diag_generalized_box_iou(
             src_boxes_xyxy, target_boxes_giou
         )
         num_boxes = _num_boxes_array(num_boxes)
@@ -397,18 +561,20 @@ class Boxes(LossWithWeights):
         }
 
 
-class Masks(LossWithWeights):
+class Masks(
+    LossWithWeights[[MasksOutputMap, MasksTargetMap, MatchIndices, ArrayValue]]
+):
     def __init__(
         self,
-        weight_dict=None,
-        compute_aux=False,
-        focal_alpha=0.25,
-        focal_gamma=2,
-        num_sample_points=None,
-        oversample_ratio=None,
-        importance_sample_ratio=None,
-        apply_loss_to_det_queries_in_video_grounding=True,
-    ):
+        weight_dict: _Weights | None = None,
+        compute_aux: bool = False,
+        focal_alpha: float = 0.25,
+        focal_gamma: float = 2.0,
+        num_sample_points: int | None = None,
+        oversample_ratio: int | None = None,
+        importance_sample_ratio: float | None = None,
+        apply_loss_to_det_queries_in_video_grounding: bool = True,
+    ) -> None:
         super().__init__(weight_dict, compute_aux)
         self.focal_alpha = focal_alpha
         self.focal_gamma = focal_gamma
@@ -420,24 +586,26 @@ class Masks(LossWithWeights):
         )
         self.target_keys.extend(["masks", "is_valid_mask"])
 
-    def _sampled_loss(self, src_masks, target_masks, num_boxes):
+    def _sampled_loss(
+        self, src_masks: mx.array, target_masks: mx.array, num_boxes: ArrayValue
+    ) -> LossDict:
         if src_masks.ndim != 3 or target_masks.ndim != 3:
             raise AssertionError("sampled mask loss expects rank-3 masks.")
         src_masks = src_masks[:, None]
         target_masks = target_masks[:, None]
-        point_coords = get_uncertain_point_coords_with_randomness(
+        point_coords = _get_uncertain_points(
             src_masks,
-            calculate_uncertainty,
-            self.num_sample_points,
-            self.oversample_ratio,
-            self.importance_sample_ratio,
+            _calculate_uncertainty,
+            cast(int, self.num_sample_points),
+            cast(int, self.oversample_ratio),
+            cast(float, self.importance_sample_ratio),
         )
-        sampled_target_masks = point_sample(
+        sampled_target_masks = _point_sample(
             target_masks,
             point_coords,
             align_corners=False,
         ).squeeze(1)
-        sampled_src_masks = point_sample(
+        sampled_src_masks = _point_sample(
             src_masks,
             point_coords,
             align_corners=False,
@@ -453,7 +621,13 @@ class Masks(LossWithWeights):
             "loss_dice": dice_loss(sampled_src_masks, sampled_target_masks, num_boxes),
         }
 
-    def get_loss(self, outputs, targets, indices, num_boxes):
+    def get_loss(
+        self,
+        outputs: MasksOutputMap,
+        targets: MasksTargetMap,
+        indices: MatchIndices,
+        num_boxes: ArrayValue,
+    ) -> LossDict:
         if "pred_masks" not in outputs:
             raise AssertionError("Masks loss requires outputs['pred_masks'].")
         if "is_valid_mask" not in targets:
@@ -463,7 +637,7 @@ class Masks(LossWithWeights):
             and not self.apply_loss_to_det_queries_in_video_grounding
         ):
             indices = _keep_only_trk_queries_in_match_inds(
-                indices, Q_det=outputs["Q_det"]
+                indices, Q_det=cast(_QDetMap, outputs)["Q_det"]
             )
 
         src_masks = outputs["pred_masks"]
@@ -481,19 +655,19 @@ class Masks(LossWithWeights):
             return self._sampled_loss(src_masks, target_masks, num_boxes)
 
         if target_masks.shape[0] == 0 and src_masks.shape[0] == 0:
-            src_masks = src_masks.reshape(src_masks.shape[0], -1)
-            target_masks = target_masks.reshape(src_masks.shape)
+            src_masks = _reshape(src_masks, (src_masks.shape[0], -1))
+            target_masks = _reshape(target_masks, src_masks.shape)
         else:
             if src_masks.ndim == 3:
                 src_masks = src_masks[:, None]
-            src_masks = interpolate(
+            src_masks = _interpolate(
                 src_masks.astype(mx.float32),
                 size=target_masks.shape[-2:],
                 mode="bilinear",
                 align_corners=False,
             )
-            src_masks = src_masks[:, 0].reshape(src_masks.shape[0], -1)
-            target_masks = target_masks.reshape(target_masks.shape[0], -1)
+            src_masks = _reshape(src_masks[:, 0], (src_masks.shape[0], -1))
+            target_masks = _reshape(target_masks, (target_masks.shape[0], -1))
 
         return {
             "loss_mask": sigmoid_focal_loss(
@@ -507,17 +681,17 @@ class Masks(LossWithWeights):
         }
 
 
-class SemanticSegCriterion(LossWithWeights):
+class SemanticSegCriterion(LossWithWeights[[SemanticOutputMap, SemanticTargetMap]]):
     def __init__(
         self,
-        weight_dict,
+        weight_dict: _Weights,
         focal: bool = False,
         focal_alpha: float = 0.6,
         focal_gamma: float = 1.6,
         downsample: bool = True,
         presence_head: bool = False,
         presence_loss: bool = True,
-    ):
+    ) -> None:
         super().__init__(weight_dict, False)
         self.focal = focal
         self.focal_alpha = focal_alpha
@@ -526,7 +700,9 @@ class SemanticSegCriterion(LossWithWeights):
         self.presence_head = presence_head
         self.presence_loss = presence_loss
 
-    def get_loss(self, out_dict, targets):
+    def get_loss(
+        self, out_dict: SemanticOutputMap, targets: SemanticTargetMap
+    ) -> LossDict:
         outputs = _as_float_array(out_dict["semantic_seg"])
         presence_logit = out_dict.get("presence_logit")
         if (
@@ -537,7 +713,7 @@ class SemanticSegCriterion(LossWithWeights):
             semantic_targets = _as_bool_array(targets["semantic_masks"])
             if self.downsample:
                 semantic_targets = (
-                    interpolate(
+                    _interpolate(
                         semantic_targets.astype(mx.float32)[:, None],
                         size=outputs.shape[-2:],
                         mode="bilinear",
@@ -548,7 +724,7 @@ class SemanticSegCriterion(LossWithWeights):
         else:
             if self.downsample:
                 segments = (
-                    interpolate(
+                    _interpolate(
                         _as_float_array(targets["masks"])[:, None],
                         size=outputs.shape[-2:],
                         mode="bilinear",
@@ -563,7 +739,7 @@ class SemanticSegCriterion(LossWithWeights):
             )
 
         if not self.downsample:
-            outputs = interpolate(
+            outputs = _interpolate(
                 outputs.astype(mx.float32),
                 size=semantic_targets.shape[-2:],
                 mode="bilinear",
@@ -574,8 +750,8 @@ class SemanticSegCriterion(LossWithWeights):
         semantic_float = semantic_targets.astype(mx.float32)
         if self.focal:
             loss = sigmoid_focal_loss(
-                logits.reshape(logits.shape[0], -1),
-                semantic_float.reshape(semantic_float.shape[0], -1),
+                _reshape(logits, (logits.shape[0], -1)),
+                _reshape(semantic_float, (semantic_float.shape[0], -1)),
                 num_boxes=semantic_float.shape[0],
                 alpha=self.focal_alpha,
                 gamma=self.focal_gamma,
@@ -586,19 +762,19 @@ class SemanticSegCriterion(LossWithWeights):
         else:
             loss = _bce_with_logits(logits, semantic_float)
             loss = (
-                mx.mean(loss.reshape(loss.shape[0], -1), axis=1)
+                mx.mean(_reshape(loss, (loss.shape[0], -1)), axis=1)
                 if self.presence_head
                 else mx.mean(loss)
             )
 
         loss_dice = dice_loss(
-            logits.reshape(logits.shape[0], -1),
-            semantic_float.reshape(semantic_float.shape[0], -1),
+            _reshape(logits, (logits.shape[0], -1)),
+            _reshape(semantic_float, (semantic_float.shape[0], -1)),
             semantic_float.shape[0],
             reduce=not self.presence_head,
         )
         miou = segment_miou(mx.sigmoid(logits) > 0.5, semantic_targets)
-        loss_dict = {}
+        loss_dict: LossDict = {}
 
         if self.presence_head:
             if presence_logit is None:
@@ -606,20 +782,23 @@ class SemanticSegCriterion(LossWithWeights):
                     "presence_head=True requires out_dict['presence_logit']."
                 )
             presence_target = mx.any(
-                semantic_targets.reshape(semantic_targets.shape[0], -1),
+                _reshape(semantic_targets, (semantic_targets.shape[0], -1)),
                 axis=-1,
             )
             if self.presence_loss:
                 presence_loss = mx.mean(
                     _bce_with_logits(
-                        _as_float_array(presence_logit).reshape(-1),
+                        _reshape(_as_float_array(presence_logit), (-1,)),
                         presence_target.astype(mx.float32),
                     )
                 )
                 presence_acc = mx.mean(
                     (
-                        (mx.sigmoid(_as_float_array(presence_logit).reshape(-1)) > 0.5)
-                        == presence_target
+                        mx.equal(
+                            mx.sigmoid(_reshape(_as_float_array(presence_logit), (-1,)))
+                            > 0.5,
+                            presence_target,
+                        )
                     ).astype(mx.float32)
                 )
             else:
@@ -645,33 +824,35 @@ class SemanticSegCriterion(LossWithWeights):
         return loss_dict
 
 
-class IABCEMdetr(LossWithWeights):
+class IABCEMdetr(
+    LossWithWeights[[IABCEOutputMap, IABCETargetMap, MatchIndices, ArrayValue]]
+):
     def __init__(
         self,
-        pos_weight,
-        weight_dict=None,
-        compute_aux=True,
-        gamma=0,
-        weak_loss=True,
-        alpha=0.25,
-        pad_n_queries=None,
-        pad_scale_pos=1.0,
-        use_separate_loss_for_det_and_trk=False,
-        num_det_queries=None,
-        det_exhaustive_loss_scale_pos=1.0,
-        det_exhaustive_loss_scale_neg=1.0,
-        det_non_exhaustive_loss_scale_pos=1.0,
-        det_non_exhaustive_loss_scale_neg=1.0,
-        trk_loss_scale_pos=1.0,
-        trk_loss_scale_neg=1.0,
-        no_loss_for_fp_propagation=False,
-        apply_loss_to_det_queries_in_video_grounding=True,
-        use_presence=False,
-        use_presence_semgseg=False,
-        presence_alpha=0.5,
-        presence_gamma=0.0,
+        pos_weight: float,
+        weight_dict: _Weights | None = None,
+        compute_aux: bool = True,
+        gamma: float = 0.0,
+        weak_loss: bool = True,
+        alpha: float = 0.25,
+        pad_n_queries: int | None = None,
+        pad_scale_pos: float = 1.0,
+        use_separate_loss_for_det_and_trk: bool = False,
+        num_det_queries: int | None = None,
+        det_exhaustive_loss_scale_pos: float = 1.0,
+        det_exhaustive_loss_scale_neg: float = 1.0,
+        det_non_exhaustive_loss_scale_pos: float = 1.0,
+        det_non_exhaustive_loss_scale_neg: float = 1.0,
+        trk_loss_scale_pos: float = 1.0,
+        trk_loss_scale_neg: float = 1.0,
+        no_loss_for_fp_propagation: bool = False,
+        apply_loss_to_det_queries_in_video_grounding: bool = True,
+        use_presence: bool = False,
+        use_presence_semgseg: bool = False,
+        presence_alpha: float = 0.5,
+        presence_gamma: float = 0.0,
         pos_focal: bool = False,
-    ):
+    ) -> None:
         del (
             num_det_queries,
             det_exhaustive_loss_scale_pos,
@@ -716,9 +897,15 @@ class IABCEMdetr(LossWithWeights):
         self.presence_gamma = presence_gamma
         self.pos_focal = pos_focal
 
-    def _target_arrays(self, src_logits, outputs, targets, indices):
-        batch_idx = _as_array(indices[0], dtype=mx.int64).reshape(-1)
-        src_idx = _as_array(indices[1], dtype=mx.int64).reshape(-1)
+    def _target_arrays(
+        self,
+        src_logits: mx.array,
+        outputs: IABCETargetArraysOutputMap,
+        targets: IABCETargetArraysTargetMap,
+        indices: MatchIndices,
+    ) -> tuple[mx.array, mx.array]:
+        batch_idx = _reshape(_as_array(indices[0], dtype=mx.int64), (-1,))
+        src_idx = _reshape(_as_array(indices[1], dtype=mx.int64), (-1,))
         linear_idx = batch_idx * src_logits.shape[1] + src_idx
         target_classes = mx.zeros(src_logits.shape, dtype=mx.float32)
         target_classes = mx.put_along_axis(
@@ -732,7 +919,7 @@ class IABCEMdetr(LossWithWeights):
         if linear_idx.size > 0:
             src_boxes_xyxy = _gather_matched(outputs["pred_boxes_xyxy"], indices)
             target_boxes_giou = _target_select(targets["boxes_xyxy"], indices)
-            iou = box_ops.fast_diag_box_iou(src_boxes_xyxy, target_boxes_giou)
+            iou = _fast_diag_box_iou(src_boxes_xyxy, target_boxes_giou)
             matched_prob = mx.sigmoid(src_logits)[indices[0], indices[1]]
             soft_targets = (matched_prob**self.alpha) * (iou ** (1 - self.alpha))
             soft_targets = mx.maximum(soft_targets, _scalar_array(0.01))
@@ -744,7 +931,7 @@ class IABCEMdetr(LossWithWeights):
             )
         return target_classes, positive_targets
 
-    def _binary_f1(self, probabilities, target_classes):
+    def _binary_f1(self, probabilities: mx.array, target_classes: mx.array) -> mx.array:
         pred = probabilities > 0.5
         target = target_classes > 0.5
         tp = mx.sum((pred & target).astype(mx.float32))
@@ -753,9 +940,12 @@ class IABCEMdetr(LossWithWeights):
         denom = 2 * tp + fp + fn
         return mx.where(denom > 0, (2 * tp) / denom, _empty_scalar())
 
-    def _presence_loss(self, outputs, targets, loss_bce):
-        gt_ids = _as_array(targets["object_ids_padded"], dtype=mx.int64)
-        gt_boxes = _as_float_array(targets["boxes_padded"])
+    def _presence_loss(
+        self, outputs: IABCEOutputMap, targets: IABCETargetMap, loss_bce: mx.array
+    ) -> tuple[mx.array, mx.array, mx.array]:
+        presence_targets = cast(_PresenceTargetMap, targets)
+        gt_ids = _as_array(presence_targets["object_ids_padded"], dtype=mx.int64)
+        gt_boxes = _as_float_array(presence_targets["boxes_padded"])
         visible = (gt_ids >= 0) & (gt_boxes[..., 2] > 0) & (gt_boxes[..., 3] > 0)
         keep_loss = mx.any(visible, axis=-1).astype(mx.float32)[:, None]
         loss_bce = loss_bce * keep_loss
@@ -763,8 +953,8 @@ class IABCEMdetr(LossWithWeights):
         if self.use_presence_semgseg or "presence_logit_dec" not in outputs:
             return loss_bce, _empty_scalar(), _empty_scalar()
 
-        presence_logits = _as_float_array(outputs["presence_logit_dec"]).reshape(
-            keep_loss.shape
+        presence_logits = _reshape(
+            _as_float_array(outputs["presence_logit_dec"]), keep_loss.shape
         )
         presence_loss = sigmoid_focal_loss(
             presence_logits,
@@ -774,10 +964,16 @@ class IABCEMdetr(LossWithWeights):
             gamma=self.presence_gamma,
         )
         pred = (mx.sigmoid(presence_logits) > 0.5).astype(mx.float32)
-        presence_acc = mx.mean((pred == keep_loss).astype(mx.float32))
+        presence_acc = mx.mean(mx.equal(pred, keep_loss).astype(mx.float32))
         return loss_bce, presence_loss, presence_acc
 
-    def get_loss(self, outputs, targets, indices, num_boxes):
+    def get_loss(
+        self,
+        outputs: IABCEOutputMap,
+        targets: IABCETargetMap,
+        indices: MatchIndices,
+        num_boxes: ArrayValue,
+    ) -> LossDict:
         if len(outputs["pred_logits"].shape) <= 2:
             raise AssertionError("Incorrect predicted logits shape")
         if outputs["pred_logits"].shape[-1] != 1:
@@ -804,11 +1000,7 @@ class IABCEMdetr(LossWithWeights):
             loss_bce = _bce_with_logits(src_logits, positive_target_classes)
         loss_bce = loss_bce * target_classes * self.pos_weight
 
-        if (
-            self.pad_n_queries is not None
-            and isinstance(self.pad_n_queries, int)
-            and loss_bce.shape[1] < self.pad_n_queries
-        ):
+        if _is_int(self.pad_n_queries) and loss_bce.shape[1] < self.pad_n_queries:
             loss_bce = loss_bce * self.pad_scale_pos
 
         loss_bce = loss_bce + (
@@ -821,7 +1013,7 @@ class IABCEMdetr(LossWithWeights):
             outputs.get("is_video_grounding_batch", False)
             and not self.apply_loss_to_det_queries_in_video_grounding
         ):
-            q_det = int(outputs["Q_det"])
+            q_det = int(cast(_QDetMap, outputs)["Q_det"])
             keep_cols = mx.arange(loss_bce.shape[1], dtype=mx.int64) >= q_det
             loss_bce = loss_bce * keep_cols.astype(loss_bce.dtype)[None, :]
 
@@ -848,7 +1040,7 @@ class IABCEMdetr(LossWithWeights):
         elif self.pad_n_queries is None or loss_bce.shape[1] >= self.pad_n_queries:
             loss_bce = mx.mean(loss_bce)
         else:
-            if not isinstance(self.pad_n_queries, int):
+            if not _is_int(self.pad_n_queries):
                 raise AssertionError("pad_n_queries must be an int.")
             if loss_bce.shape[1] >= self.pad_n_queries:
                 raise AssertionError(
@@ -865,8 +1057,8 @@ class IABCEMdetr(LossWithWeights):
         }
 
 
-class Det2TrkAssoc(LossWithWeights):
-    def __init__(self, *args, **kwargs):
+class Det2TrkAssoc(LossWithWeights[[]]):
+    def __init__(self, *args: object, **kwargs: object) -> None:
         raise_unsupported(
             "sam3_mlx.train.loss.loss_fns.Det2TrkAssoc",
             reason="training-loop",
@@ -877,8 +1069,8 @@ class Det2TrkAssoc(LossWithWeights):
         )
 
 
-class TrackingByDetectionAssoc(LossWithWeights):
-    def __init__(self, *args, **kwargs):
+class TrackingByDetectionAssoc(LossWithWeights[[]]):
+    def __init__(self, *args: object, **kwargs: object) -> None:
         raise_unsupported(
             "sam3_mlx.train.loss.loss_fns.TrackingByDetectionAssoc",
             reason="training-loop",
