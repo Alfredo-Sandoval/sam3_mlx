@@ -1,15 +1,53 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from functools import partial
-from typing import Tuple, Type
+from typing import Protocol, cast
 
 import mlx.core as mx
-import mlx.nn as nn
+from mlx import nn
 
 from sam3_mlx._unsupported import raise_unsupported
 from sam3_mlx.sam.common import MLPBlock
 from sam3_mlx.sam.rope import apply_rotary_enc, apply_rotary_enc_real, compute_axial_cis
+
+
+class _ArrayMethods(Protocol):
+    def reshape(self, *shape: int) -> mx.array: ...
+
+    def transpose(self, *axes: int) -> mx.array: ...
+
+
+class _ArrayModule(Protocol):
+    def __call__(self, x: mx.array) -> mx.array: ...
+
+
+class _ActivationFactory(Protocol):
+    def __call__(self) -> _ArrayModule: ...
+
+
+class _ComputeAxialCis(Protocol):
+    def __call__(
+        self,
+        end_x: int,
+        end_y: int,
+        scale_pos: float = 1.0,
+        offset: int = 0,
+        device: object | None = None,
+    ) -> mx.array: ...
+
+
+def _reshape(array: mx.array, *shape: int) -> mx.array:
+    return cast(_ArrayMethods, array).reshape(*shape)
+
+
+def _transpose(array: mx.array, *axes: int) -> mx.array:
+    return cast(_ArrayMethods, array).transpose(*axes)
+
+
+def _as_array_module(module: object) -> _ArrayModule:
+    return cast(_ArrayModule, module)
 
 
 def _raise_transformer_unsupported(feature: str, *, reason: str, detail: str) -> None:
@@ -27,7 +65,7 @@ class TwoWayTransformer(nn.Module):
         embedding_dim: int,
         num_heads: int,
         mlp_dim: int,
-        activation: Type[nn.Module] = nn.ReLU,
+        activation: _ActivationFactory = nn.ReLU,
         attention_downsample_rate: int = 2,
     ) -> None:
         super().__init__()
@@ -49,20 +87,26 @@ class TwoWayTransformer(nn.Module):
         self.final_attn_token_to_image = Attention(
             embedding_dim, num_heads, downsample_rate=attention_downsample_rate
         )
-        self.norm_final_attn = nn.LayerNorm(embedding_dim)
+        self.norm_final_attn = _as_array_module(nn.LayerNorm(embedding_dim))
 
     def __call__(
         self,
         image_embedding: mx.array,
         image_pe: mx.array,
         point_embedding: mx.array,
-    ) -> Tuple[mx.array, mx.array]:
+    ) -> tuple[mx.array, mx.array]:
         batch_size, channels, height, width = image_embedding.shape
-        image_embedding = image_embedding.reshape(
-            batch_size, channels, height * width
-        ).transpose(0, 2, 1)
-        image_pe = image_pe.reshape(batch_size, channels, height * width).transpose(
-            0, 2, 1
+        image_embedding = _transpose(
+            _reshape(image_embedding, batch_size, channels, height * width),
+            0,
+            2,
+            1,
+        )
+        image_pe = _transpose(
+            _reshape(image_pe, batch_size, channels, height * width),
+            0,
+            2,
+            1,
         )
 
         queries = point_embedding
@@ -88,20 +132,20 @@ class TwoWayAttentionBlock(nn.Module):
         embedding_dim: int,
         num_heads: int,
         mlp_dim: int = 2048,
-        activation: Type[nn.Module] = nn.ReLU,
+        activation: _ActivationFactory = nn.ReLU,
         attention_downsample_rate: int = 2,
         skip_first_layer_pe: bool = False,
     ) -> None:
         super().__init__()
         self.self_attn = Attention(embedding_dim, num_heads)
-        self.norm1 = nn.LayerNorm(embedding_dim)
+        self.norm1 = _as_array_module(nn.LayerNorm(embedding_dim))
         self.cross_attn_token_to_image = Attention(
             embedding_dim, num_heads, downsample_rate=attention_downsample_rate
         )
-        self.norm2 = nn.LayerNorm(embedding_dim)
+        self.norm2 = _as_array_module(nn.LayerNorm(embedding_dim))
         self.mlp = MLPBlock(embedding_dim, mlp_dim, activation)
-        self.norm3 = nn.LayerNorm(embedding_dim)
-        self.norm4 = nn.LayerNorm(embedding_dim)
+        self.norm3 = _as_array_module(nn.LayerNorm(embedding_dim))
+        self.norm4 = _as_array_module(nn.LayerNorm(embedding_dim))
         self.cross_attn_image_to_token = Attention(
             embedding_dim, num_heads, downsample_rate=attention_downsample_rate
         )
@@ -113,7 +157,7 @@ class TwoWayAttentionBlock(nn.Module):
         keys: mx.array,
         query_pe: mx.array,
         key_pe: mx.array,
-    ) -> Tuple[mx.array, mx.array]:
+    ) -> tuple[mx.array, mx.array]:
         if self.skip_first_layer_pe:
             queries = self.self_attn(q=queries, k=queries, v=queries)
         else:
@@ -156,21 +200,24 @@ class Attention(nn.Module):
         self.num_heads = num_heads
         if self.internal_dim % num_heads != 0:
             raise AssertionError("num_heads must divide embedding_dim.")
-        self.q_proj = nn.Linear(embedding_dim, self.internal_dim)
-        self.k_proj = nn.Linear(self.kv_in_dim, self.internal_dim)
-        self.v_proj = nn.Linear(self.kv_in_dim, self.internal_dim)
-        self.out_proj = nn.Linear(self.internal_dim, embedding_dim)
+        self.q_proj = _as_array_module(nn.Linear(embedding_dim, self.internal_dim))
+        self.k_proj = _as_array_module(nn.Linear(self.kv_in_dim, self.internal_dim))
+        self.v_proj = _as_array_module(nn.Linear(self.kv_in_dim, self.internal_dim))
+        self.out_proj = _as_array_module(nn.Linear(self.internal_dim, embedding_dim))
         self.dropout_p = dropout
 
     def _separate_heads(self, x: mx.array, num_heads: int) -> mx.array:
         batch_size, num_tokens, channels = x.shape
-        x = x.reshape(batch_size, num_tokens, num_heads, channels // num_heads)
-        return x.transpose(0, 2, 1, 3)
+        x = _reshape(x, batch_size, num_tokens, num_heads, channels // num_heads)
+        return _transpose(x, 0, 2, 1, 3)
 
     def _recombine_heads(self, x: mx.array) -> mx.array:
         batch_size, num_heads, num_tokens, channels = x.shape
-        return x.transpose(0, 2, 1, 3).reshape(
-            batch_size, num_tokens, num_heads * channels
+        return _reshape(
+            _transpose(x, 0, 2, 1, 3),
+            batch_size,
+            num_tokens,
+            num_heads * channels,
         )
 
     def __call__(self, q: mx.array, k: mx.array, v: mx.array) -> mx.array:
@@ -194,19 +241,38 @@ class Attention(nn.Module):
 class RoPEAttention(Attention):
     def __init__(
         self,
-        *args,
-        rope_theta=10000.0,
-        rope_k_repeat=False,
-        feat_sizes=(64, 64),
-        use_rope_real=False,
-        **kwargs,
-    ):
-        super().__init__(*args, **kwargs)
-        self.use_rope_real = use_rope_real
-        self.compute_cis = partial(
-            compute_axial_cis, dim=self.internal_dim // self.num_heads, theta=rope_theta
+        embedding_dim: int,
+        num_heads: int,
+        downsample_rate: int = 1,
+        dropout: float = 0.0,
+        kv_in_dim: int | None = None,
+        use_fa3: bool = False,
+        rope_theta: float = 10000.0,
+        rope_k_repeat: bool = False,
+        feat_sizes: Sequence[int] = (64, 64),
+        use_rope_real: bool = False,
+    ) -> None:
+        super().__init__(
+            embedding_dim=embedding_dim,
+            num_heads=num_heads,
+            downsample_rate=downsample_rate,
+            dropout=dropout,
+            kv_in_dim=kv_in_dim,
+            use_fa3=use_fa3,
         )
-        self.freqs_cis = self.compute_cis(end_x=feat_sizes[0], end_y=feat_sizes[1])
+        if len(feat_sizes) != 2:
+            raise ValueError("feat_sizes must contain exactly two spatial dimensions.")
+        feat_x, feat_y = int(feat_sizes[0]), int(feat_sizes[1])
+        self.use_rope_real = use_rope_real
+        self.compute_cis: _ComputeAxialCis = cast(
+            _ComputeAxialCis,
+            partial(
+                compute_axial_cis,
+                dim=self.internal_dim // self.num_heads,
+                theta=rope_theta,
+            ),
+        )
+        self.freqs_cis = self.compute_cis(end_x=feat_x, end_y=feat_y)
         self.freqs_cis_real = self.freqs_cis[..., 0]
         self.freqs_cis_imag = self.freqs_cis[..., 1]
         self.rope_k_repeat = rope_k_repeat

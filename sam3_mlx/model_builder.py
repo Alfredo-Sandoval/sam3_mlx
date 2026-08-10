@@ -18,8 +18,8 @@ from typing import (
 )
 
 import mlx.core as mx
-import mlx.nn as nn
 import mlx.utils as mlx_utils
+from mlx import nn
 
 from sam3_mlx._device import is_mlx_runtime_device
 from sam3_mlx._unsupported import raise_unsupported

@@ -2,11 +2,33 @@ import pytest
 import mlx.core as mx
 
 from sam3_mlx._unsupported import Sam3MlxUnsupportedError
-from sam3_mlx.model.geometry_encoders import (  # noqa: E402
+from sam3_mlx.model.geometry_encoders import (
     Prompt,
     SequenceGeometryEncoder,
     concat_padded_sequences,
 )
+
+
+def _require_array(value: mx.array | None) -> mx.array:
+    assert value is not None
+    return value
+
+
+class _TestableSequenceGeometryEncoder(SequenceGeometryEncoder):
+    def encode_boxes_for_test(
+        self,
+        *,
+        boxes: mx.array,
+        boxes_mask: mx.array,
+        boxes_labels: mx.array,
+        img_feats: mx.array,
+    ) -> tuple[mx.array, mx.array]:
+        return self._encode_boxes(
+            boxes=boxes,
+            boxes_mask=boxes_mask,
+            boxes_labels=boxes_labels,
+            img_feats=img_feats,
+        )
 
 
 def test_concat_padded_sequences_matches_scatter_order_and_index():
@@ -84,22 +106,22 @@ def test_prompt_append_points_and_masks_follow_official_prompt_contract():
         mx.array([[False, False]]),
     )
 
-    assert prompt.point_embeddings.tolist() == [
+    assert _require_array(prompt.point_embeddings).tolist() == [
         [[1.0, 1.0]],
         [[2.0, 2.0]],
         [[3.0, 3.0]],
         [[0.0, 0.0]],
     ]
-    assert prompt.point_labels.tolist() == [[1], [0], [1], [0]]
-    assert prompt.point_mask.tolist() == [[False, False, False, True]]
+    assert _require_array(prompt.point_labels).tolist() == [[1], [0], [1], [0]]
+    assert _require_array(prompt.point_mask).tolist() == [[False, False, False, True]]
 
     null_prompt = Prompt()
     masks = mx.zeros((1, 2, 1, 4, 4), dtype=mx.float32)
     null_prompt.append_masks(masks)
 
-    assert null_prompt.mask_embeddings.shape == (1, 2, 1, 4, 4)
-    assert null_prompt.mask_labels.tolist() == [[1, 1]]
-    assert null_prompt.mask_mask.tolist() == [[False], [False]]
+    assert _require_array(null_prompt.mask_embeddings).shape == (1, 2, 1, 4, 4)
+    assert _require_array(null_prompt.mask_labels).tolist() == [[1, 1]]
+    assert _require_array(null_prompt.mask_mask).tolist() == [[False], [False]]
 
     with pytest.raises(
         Sam3MlxUnsupportedError,
@@ -123,24 +145,42 @@ def test_prompt_clone_preserves_box_and_point_fields_independently():
     clone = prompt.clone()
 
     assert clone is not prompt
-    assert clone.box_embeddings.tolist() == prompt.box_embeddings.tolist()
-    assert clone.box_mask.tolist() == prompt.box_mask.tolist()
-    assert clone.box_labels.tolist() == prompt.box_labels.tolist()
-    assert clone.point_embeddings.tolist() == prompt.point_embeddings.tolist()
-    assert clone.point_mask.tolist() == prompt.point_mask.tolist()
-    assert clone.point_labels.tolist() == prompt.point_labels.tolist()
+    assert (
+        _require_array(clone.box_embeddings).tolist()
+        == _require_array(prompt.box_embeddings).tolist()
+    )
+    assert (
+        _require_array(clone.box_mask).tolist()
+        == _require_array(prompt.box_mask).tolist()
+    )
+    assert (
+        _require_array(clone.box_labels).tolist()
+        == _require_array(prompt.box_labels).tolist()
+    )
+    assert (
+        _require_array(clone.point_embeddings).tolist()
+        == _require_array(prompt.point_embeddings).tolist()
+    )
+    assert (
+        _require_array(clone.point_mask).tolist()
+        == _require_array(prompt.point_mask).tolist()
+    )
+    assert (
+        _require_array(clone.point_labels).tolist()
+        == _require_array(prompt.point_labels).tolist()
+    )
 
     clone.append_points(
         mx.array([[[0.5, 0.5]]], dtype=mx.float32),
         mx.array([[1]], dtype=mx.int64),
     )
 
-    assert prompt.point_embeddings.shape == (1, 1, 2)
-    assert clone.point_embeddings.shape == (2, 1, 2)
+    assert _require_array(prompt.point_embeddings).shape == (1, 1, 2)
+    assert _require_array(clone.point_embeddings).shape == (2, 1, 2)
 
 
 def test_sequence_geometry_encoder_boxes_pool_uses_mlx_channels_last_conv():
-    encoder = SequenceGeometryEncoder(
+    encoder = _TestableSequenceGeometryEncoder(
         encode_boxes_as_points=False,
         points_direct_project=True,
         points_pool=False,
@@ -160,7 +200,7 @@ def test_sequence_geometry_encoder_boxes_pool_uses_mlx_channels_last_conv():
     boxes_labels = mx.zeros((0, 1), dtype=mx.int64)
     img_feats = mx.zeros((1, 4, 8, 8), dtype=mx.float32)
 
-    embeds, mask = encoder._encode_boxes(
+    embeds, mask = encoder.encode_boxes_for_test(
         boxes=boxes,
         boxes_mask=boxes_mask,
         boxes_labels=boxes_labels,

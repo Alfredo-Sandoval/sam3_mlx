@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import math
 import weakref
 from collections.abc import Callable, Iterator, Mapping
@@ -11,14 +12,15 @@ from typing import (
     Final,
     Literal,
     Protocol,
+    TYPE_CHECKING,
     TypeAlias,
     TypeVar,
     cast,
 )
 
 import mlx.core as mx
-import mlx.nn as nn
 import mlx.utils as mlx_utils
+from mlx import nn
 
 from sam3_mlx._unsupported import raise_unsupported
 
@@ -123,7 +125,34 @@ _tree_map_with_path = cast(_TreeMapWithPath, getattr(mlx_utils, "tree_map_with_p
 _pad = cast(_Pad, getattr(mx, "pad"))
 _stack = cast(_Stack, getattr(mx, "stack"))
 _concat = cast(_Concat, getattr(mx, "concat"))
-_glorot_uniform = cast(_GlorotUniform, getattr(nn.init, "glorot_uniform"))
+_glorot_uniform = cast(_GlorotUniform, getattr(getattr(nn, "init"), "glorot_uniform"))
+
+
+if TYPE_CHECKING:
+
+    class _MultiHeadAttentionBase(nn.Module):
+        query_proj: _LinearModule
+        key_proj: _LinearModule
+        value_proj: _LinearModule
+        out_proj: _LinearModule
+        num_heads: int
+
+        def __init__(
+            self,
+            dims: int,
+            num_heads: int,
+            query_input_dims: int | None = None,
+            key_input_dims: int | None = None,
+            value_input_dims: int | None = None,
+            value_dims: int | None = None,
+            value_output_dims: int | None = None,
+            bias: bool = False,
+        ) -> None: ...
+
+else:
+    _MultiHeadAttentionBase = getattr(
+        importlib.import_module("mlx.nn"), "MultiHeadAttention"
+    )
 
 
 def _raise_attention_unsupported(feature: str, *, reason: str, detail: str) -> None:
@@ -580,14 +609,13 @@ def _as_array_callable(module: object) -> _ArrayCallable:
     return cast(_ArrayCallable, module)
 
 
-class MultiheadAttentionWrapper(nn.Module):
+class MultiheadAttentionWrapper(_MultiHeadAttentionBase):
     """SAM3 multi-head attention with PyTorch-compatible kwargs and masks.
 
-    Parameter-key layout matches mlx.nn.MultiHeadAttention; this is not a subclass.
+    Parameter-key layout and runtime identity match mlx.nn.MultiHeadAttention.
     """
 
     def __init__(self, *args: object, **kwargs: object) -> None:
-        super().__init__()
         has_dims_keyword = "dims" in kwargs
         has_embed_dim_keyword = "embed_dim" in kwargs
         dims = kwargs.pop("dims", None)
@@ -700,11 +728,17 @@ class MultiheadAttentionWrapper(nn.Module):
             key_in if resolved_value_input is None else cast(int, resolved_value_input)
         )
 
+        super().__init__(
+            dims_i,
+            num_heads_i,
+            query_input_dims=query_in,
+            key_input_dims=key_in,
+            value_input_dims=value_in,
+            value_dims=dims_i,
+            value_output_dims=dims_i,
+            bias=bias_b,
+        )
         self.num_heads = num_heads_i
-        self.query_proj = _as_linear_module(nn.Linear(query_in, dims_i, bias=bias_b))
-        self.key_proj = _as_linear_module(nn.Linear(key_in, dims_i, bias=bias_b))
-        self.value_proj = _as_linear_module(nn.Linear(value_in, dims_i, bias=bias_b))
-        self.out_proj = _as_linear_module(nn.Linear(dims_i, dims_i, bias=bias_b))
         self.embed_dim = dims_i
         self.kdim = key_in
         self.vdim = value_in
@@ -712,11 +746,6 @@ class MultiheadAttentionWrapper(nn.Module):
         self.dropout = dropout_f
         self.batch_first = batch_first_b
         self.head_dim = dims_i // num_heads_i
-        if self.head_dim * num_heads_i != dims_i:
-            raise ValueError(
-                "The input feature dimensions should be divisible by the "
-                f"number of heads ({dims_i} % {num_heads_i}) != 0"
-            )
         self.use_act_checkpoint = use_act_checkpoint_b
         self.bias_k: mx.array | None = None
         self.bias_v: mx.array | None = None
@@ -1051,8 +1080,8 @@ class DropPath(nn.Module):
 class TransformerWrapper(nn.Module):
     def __init__(
         self,
-        encoder: nn.Module | None,
-        decoder: nn.Module | None,
+        encoder: object | None,
+        decoder: object | None,
         d_model: int,
         two_stage_type: str = "none",
         pos_enc_at_input_dec: bool = True,
@@ -1332,9 +1361,9 @@ def gen_sineembed_for_position(pos_array: mx.array, num_feats: int = 256) -> mx.
 
 
 class SAM3Output:
-    """Official-style SAM3 output container with selectable iteration modes.
+    """Coherent SAM3 output container with selectable iteration modes.
 
-    List-like (append/iter/getitem/len) but not a list subclass.
+    List-like (append/iter/getitem/len) but intentionally not a list subclass.
     """
 
     class IterMode(Enum):

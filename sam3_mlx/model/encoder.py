@@ -4,7 +4,7 @@ from collections.abc import Mapping, Sequence
 from typing import Protocol, TypedDict, cast
 
 import mlx.core as mx
-import mlx.nn as nn
+from mlx import nn
 
 from sam3_mlx._unsupported import raise_unsupported
 from sam3_mlx.model.act_ckpt_utils import activation_ckpt_wrapper
@@ -283,7 +283,13 @@ class TransformerEncoderLayer(nn.Module):
         )
 
 
-class TransformerEncoder(nn.Module):
+class _HasFreeze(Protocol):
+    def freeze(self) -> object: ...
+
+
+class _TransformerEncoderBase(nn.Module):
+    """Shared encoder state/helpers; concrete classes own their forward signatures."""
+
     def __init__(
         self,
         layer: CloneableModule[TransformerEncoderLayer],
@@ -408,7 +414,7 @@ class TransformerEncoder(nn.Module):
             spatial_shapes_arr,
         )
 
-    def forward(
+    def _run_encoder(
         self,
         src: list[mx.array],
         src_key_padding_masks: list[mx.array | None] | None = None,
@@ -466,6 +472,26 @@ class TransformerEncoder(nn.Module):
             valid_ratios,
         )
 
+
+class TransformerEncoder(_TransformerEncoderBase):
+    def forward(
+        self,
+        src: list[mx.array],
+        src_key_padding_masks: list[mx.array | None] | None = None,
+        pos: list[mx.array] | None = None,
+        prompt: mx.array | None = None,
+        prompt_key_padding_mask: mx.array | None = None,
+        encoder_extra_kwargs: Mapping[str, object] | None = None,
+    ) -> tuple[mx.array, mx.array | None, mx.array, mx.array, mx.array, mx.array]:
+        return self._run_encoder(
+            src=src,
+            src_key_padding_masks=src_key_padding_masks,
+            pos=pos,
+            prompt=prompt,
+            prompt_key_padding_mask=prompt_key_padding_mask,
+            encoder_extra_kwargs=encoder_extra_kwargs,
+        )
+
     def __call__(
         self,
         src: list[mx.array],
@@ -485,11 +511,7 @@ class TransformerEncoder(nn.Module):
         )
 
 
-class _HasFreeze(Protocol):
-    def freeze(self) -> object: ...
-
-
-class TransformerEncoderFusion(TransformerEncoder):
+class TransformerEncoderFusion(_TransformerEncoderBase):
     def __init__(
         self,
         layer: CloneableModule[TransformerEncoderLayer],
@@ -605,8 +627,7 @@ class TransformerEncoderFusion(TransformerEncoder):
             level_start_index,
             spatial_shapes,
             valid_ratios,
-        ) = TransformerEncoder.forward(
-            self,
+        ) = self._run_encoder(
             src=src,
             src_key_padding_masks=src_key_padding_mask,
             pos=src_pos,

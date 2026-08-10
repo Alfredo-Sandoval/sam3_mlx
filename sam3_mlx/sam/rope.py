@@ -1,14 +1,23 @@
 from __future__ import annotations
 
-from typing import Optional
+from collections.abc import Sequence
+from typing import Protocol, cast
 
 import mlx.core as mx
-import mlx.nn as nn
+from mlx import nn
 
 from sam3_mlx._unsupported import raise_unsupported
 
 
-def _raise_rope_device_unsupported(feature: str, device) -> None:
+class _ArrayMethods(Protocol):
+    def reshape(self, *shape: int) -> mx.array: ...
+
+
+def _reshape(array: mx.array, *shape: int) -> mx.array:
+    return cast(_ArrayMethods, array).reshape(*shape)
+
+
+def _raise_rope_device_unsupported(feature: str, device: object) -> None:
     raise_unsupported(
         f"{feature}(device={device!r})",
         reason="unsupported-device",
@@ -17,7 +26,13 @@ def _raise_rope_device_unsupported(feature: str, device) -> None:
     )
 
 
-def init_t_xy(end_x: int, end_y: int, scale: float = 1.0, offset: int = 0, device=None):
+def init_t_xy(
+    end_x: int,
+    end_y: int,
+    scale: float = 1.0,
+    offset: int = 0,
+    device: object | None = None,
+) -> tuple[mx.array, mx.array]:
     if device not in (None, "mlx"):
         _raise_rope_device_unsupported("sam3_mlx.sam.rope.init_t_xy", device)
     t = mx.arange(end_x * end_y, dtype=mx.float32)
@@ -33,8 +48,8 @@ def compute_axial_cis(
     theta: float = 10000.0,
     scale_pos: float = 1.0,
     offset: int = 0,
-    device=None,
-):
+    device: object | None = None,
+) -> mx.array:
     if device not in (None, "mlx"):
         _raise_rope_device_unsupported("sam3_mlx.sam.rope.compute_axial_cis", device)
     freq_idx = mx.arange(0, dim, 4, dtype=mx.float32)[: dim // 4]
@@ -48,17 +63,22 @@ def compute_axial_cis(
     return mx.stack([mx.cos(freqs), mx.sin(freqs)], axis=-1)
 
 
-def reshape_for_broadcast(freqs: mx.array, x: mx.array):
+def reshape_for_broadcast(freqs: mx.array, x: mx.array) -> mx.array:
     if freqs.shape != (x.shape[-2], x.shape[-1]):
         raise AssertionError(
             f"freqs shape {freqs.shape} does not match {x.shape[-2:]}."
         )
     shape = [1] * x.ndim
-    shape[-2], shape[-1] = freqs.shape
-    return freqs.reshape(shape)
+    shape[-2], shape[-1] = list(freqs.shape)
+    return _reshape(freqs, *shape)
 
 
-def complex_mult(x_real, x_imag, freqs_real, freqs_imag):
+def complex_mult(
+    x_real: mx.array,
+    x_imag: mx.array,
+    freqs_real: mx.array,
+    freqs_imag: mx.array,
+) -> mx.array:
     real = x_real * freqs_real - x_imag * freqs_imag
     imag = x_real * freqs_imag + x_imag * freqs_real
     return mx.stack([real, imag], axis=-1)
@@ -70,17 +90,18 @@ def _real_imag(freqs_cis: mx.array) -> tuple[mx.array, mx.array]:
     return freqs_cis[..., 0], freqs_cis[..., 1]
 
 
-def _apply_real_rotary(x: mx.array, freqs_real: mx.array, freqs_imag: mx.array):
-    pairs = x.astype(mx.float32).reshape(*x.shape[:-1], -1, 2)
+def _apply_real_rotary(
+    x: mx.array, freqs_real: mx.array, freqs_imag: mx.array
+) -> mx.array:
+    pairs = _reshape(x.astype(mx.float32), *x.shape[:-1], -1, 2)
     real = pairs[..., 0]
     imag = pairs[..., 1]
     freqs_real = reshape_for_broadcast(freqs_real, real)
     freqs_imag = reshape_for_broadcast(freqs_imag, imag)
-    return (
-        complex_mult(real, imag, freqs_real, freqs_imag)
-        .reshape(x.shape)
-        .astype(x.dtype)
-    )
+    return _reshape(
+        complex_mult(real, imag, freqs_real, freqs_imag),
+        *x.shape,
+    ).astype(x.dtype)
 
 
 def _tile_freqs_for_repeated_keys(freqs: mx.array, repeat: int) -> mx.array:
@@ -94,7 +115,7 @@ def apply_rotary_enc(
     xk: mx.array,
     freqs_cis: mx.array,
     repeat_freqs_k: bool = False,
-):
+) -> tuple[mx.array, mx.array]:
     freqs_real, freqs_imag = _real_imag(freqs_cis)
     xq_out = _apply_real_rotary(xq, freqs_real, freqs_imag)
     if xk.shape[-2] == 0:
@@ -109,11 +130,12 @@ def apply_rotary_enc(
 
 def apply_rotary_enc_real(
     xq: mx.array,
-    xk: mx.array,
+    xk: mx.array | None,
     freqs_cis_real: mx.array,
     freqs_cis_imag: mx.array,
     repeat_freqs_k: bool = False,
-):
+) -> tuple[mx.array, mx.array]:
+    # Preserve the pre-typing fail-closed contract: None keys are rejected.
     if xk is None or xk.shape[-2] == 0:
         raise AssertionError("apply_rotary_enc_real requires non-empty keys.")
     xq_out = _apply_real_rotary(xq, freqs_cis_real, freqs_cis_imag)
@@ -125,18 +147,18 @@ def apply_rotary_enc_real(
     return xq_out, xk_out
 
 
-def broadcat(tensors, dim=-1):
-    shape = []
+def broadcat(tensors: Sequence[mx.array], dim: int = -1) -> mx.array:
+    shape: list[int] = []
     for axes in zip(*(tensor.shape for tensor in tensors), strict=True):
         shape.append(max(axes))
     return mx.concat([mx.broadcast_to(tensor, shape) for tensor in tensors], axis=dim)
 
 
-def rotate_half(x: mx.array):
-    x = x.reshape(*x.shape[:-1], -1, 2)
+def rotate_half(x: mx.array) -> mx.array:
+    x = _reshape(x, *x.shape[:-1], -1, 2)
     x1 = x[..., 0]
     x2 = x[..., 1]
-    return mx.stack([-x2, x1], axis=-1).reshape(*x.shape[:-2], -1)
+    return _reshape(mx.stack([-x2, x1], axis=-1), *x.shape[:-2], -1)
 
 
 class VisionRotaryEmbeddingVE(nn.Module):
@@ -144,10 +166,10 @@ class VisionRotaryEmbeddingVE(nn.Module):
         self,
         dim: int,
         seq_len: int,
-        pt_seq_len: Optional[int] = None,
+        pt_seq_len: int | None = None,
         theta: float = 10000.0,
         offset: int = 1,
-    ):
+    ) -> None:
         super().__init__()
         freqs = 1.0 / (
             theta ** (mx.arange(0, dim, 2, dtype=mx.float32)[: dim // 2] / dim)
@@ -157,9 +179,9 @@ class VisionRotaryEmbeddingVE(nn.Module):
         freqs = t[:, None] * freqs[None, :]
         freqs = mx.repeat(freqs, 2, axis=-1)
         freqs = broadcat((freqs[None, :, :], freqs[:, None, :]), dim=-1)
-        freqs = freqs.reshape(-1, freqs.shape[-1])
+        freqs = _reshape(freqs, -1, freqs.shape[-1])
         self.freqs_cos = mx.cos(freqs)
         self.freqs_sin = mx.sin(freqs)
 
-    def __call__(self, t: mx.array):
+    def __call__(self, t: mx.array) -> mx.array:
         return t * self.freqs_cos + rotate_half(t) * self.freqs_sin

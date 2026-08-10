@@ -37,7 +37,7 @@ def test_pool_text_feat_mean_and_masked():
     assert mean.shape == (2, 4)
 
     mask = mx.array([[False, False, True], [False, True, True]])
-    prompt = mx.arange(24, dtype=mx.float32).reshape(3, 2, 4)
+    prompt = mx.reshape(mx.arange(24, dtype=mx.float32), (3, 2, 4))
     pooled = pool_text_feat(prompt, prompt_mask=mask, pool_with_mask=True)
     assert pooled.shape == (2, 4)
     # batch 0: tokens 0,1 valid; batch 1: token 0 only
@@ -48,7 +48,7 @@ def test_pool_text_feat_mean_and_masked():
 
 
 def test_transformer_encoder_multilevel_prepare_shapes():
-    # Factory path: layer instances hold non-pickleable MLX activation callables.
+    # One factory-cloned layer covers preparation and encoder wiring together.
     encoder = TransformerEncoder(
         layer=_tiny_layer,
         num_layers=1,
@@ -59,23 +59,29 @@ def test_transformer_encoder_multilevel_prepare_shapes():
         mx.zeros((1, 4, 2, 3)),
         mx.zeros((1, 4, 1, 2)),
     ]
-    masks = [
+    masks: list[mx.array | None] = [
         mx.zeros((1, 2, 3), dtype=mx.bool_),
         mx.zeros((1, 1, 2), dtype=mx.bool_),
     ]
     pos = [mx.zeros_like(src) for src in srcs]
     (
-        src_flat,
+        memory,
         mask_flat,
         pos_flat,
         level_start_index,
-        valid_ratios,
         spatial_shapes,
-    ) = encoder._prepare_multilevel_features(srcs, masks, pos)
+        valid_ratios,
+    ) = encoder(
+        src=srcs,
+        src_key_padding_masks=masks,
+        pos=pos,
+        prompt=mx.zeros((1, 3, 4)),
+        prompt_key_padding_mask=mx.zeros((1, 3), dtype=mx.bool_),
+    )
 
-    assert src_flat.shape == (1, 2 * 3 + 1 * 2, 4)
-    assert mask_flat is not None and mask_flat.shape == (1, 8)
-    assert pos_flat.shape == (1, 8, 4)
+    assert memory.shape == (2 * 3 + 1 * 2, 1, 4)
+    assert mask_flat is not None and mask_flat.shape == (8, 1)
+    assert pos_flat.shape == (8, 1, 4)
     assert spatial_shapes.shape == (2, 2)
     assert level_start_index.shape == (2,)
     assert valid_ratios.shape == (1, 2, 2)
