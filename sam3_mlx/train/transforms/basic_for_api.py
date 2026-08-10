@@ -12,18 +12,73 @@ Video augmentation and Torchvision v2 behavior fail fast.
 from __future__ import annotations
 
 import random
-from typing import Iterable
+from collections.abc import Iterable, Sequence
+from typing import Protocol, TypeAlias, TypedDict, overload
 
 import mlx.core as mx
 import numpy as np
+from numpy.typing import NDArray
 from PIL import Image as PILImage
 from PIL import ImageEnhance
 from PIL import ImageFilter
 from PIL import ImageOps
 
-from sam3_mlx.model.box_ops import box_xyxy_to_cxcywh, masks_to_boxes
 from sam3_mlx.train._unsupported import raise_unsupported
 from sam3_mlx.train.data.sam3_image_dataset import Datapoint
+from sam3_mlx.train.transforms._array_contracts import (
+    ArrayData,
+    ArrayInput as TensorInput,
+    CropRegion,
+    ImageSize,
+    Padding,
+    as_float_array as _as_float_array,
+    box_xyxy_to_cxcywh as _box_xyxy_to_cxcywh,
+    image_size as _image_size,
+    is_mlx_array as _is_mlx_array,
+    masks_to_boxes as _masks_to_boxes,
+    mx_array as _mx_array,
+    mx_dtype as _mx_dtype,
+    mx_ops as _mx_ops,
+    mx_shape as _mx_shape,
+    restore_array,
+    to_numpy as _to_numpy,
+    transpose_hwc_to_chw as _transpose_hwc_to_chw,
+)
+
+
+ImageData: TypeAlias = PILImage.Image | mx.array
+AffineTranslate: TypeAlias = tuple[float, float]
+AffineShear: TypeAlias = tuple[float, float] | None
+AffineParams: TypeAlias = tuple[float, AffineTranslate, float, AffineShear]
+
+
+class ResizeSchedule(TypedDict):
+    sizes: Sequence[int]
+    max_size: int | None
+
+
+class _PilImageTransform(Protocol):
+    def __call__(self, image: PILImage.Image) -> PILImage.Image: ...
+
+
+class _DatapointTransform(Protocol):
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint: ...
+
+
+class _ResizeScheduler(Protocol):
+    def __call__(self, epoch_num: int) -> ResizeSchedule: ...
+
+
+class _ScalarScheduler(Protocol):
+    def __call__(self, epoch_num: int) -> int: ...
+
+
+def _mask_array(value: object) -> mx.array:
+    if isinstance(value, dict):
+        raise TypeError("Mask transforms require decoded array masks, not RLE dicts.")
+    if _is_mlx_array(value):
+        return value
+    return _mx_array(_to_numpy(value))
 
 
 def _check_no_v2(v2: bool, feature: str) -> None:
@@ -31,46 +86,27 @@ def _check_no_v2(v2: bool, feature: str) -> None:
         raise_unsupported(f"{feature} with torchvision v2")
 
 
-def _as_float_array(value) -> mx.array:
-    if isinstance(value, mx.array):
-        return value.astype(mx.float32)
-    return mx.array(value, dtype=mx.float32)
+@overload
+def _restore_array(value: NDArray[np.generic], like: mx.array) -> mx.array: ...
 
 
-def _is_mlx_array(value) -> bool:
-    return isinstance(value, mx.array)
+@overload
+def _restore_array(
+    value: NDArray[np.generic], like: NDArray[np.generic]
+) -> NDArray[np.generic]: ...
 
 
-def _to_numpy(value) -> np.ndarray:
-    if isinstance(value, np.ndarray):
-        return value
-    if _is_mlx_array(value):
-        mx.eval(value)
-    return np.asarray(value)
+def _restore_array(value: NDArray[np.generic], like: ArrayData) -> ArrayData:
+    return restore_array(value, like, preserve_dtype=True)
 
 
-def _restore_array(value: np.ndarray, like):
-    if _is_mlx_array(like):
-        return mx.array(value, dtype=like.dtype)
-    return value.astype(getattr(like, "dtype", value.dtype), copy=False)
-
-
-def _image_size(data) -> tuple[int, int]:
-    if isinstance(data, PILImage.Image):
-        return data.size
-    array = _to_numpy(data)
-    if array.ndim == 3 and array.shape[0] in (1, 3, 4):
-        return int(array.shape[2]), int(array.shape[1])
-    if array.ndim >= 2:
-        return int(array.shape[1]), int(array.shape[0])
-    raise TypeError(f"Unsupported image shape: {array.shape}.")
-
-
-def _is_chw(array: np.ndarray) -> bool:
+def _is_chw(array: NDArray[np.generic]) -> bool:
     return array.ndim == 3 and array.shape[0] in (1, 3, 4)
 
 
-def _array_to_pil_image(value):
+def _array_to_pil_image(
+    value: ImageData | NDArray[np.generic],
+) -> tuple[PILImage.Image, bool, bool]:
     array = _to_numpy(value)
     chw = _is_chw(array)
     if chw:
@@ -79,7 +115,7 @@ def _array_to_pil_image(value):
         array.size == 0 or (array.min() >= 0.0 and array.max() <= 1.0)
     )
     if was_unit_float:
-        array = array * 255.0
+        array = array.astype(np.float32, copy=False) * 255.0
     if array.dtype != np.uint8:
         array = np.clip(array, 0, 255).astype(np.uint8)
     if array.ndim == 3 and array.shape[-1] == 1:
@@ -87,7 +123,35 @@ def _array_to_pil_image(value):
     return PILImage.fromarray(array), chw, was_unit_float
 
 
-def _restore_pil_image(image: PILImage.Image, like, chw: bool, was_unit_float: bool):
+@overload
+def _restore_pil_image(
+    image: PILImage.Image, like: PILImage.Image, chw: bool, was_unit_float: bool
+) -> PILImage.Image: ...
+
+
+@overload
+def _restore_pil_image(
+    image: PILImage.Image, like: mx.array, chw: bool, was_unit_float: bool
+) -> mx.array: ...
+
+
+@overload
+def _restore_pil_image(
+    image: PILImage.Image,
+    like: NDArray[np.generic],
+    chw: bool,
+    was_unit_float: bool,
+) -> NDArray[np.generic]: ...
+
+
+def _restore_pil_image(
+    image: PILImage.Image,
+    like: ImageData | NDArray[np.generic],
+    chw: bool,
+    was_unit_float: bool,
+) -> ImageData | NDArray[np.generic]:
+    if isinstance(like, PILImage.Image):
+        return image
     array = np.asarray(image)
     if array.ndim == 2:
         array = array[:, :, None]
@@ -98,14 +162,21 @@ def _restore_pil_image(image: PILImage.Image, like, chw: bool, was_unit_float: b
     return _restore_array(array, like)
 
 
-def _apply_pil_transform(data, transform):
+def _apply_pil_transform(data: ImageData, transform: _PilImageTransform) -> ImageData:
     if isinstance(data, PILImage.Image):
         return transform(data)
     image, chw, was_unit_float = _array_to_pil_image(data)
-    return _restore_pil_image(transform(image), data, chw, was_unit_float)
+    restored = _restore_pil_image(transform(image), data, chw, was_unit_float)
+    if isinstance(restored, PILImage.Image):
+        return restored
+    if _is_mlx_array(restored):
+        return restored
+    return _mx_array(restored)
 
 
-def _crop_data(data, top: int, left: int, height: int, width: int):
+def _crop_data(
+    data: ImageData, top: int, left: int, height: int, width: int
+) -> ImageData:
     if isinstance(data, PILImage.Image):
         return data.crop((left, top, left + width, top + height))
     array = _to_numpy(data)
@@ -113,26 +184,29 @@ def _crop_data(data, top: int, left: int, height: int, width: int):
         cropped = array[:, top : top + height, left : left + width]
     else:
         cropped = array[top : top + height, left : left + width, ...]
-    return _restore_array(cropped, data)
+    restored = _restore_array(cropped, data)
+    return restored if _is_mlx_array(restored) else _mx_array(restored)
 
 
-def _hflip_data(data):
+def _hflip_data(data: ImageData) -> ImageData:
     if isinstance(data, PILImage.Image):
         return ImageOps.mirror(data)
     array = _to_numpy(data)
     flipped = np.flip(array, axis=2 if _is_chw(array) else 1)
-    return _restore_array(flipped, data)
+    restored = _restore_array(flipped, data)
+    return restored if _is_mlx_array(restored) else _mx_array(restored)
 
 
-def _resize_data(data, height: int, width: int):
+def _resize_data(data: ImageData, height: int, width: int) -> ImageData:
     if isinstance(data, PILImage.Image):
         return data.resize((width, height), resample=PILImage.Resampling.BILINEAR)
     image, chw, was_unit_float = _array_to_pil_image(data)
     resized = image.resize((width, height), resample=PILImage.Resampling.BILINEAR)
-    return _restore_pil_image(resized, data, chw, was_unit_float)
+    restored = _restore_pil_image(resized, data, chw, was_unit_float)
+    return restored if _is_mlx_array(restored) else _mx_array(restored)
 
 
-def _pad_data(data, padding):
+def _pad_data(data: ImageData, padding: Padding) -> ImageData:
     if len(padding) == 2:
         left, top, right, bottom = 0, 0, padding[0], padding[1]
     else:
@@ -146,47 +220,54 @@ def _pad_data(data, padding):
         pad_width = ((top, bottom), (left, right)) + tuple(
             (0, 0) for _ in range(max(array.ndim - 2, 0))
         )
-    return _restore_array(np.pad(array, pad_width), data)
+    restored = _restore_array(np.pad(array, pad_width), data)
+    return restored if _is_mlx_array(restored) else _mx_array(restored)
 
 
-def _crop_mask(mask, top: int, left: int, height: int, width: int):
-    array = _to_numpy(mask)
+def _crop_mask(mask: object, top: int, left: int, height: int, width: int) -> mx.array:
+    array = _to_numpy(_mask_array(mask))
     cropped = array[top : top + height, left : left + width]
-    return _restore_array(cropped, mask)
+    return _mx_array(cropped)
 
 
-def _hflip_mask(mask):
-    return _restore_array(np.flip(_to_numpy(mask), axis=-1), mask)
+def _hflip_mask(mask: object) -> mx.array:
+    return _mx_array(np.flip(_to_numpy(_mask_array(mask)), axis=-1))
 
 
-def _resize_mask(mask, height: int, width: int):
-    array = _to_numpy(mask).astype(np.uint8, copy=False)
+def _resize_mask(mask: object, height: int, width: int) -> mx.array:
+    array = _to_numpy(_mask_array(mask)).astype(np.uint8, copy=False)
     image = PILImage.fromarray(array)
     resized = image.resize((width, height), resample=PILImage.Resampling.NEAREST)
-    return _restore_array(np.asarray(resized, dtype=np.uint8), mask)
+    return _mx_array(np.asarray(resized, dtype=np.uint8))
 
 
-def _pad_mask(mask, padding):
+def _pad_mask(mask: object, padding: Padding) -> mx.array:
     if len(padding) == 2:
         left, top, right, bottom = 0, 0, padding[0], padding[1]
     else:
         left, top, right, bottom = padding
-    return _restore_array(np.pad(_to_numpy(mask), ((top, bottom), (left, right))), mask)
+    return _mx_array(
+        np.pad(_to_numpy(_mask_array(mask)), ((top, bottom), (left, right)))
+    )
 
 
-def _scale_boxes_xyxy(boxes, ratio_width: float, ratio_height: float) -> mx.array:
+def _scale_boxes_xyxy(
+    boxes: TensorInput, ratio_width: float, ratio_height: float
+) -> mx.array:
     boxes = _as_float_array(boxes)
-    scale = mx.array([ratio_width, ratio_height, ratio_width, ratio_height])
+    scale = _mx_array([ratio_width, ratio_height, ratio_width, ratio_height])
     return boxes * scale
 
 
-def _offset_boxes_xyxy(boxes, offset_x: float, offset_y: float) -> mx.array:
+def _offset_boxes_xyxy(
+    boxes: TensorInput, offset_x: float, offset_y: float
+) -> mx.array:
     boxes = _as_float_array(boxes)
-    offset = mx.array([offset_x, offset_y, offset_x, offset_y])
+    offset = _mx_array([offset_x, offset_y, offset_x, offset_y])
     return boxes + offset
 
 
-def _hflip_boxes_xyxy(boxes, width: int) -> mx.array:
+def _hflip_boxes_xyxy(boxes: TensorInput, width: int) -> mx.array:
     boxes = _as_float_array(boxes)
     x0 = boxes[..., 0]
     y0 = boxes[..., 1]
@@ -195,7 +276,7 @@ def _hflip_boxes_xyxy(boxes, width: int) -> mx.array:
     return mx.stack([width - x1, y0, width - x0, y1], axis=-1)
 
 
-def _hflip_points(points, width: int) -> mx.array:
+def _hflip_points(points: TensorInput, width: int) -> mx.array:
     points = _as_float_array(points)
     x = width - points[..., 0]
     y = points[..., 1]
@@ -203,38 +284,46 @@ def _hflip_points(points, width: int) -> mx.array:
     return mx.stack([x, y, label], axis=-1)
 
 
-def _scale_points(points, ratio_width: float, ratio_height: float) -> mx.array:
+def _scale_points(
+    points: TensorInput, ratio_width: float, ratio_height: float
+) -> mx.array:
     points = _as_float_array(points)
-    scale = mx.array([ratio_width, ratio_height, 1.0])
+    scale = _mx_array([ratio_width, ratio_height, 1.0])
     return points * scale
 
 
-def _offset_points(points, offset_x: float, offset_y: float) -> mx.array:
+def _offset_points(points: TensorInput, offset_x: float, offset_y: float) -> mx.array:
     points = _as_float_array(points)
-    offset = mx.array([offset_x, offset_y, 0.0])
+    offset = _mx_array([offset_x, offset_y, 0.0])
     return points + offset
 
 
-def _crop_boxes_xyxy(boxes, top: int, left: int, height: int, width: int) -> mx.array:
+def _crop_boxes_xyxy(
+    boxes: TensorInput, top: int, left: int, height: int, width: int
+) -> mx.array:
     boxes = _as_float_array(boxes)
-    cropped = boxes - mx.array([left, top, left, top], dtype=mx.float32)
-    max_size = mx.array([width, height], dtype=mx.float32)
-    reshaped = cropped.reshape(-1, 2, 2)
+    cropped = boxes - _mx_array([left, top, left, top], dtype=mx.float32)
+    max_size = _mx_array([width, height], dtype=mx.float32)
+    reshaped = _mx_ops(cropped).reshape(-1, 2, 2)
     reshaped = mx.minimum(reshaped, max_size)
     reshaped = mx.maximum(reshaped, mx.zeros_like(reshaped))
-    return reshaped.reshape(-1, 4)
+    return _mx_ops(reshaped).reshape(-1, 4)
 
 
-def _crop_points(points, top: int, left: int, height: int, width: int) -> mx.array:
+def _crop_points(
+    points: TensorInput, top: int, left: int, height: int, width: int
+) -> mx.array:
     points = _as_float_array(points)
-    cropped = points - mx.array([left, top, 0.0], dtype=mx.float32)
-    max_size = mx.array([width - 1, height - 1], dtype=mx.float32)
+    cropped = points - _mx_array([left, top, 0.0], dtype=mx.float32)
+    max_size = _mx_array([width - 1, height - 1], dtype=mx.float32)
     xy = mx.minimum(cropped[..., :2], max_size)
     xy = mx.maximum(xy, mx.zeros_like(xy))
     return mx.concat([xy, cropped[..., 2:]], axis=-1)
 
 
-def _transform_boxes_xyxy(boxes, matrix, width: int, height: int) -> mx.array:
+def _transform_boxes_xyxy(
+    boxes: TensorInput, matrix: NDArray[np.float32], width: int, height: int
+) -> mx.array:
     boxes_np = _to_numpy(boxes).astype(np.float32, copy=False).reshape(-1, 4)
     corners = np.stack(
         [
@@ -253,10 +342,12 @@ def _transform_boxes_xyxy(boxes, matrix, width: int, height: int) -> mx.array:
     xy[..., 1] = np.clip(xy[..., 1], 0, height)
     mins = xy.min(axis=1)
     maxs = xy.max(axis=1)
-    return mx.array(np.concatenate([mins, maxs], axis=1), dtype=mx.float32)
+    return _mx_array(np.concatenate([mins, maxs], axis=1), dtype=mx.float32)
 
 
-def _transform_points(points, matrix, width: int, height: int) -> mx.array:
+def _transform_points(
+    points: TensorInput, matrix: NDArray[np.float32], width: int, height: int
+) -> mx.array:
     points_np = _to_numpy(points).astype(np.float32, copy=False)
     xy = points_np[..., :2]
     ones = np.ones((*xy.shape[:-1], 1), dtype=np.float32)
@@ -265,10 +356,17 @@ def _transform_points(points, matrix, width: int, height: int) -> mx.array:
     transformed_xy[..., 0] = np.clip(transformed_xy[..., 0], 0, width - 1)
     transformed_xy[..., 1] = np.clip(transformed_xy[..., 1], 0, height - 1)
     out = np.concatenate([transformed_xy, points_np[..., 2:]], axis=-1)
-    return mx.array(out, dtype=mx.float32)
+    return _mx_array(out, dtype=mx.float32)
 
 
-def _affine_matrices(width, height, angle, translate, scale, shear):
+def _affine_matrices(
+    width: int,
+    height: int,
+    angle: float,
+    translate: AffineTranslate,
+    scale: float,
+    shear: AffineShear,
+) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
     center_x = width * 0.5
     center_y = height * 0.5
     angle_rad = np.deg2rad(angle)
@@ -298,13 +396,21 @@ def _affine_matrices(width, height, angle, translate, scale, shear):
     )
     forward = from_origin @ shear_matrix @ rotation @ to_origin
     inverse = np.linalg.inv(forward)
-    return forward, inverse
+    return (
+        forward.astype(np.float32, copy=False),
+        inverse.astype(np.float32, copy=False),
+    )
 
 
-def _apply_affine_image(data, inverse_matrix, interpolation, fill):
+def _apply_affine_image(
+    data: ImageData,
+    inverse_matrix: NDArray[np.float32],
+    interpolation: PILImage.Resampling,
+    fill: int | tuple[int, ...],
+) -> ImageData:
     data_tuple = tuple(float(v) for v in inverse_matrix[:2].reshape(-1))
 
-    def transform(image):
+    def transform(image: PILImage.Image) -> PILImage.Image:
         return image.transform(
             image.size,
             PILImage.Transform.AFFINE,
@@ -316,9 +422,9 @@ def _apply_affine_image(data, inverse_matrix, interpolation, fill):
     return _apply_pil_transform(data, transform)
 
 
-def _apply_affine_mask(mask, inverse_matrix):
+def _apply_affine_mask(mask: object, inverse_matrix: NDArray[np.float32]) -> mx.array:
     data_tuple = tuple(float(v) for v in inverse_matrix[:2].reshape(-1))
-    array = _to_numpy(mask).astype(np.uint8, copy=False)
+    array = _to_numpy(_mask_array(mask)).astype(np.uint8, copy=False)
     image = PILImage.fromarray(array)
     transformed = image.transform(
         image.size,
@@ -327,18 +433,25 @@ def _apply_affine_mask(mask, inverse_matrix):
         resample=PILImage.Resampling.NEAREST,
         fillcolor=0,
     )
-    return _restore_array(np.asarray(transformed, dtype=np.uint8), mask)
+    return _mx_array(np.asarray(transformed, dtype=np.uint8))
 
 
-def hflip(datapoint, index):
+def _scale_area(area: float | mx.array, factor: float) -> float | mx.array:
+    if _is_mlx_array(area):
+        return area * factor
+    return area * factor
+
+
+def hflip(datapoint: Datapoint, index: int) -> Datapoint:
     img = datapoint.images[index]
     width, _height = _image_size(img.data)
     img.data = _hflip_data(img.data)
 
     for obj in img.objects:
         obj.bbox = _hflip_boxes_xyxy(obj.bbox, width)
-        if obj.segment is not None:
-            obj.segment = _hflip_mask(obj.segment)
+        segment = obj.segment
+        if segment is not None:
+            obj.segment = _hflip_mask(segment)
 
     for query in datapoint.find_queries:
         if query.semantic_target is not None:
@@ -350,7 +463,9 @@ def hflip(datapoint, index):
     return datapoint
 
 
-def get_size_with_aspect_ratio(image_size, size, max_size=None):
+def get_size_with_aspect_ratio(
+    image_size: ImageSize, size: int | float, max_size: int | float | None = None
+) -> ImageSize:
     width, height = image_size
     if max_size is not None:
         min_original_size = float(min((width, height)))
@@ -371,18 +486,28 @@ def get_size_with_aspect_ratio(image_size, size, max_size=None):
     return out_height, out_width
 
 
-def resize(datapoint, index, size, max_size=None, square=False, v2=False):
+def resize(
+    datapoint: Datapoint,
+    index: int,
+    size: int | Sequence[int],
+    max_size: int | None = None,
+    square: bool = False,
+    v2: bool = False,
+) -> Datapoint:
     _check_no_v2(v2, "resize")
     img = datapoint.images[index]
 
     old_width, old_height = _image_size(img.data)
     if square:
+        if not isinstance(size, int):
+            raise TypeError("square resize expects an integer size.")
         new_height, new_width = size, size
-    elif isinstance(size, (list, tuple)):
-        new_height, new_width = size[::-1]
+    elif isinstance(size, Sequence) and not isinstance(size, (str, bytes)):
+        dims = list(size)
+        new_height, new_width = dims[1], dims[0]
     else:
         new_height, new_width = get_size_with_aspect_ratio(
-            _image_size(img.data), size, max_size
+            _image_size(img.data), int(size), max_size
         )
 
     new_height, new_width = int(new_height), int(new_width)
@@ -392,9 +517,10 @@ def resize(datapoint, index, size, max_size=None, square=False, v2=False):
 
     for obj in img.objects:
         obj.bbox = _scale_boxes_xyxy(obj.bbox, ratio_width, ratio_height)
-        obj.area *= ratio_width * ratio_height
-        if obj.segment is not None:
-            obj.segment = _resize_mask(obj.segment, new_height, new_width)
+        obj.area = _scale_area(obj.area, ratio_width * ratio_height)
+        segment = obj.segment
+        if segment is not None:
+            obj.segment = _resize_mask(segment, new_height, new_width)
 
     for query in datapoint.find_queries:
         if query.semantic_target is not None:
@@ -414,14 +540,16 @@ def resize(datapoint, index, size, max_size=None, square=False, v2=False):
     return datapoint
 
 
-def pad(datapoint, index, padding, v2=False):
+def pad(
+    datapoint: Datapoint, index: int, padding: Padding, v2: bool = False
+) -> Datapoint:
     _check_no_v2(v2, "pad")
     img = datapoint.images[index]
 
     if len(padding) == 2:
-        left, top, right, bottom = 0, 0, padding[0], padding[1]
+        left, top, _right, _bottom = 0, 0, padding[0], padding[1]
     else:
-        left, top, right, bottom = padding
+        left, top, _right, _bottom = padding
 
     img.data = _pad_data(img.data, padding)
     width, height = _image_size(img.data)
@@ -430,28 +558,29 @@ def pad(datapoint, index, padding, v2=False):
     for obj in img.objects:
         if left or top:
             obj.bbox = _offset_boxes_xyxy(obj.bbox, left, top)
-        if obj.segment is not None:
-            obj.segment = _pad_mask(obj.segment, padding)
+        segment = obj.segment
+        if segment is not None:
+            obj.segment = _pad_mask(segment, padding)
     for query in datapoint.find_queries:
         if query.semantic_target is not None:
             query.semantic_target = _pad_mask(query.semantic_target, padding)
-        if left or top and query.image_id == index and query.input_bbox is not None:
+        if (left or top) and query.image_id == index and query.input_bbox is not None:
             query.input_bbox = _offset_boxes_xyxy(query.input_bbox, left, top)
-        if left or top and query.image_id == index and query.input_points is not None:
+        if (left or top) and query.image_id == index and query.input_points is not None:
             query.input_points = _offset_points(query.input_points, left, top)
 
     return datapoint
 
 
 def crop(
-    datapoint,
-    index,
-    region,
-    v2=False,
-    check_validity=True,
-    check_input_validity=True,
-    recompute_box_from_mask=False,
-):
+    datapoint: Datapoint,
+    index: int,
+    region: Sequence[int | float],
+    v2: bool = False,
+    check_validity: bool = True,
+    check_input_validity: bool = True,
+    recompute_box_from_mask: bool = False,
+) -> Datapoint:
     _check_no_v2(v2, "crop")
     del check_input_validity
     top, left, height, width = [int(round(v)) for v in region]
@@ -460,13 +589,15 @@ def crop(
     img.size = (height, width)
 
     for obj in img.objects:
-        if obj.segment is not None:
-            obj.segment = _crop_mask(obj.segment, top, left, height, width)
-        if recompute_box_from_mask and obj.segment is not None:
-            obj.bbox, obj.area = get_bbox_xyxy_abs_coords_from_mask(obj.segment)
+        segment = obj.segment
+        if segment is not None:
+            obj.segment = _crop_mask(segment, top, left, height, width)
+        segment_after_crop = obj.segment
+        if recompute_box_from_mask and segment_after_crop is not None:
+            obj.bbox, obj.area = get_bbox_xyxy_abs_coords_from_mask(segment_after_crop)
         else:
             obj.bbox = _crop_boxes_xyxy(obj.bbox, top, left, height, width)
-            cropped = obj.bbox.reshape(-1, 2, 2)
+            cropped = _mx_ops(obj.bbox).reshape(-1, 2, 2)
             obj.area = mx.prod(cropped[:, 1, :] - cropped[:, 0, :], axis=1)
 
     for query in datapoint.find_queries:
@@ -486,18 +617,19 @@ def crop(
     if check_validity:
         for obj in img.objects:
             area = _to_numpy(obj.area)
-            if not np.all(area > 0):
+            if not np.all(area.astype(np.float32, copy=False) > 0.0):
                 raise AssertionError(f"Box {obj.bbox} has no area")
 
     return datapoint
 
 
 class RandomHorizontalFlip:
-    def __init__(self, consistent_transform, p=0.5):
+    def __init__(self, consistent_transform: bool, p: float = 0.5) -> None:
         self.p = p
         self.consistent_transform = consistent_transform
 
-    def __call__(self, datapoint, **kwargs):
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
+        del kwargs
         if self.consistent_transform:
             if random.random() < self.p:
                 for i in range(len(datapoint.images)):
@@ -511,19 +643,23 @@ class RandomHorizontalFlip:
 
 class RandomResizeAPI:
     def __init__(
-        self, sizes, consistent_transform, max_size=None, square=False, v2=False
-    ):
+        self,
+        sizes: int | Iterable[int],
+        consistent_transform: bool,
+        max_size: int | None = None,
+        square: bool = False,
+        v2: bool = False,
+    ) -> None:
         if isinstance(sizes, int):
             sizes = (sizes,)
-        if not isinstance(sizes, Iterable):
-            raise TypeError("sizes must be an int or iterable of ints")
-        self.sizes = list(sizes)
+        self.sizes = [int(size) for size in sizes]
         self.max_size = max_size
         self.square = square
         self.consistent_transform = consistent_transform
         self.v2 = v2
 
-    def __call__(self, datapoint, **kwargs):
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
+        del kwargs
         if self.consistent_transform:
             size = random.choice(self.sizes)
             for i in range(len(datapoint.images)):
@@ -540,32 +676,39 @@ class RandomResizeAPI:
 
 
 class ScheduledRandomResizeAPI(RandomResizeAPI):
-    def __init__(self, size_scheduler, consistent_transform, square=False):
+    def __init__(
+        self,
+        size_scheduler: _ResizeScheduler,
+        consistent_transform: bool,
+        square: bool = False,
+    ) -> None:
         self.size_scheduler = size_scheduler
         params = self.size_scheduler(epoch_num=0)
         sizes, max_size = params["sizes"], params["max_size"]
         super().__init__(sizes, consistent_transform, max_size=max_size, square=square)
 
-    def __call__(self, datapoint, **kwargs):
-        if "epoch" not in kwargs:
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
+        epoch = kwargs.get("epoch")
+        if not isinstance(epoch, int):
             raise ValueError("Param scheduler needs to know the current epoch")
-        params = self.size_scheduler(kwargs["epoch"])
+        params = self.size_scheduler(epoch)
         self.sizes = params["sizes"]
         self.max_size = params["max_size"]
-        return super().__call__(datapoint, **kwargs)
+        return super().__call__(datapoint)
 
 
 class RandomPadAPI:
-    def __init__(self, max_pad, consistent_transform):
+    def __init__(self, max_pad: int, consistent_transform: bool) -> None:
         self.max_pad = max_pad
         self.consistent_transform = consistent_transform
 
-    def _sample_pad(self):
+    def _sample_pad(self) -> tuple[int, int]:
         pad_x = random.randint(0, self.max_pad)
         pad_y = random.randint(0, self.max_pad)
         return pad_x, pad_y
 
-    def __call__(self, datapoint, **kwargs):
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
+        del kwargs
         if self.consistent_transform:
             padding = self._sample_pad()
             for i in range(len(datapoint.images)):
@@ -577,13 +720,19 @@ class RandomPadAPI:
 
 
 class PadToSizeAPI:
-    def __init__(self, size, consistent_transform, bottom_right=False, v2=False):
+    def __init__(
+        self,
+        size: int,
+        consistent_transform: bool,
+        bottom_right: bool = False,
+        v2: bool = False,
+    ) -> None:
         self.size = size
         self.consistent_transform = consistent_transform
         self.v2 = v2
         self.bottom_right = bottom_right
 
-    def _sample_pad(self, width, height):
+    def _sample_pad(self, width: int, height: int) -> tuple[int, int, int, int]:
         pad_x = self.size - width
         pad_y = self.size - height
         if pad_x < 0 or pad_y < 0:
@@ -594,7 +743,8 @@ class PadToSizeAPI:
         pad_bottom = pad_y - pad_top
         return pad_left, pad_top, pad_right, pad_bottom
 
-    def __call__(self, datapoint, **kwargs):
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
+        del kwargs
         if self.consistent_transform:
             width, height = _image_size(datapoint.images[0].data)
             for image in datapoint.images:
@@ -623,41 +773,51 @@ class PadToSizeAPI:
 
 
 class ScheduledPadToSizeAPI(PadToSizeAPI):
-    def __init__(self, size_scheduler, consistent_transform):
+    def __init__(
+        self, size_scheduler: _ScalarScheduler, consistent_transform: bool
+    ) -> None:
         self.size_scheduler = size_scheduler
         size = self.size_scheduler(epoch_num=0)
         super().__init__(size, consistent_transform)
 
-    def __call__(self, datapoint, **kwargs):
-        if "epoch" not in kwargs:
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
+        epoch = kwargs.get("epoch")
+        if not isinstance(epoch, int):
             raise ValueError("Param scheduler needs to know the current epoch")
-        self.size = self.size_scheduler(kwargs["epoch"])
-        return super().__call__(datapoint, **kwargs)
+        self.size = self.size_scheduler(epoch)
+        return super().__call__(datapoint)
 
 
 class IdentityAPI:
-    def __call__(self, datapoint, **kwargs):
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
+        del kwargs
         return datapoint
 
 
 class RandomSelectAPI:
-    def __init__(self, transforms1=None, transforms2=None, p=0.5):
+    def __init__(
+        self,
+        transforms1: _DatapointTransform | None = None,
+        transforms2: _DatapointTransform | None = None,
+        p: float = 0.5,
+    ) -> None:
         self.transforms1 = transforms1 or IdentityAPI()
         self.transforms2 = transforms2 or IdentityAPI()
         self.p = p
 
-    def __call__(self, datapoint, **kwargs):
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
         if random.random() < self.p:
             return self.transforms1(datapoint, **kwargs)
         return self.transforms2(datapoint, **kwargs)
 
 
 class ToTensorAPI:
-    def __init__(self, v2=False):
+    def __init__(self, v2: bool = False) -> None:
         _check_no_v2(v2, "ToTensorAPI")
         self.v2 = v2
 
-    def __call__(self, datapoint: Datapoint, **kwargs):
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
+        del kwargs
         for img in datapoint.images:
             if isinstance(img.data, PILImage.Image):
                 array = np.asarray(img.data)
@@ -665,14 +825,14 @@ class ToTensorAPI:
                     array = array[:, :, None]
                 if array.ndim != 3:
                     raise ValueError("Expected a HWC image array")
-                img.data = mx.array(array.transpose(2, 0, 1), dtype=mx.float32) / 255.0
-            elif isinstance(img.data, mx.array):
+                img.data = _mx_array(array.transpose(2, 0, 1), dtype=mx.float32) / 255.0
+            elif _is_mlx_array(img.data):
                 data = img.data
-                if data.ndim == 3 and data.shape[-1] in (1, 3, 4):
-                    data = data.transpose(2, 0, 1)
+                if _mx_ops(data).ndim == 3 and _mx_shape(data)[-1] in (1, 3, 4):
+                    data = _transpose_hwc_to_chw(data)
                 uint8_dtype = getattr(mx, "uint8", None)
-                data = data.astype(mx.float32)
-                if uint8_dtype is not None and img.data.dtype == uint8_dtype:
+                data = _mx_ops(data).astype(mx.float32)
+                if uint8_dtype is not None and _mx_dtype(img.data) == uint8_dtype:
                     data = data / 255.0
                 img.data = data
             else:
@@ -681,33 +841,41 @@ class ToTensorAPI:
 
 
 class NormalizeAPI:
-    def __init__(self, mean, std, v2=False):
+    def __init__(
+        self, mean: Sequence[float], std: Sequence[float], v2: bool = False
+    ) -> None:
         _check_no_v2(v2, "NormalizeAPI")
-        self.mean = mx.array(mean, dtype=mx.float32).reshape(-1, 1, 1)
-        self.std = mx.array(std, dtype=mx.float32).reshape(-1, 1, 1)
+        self.mean = _mx_ops(_mx_array(mean, dtype=mx.float32)).reshape(-1, 1, 1)
+        self.std = _mx_ops(_mx_array(std, dtype=mx.float32)).reshape(-1, 1, 1)
         self.v2 = v2
 
-    def __call__(self, datapoint: Datapoint, **kwargs):
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
+        del kwargs
         for img in datapoint.images:
-            if not isinstance(img.data, mx.array):
+            if not _is_mlx_array(img.data):
                 raise TypeError(
                     "NormalizeAPI expects MLX arrays; call ToTensorAPI first"
                 )
-            img.data = (img.data.astype(mx.float32) - self.mean) / self.std
-            cur_h, cur_w = img.data.shape[-2:]
-            norm = mx.array([cur_w, cur_h, cur_w, cur_h], dtype=mx.float32)
+            img.data = (_mx_ops(img.data).astype(mx.float32) - self.mean) / self.std
+            cur_h, cur_w = _mx_shape(img.data)[-2:]
+            norm = _mx_array([cur_w, cur_h, cur_w, cur_h], dtype=mx.float32)
             for obj in img.objects:
-                obj.bbox = box_xyxy_to_cxcywh(_as_float_array(obj.bbox)) / norm
+                obj.bbox = _box_xyxy_to_cxcywh(_as_float_array(obj.bbox)) / norm
 
         for query in datapoint.find_queries:
-            cur_h, cur_w = datapoint.images[query.image_id].data.shape[-2:]
-            norm = mx.array([cur_w, cur_h, cur_w, cur_h], dtype=mx.float32)
+            image_data = datapoint.images[query.image_id].data
+            if not _is_mlx_array(image_data):
+                raise TypeError(
+                    "NormalizeAPI expects MLX arrays; call ToTensorAPI first"
+                )
+            cur_h, cur_w = _mx_shape(image_data)[-2:]
+            norm = _mx_array([cur_w, cur_h, cur_w, cur_h], dtype=mx.float32)
             if query.input_bbox is not None:
                 query.input_bbox = (
-                    box_xyxy_to_cxcywh(_as_float_array(query.input_bbox)) / norm
+                    _box_xyxy_to_cxcywh(_as_float_array(query.input_bbox)) / norm
                 )
             if query.input_points is not None:
-                query.input_points = _as_float_array(query.input_points) / mx.array(
+                query.input_points = _as_float_array(query.input_points) / _mx_array(
                     [cur_w, cur_h, 1.0], dtype=mx.float32
                 )
 
@@ -715,15 +883,15 @@ class NormalizeAPI:
 
 
 class ComposeAPI:
-    def __init__(self, transforms):
+    def __init__(self, transforms: Sequence[_DatapointTransform]) -> None:
         self.transforms = transforms
 
-    def __call__(self, datapoint, **kwargs):
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
         for transform in self.transforms:
             datapoint = transform(datapoint, **kwargs)
         return datapoint
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         format_string = self.__class__.__name__ + "("
         for transform in self.transforms:
             format_string += "\n"
@@ -752,7 +920,7 @@ class RandomSizeCropAPI:
         self.v2 = v2
         self.recompute_box_from_mask = recompute_box_from_mask
 
-    def _sample_no_respect_boxes(self, image_data):
+    def _sample_no_respect_boxes(self, image_data: ImageData) -> CropRegion:
         width, height = _image_size(image_data)
         crop_width = random.randint(self.min_size, min(width, self.max_size))
         crop_height = random.randint(self.min_size, min(height, self.max_size))
@@ -760,7 +928,13 @@ class RandomSizeCropAPI:
         left = random.randint(0, max(width - crop_width, 0))
         return top, left, crop_height, crop_width
 
-    def _sample_respect_boxes(self, image_data, boxes, points, min_box_size=10.0):
+    def _sample_respect_boxes(
+        self,
+        image_data: ImageData,
+        boxes: NDArray[np.float32],
+        points: NDArray[np.float32],
+        min_box_size: float = 10.0,
+    ) -> CropRegion:
         boxes_np = np.asarray(boxes, dtype=np.float32).reshape(-1, 4)
         points_np = np.asarray(points, dtype=np.float32).reshape(-1, 2)
         if len(boxes_np) == 0 and len(points_np) == 0:
@@ -772,10 +946,10 @@ class RandomSizeCropAPI:
         max_width = min(img_width, self.max_size)
         max_height = min(img_height, self.max_size)
 
-        left_requirements = []
-        top_requirements = []
-        right_requirements = []
-        bottom_requirements = []
+        left_requirements: list[NDArray[np.float32]] = []
+        top_requirements: list[NDArray[np.float32]] = []
+        right_requirements: list[NDArray[np.float32]] = []
+        bottom_requirements: list[NDArray[np.float32]] = []
         if len(boxes_np):
             left_requirements.append(boxes_np[:, 0] + min_box_size)
             top_requirements.append(boxes_np[:, 1] + min_box_size)
@@ -816,32 +990,46 @@ class RandomSizeCropAPI:
                 max(0, min_y - crop_height + 1),
                 max(max_y - 1, max(0, min_y - crop_height + 1)),
             )
-        return top, left, crop_height, crop_width
+        return int(round(top)), int(round(left)), crop_height, crop_width
 
-    def _collect_boxes_and_points(self, datapoint, image_index=None):
-        boxes = []
-        points = []
+    def _collect_boxes_and_points(
+        self, datapoint: Datapoint, image_index: int | None = None
+    ) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
+        boxes: list[NDArray[np.float32]] = []
+        points: list[NDArray[np.float32]] = []
         image_indices = (
             range(len(datapoint.images)) if image_index is None else [image_index]
         )
         if self.respect_boxes:
             for idx in image_indices:
                 boxes.extend(
-                    _to_numpy(obj.bbox).reshape(-1, 4)
-                    for obj in datapoint.images[idx].objects
+                    [
+                        _to_numpy(obj.bbox)
+                        .astype(np.float32, copy=False)
+                        .reshape(-1, 4)
+                        for obj in datapoint.images[idx].objects
+                    ]
                 )
         if self.respect_input_boxes:
             boxes.extend(
-                _to_numpy(query.input_bbox).reshape(-1, 4)
-                for query in datapoint.find_queries
-                if query.input_bbox is not None
-                and (image_index is None or query.image_id == image_index)
+                [
+                    _to_numpy(query.input_bbox)
+                    .astype(np.float32, copy=False)
+                    .reshape(-1, 4)
+                    for query in datapoint.find_queries
+                    if query.input_bbox is not None
+                    and (image_index is None or query.image_id == image_index)
+                ]
             )
         points.extend(
-            _to_numpy(query.input_points).reshape(-1, 3)[:, :2]
-            for query in datapoint.find_queries
-            if query.input_points is not None
-            and (image_index is None or query.image_id == image_index)
+            [
+                _to_numpy(query.input_points)
+                .astype(np.float32, copy=False)
+                .reshape(-1, 3)[:, :2]
+                for query in datapoint.find_queries
+                if query.input_points is not None
+                and (image_index is None or query.image_id == image_index)
+            ]
         )
         boxes_np = (
             np.concatenate(boxes, axis=0)
@@ -855,7 +1043,7 @@ class RandomSizeCropAPI:
         )
         return boxes_np, points_np
 
-    def __call__(self, datapoint, **kwargs):
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
         del kwargs
         respect_any = self.respect_boxes or self.respect_input_boxes
         if self.consistent_transform:
@@ -903,18 +1091,23 @@ class RandomSizeCropAPI:
 
 
 class CenterCropAPI:
-    def __init__(self, size, consistent_transform, recompute_box_from_mask=False):
-        self.size = size
+    def __init__(
+        self,
+        size: Sequence[int],
+        consistent_transform: bool,
+        recompute_box_from_mask: bool = False,
+    ) -> None:
+        self.size = (int(size[0]), int(size[1]))
         self.consistent_transform = consistent_transform
         self.recompute_box_from_mask = recompute_box_from_mask
 
-    def _sample_crop(self, image_width, image_height):
+    def _sample_crop(self, image_width: int, image_height: int) -> CropRegion:
         crop_height, crop_width = self.size
         crop_top = int(round((image_height - crop_height) / 2.0))
         crop_left = int(round((image_width - crop_width) / 2.0))
         return crop_top, crop_left, crop_height, crop_width
 
-    def __call__(self, datapoint, **kwargs):
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
         del kwargs
         if self.consistent_transform:
             width, height = _image_size(datapoint.images[0].data)
@@ -945,26 +1138,27 @@ class CenterCropAPI:
 
 
 class RandomMosaicVideoAPI:
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: object, **kwargs: object) -> None:
         raise_unsupported("RandomMosaicVideoAPI")
 
 
-def random_mosaic_frame(*args, **kwargs):
+def random_mosaic_frame(*args: object, **kwargs: object) -> None:
     raise_unsupported("random_mosaic_frame")
 
 
 class RandomGrayscale:
-    def __init__(self, consistent_transform, p=0.5):
+    def __init__(self, consistent_transform: bool, p: float = 0.5) -> None:
         self.p = p
         self.consistent_transform = consistent_transform
 
     @staticmethod
-    def _grayscale(data):
-        return _apply_pil_transform(
-            data, lambda image: ImageOps.grayscale(image).convert("RGB")
-        )
+    def _grayscale(data: ImageData) -> ImageData:
+        def transform(image: PILImage.Image) -> PILImage.Image:
+            return ImageOps.grayscale(image).convert("RGB")
 
-    def __call__(self, datapoint: Datapoint, **kwargs):
+        return _apply_pil_transform(data, transform)
+
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
         del kwargs
         if self.consistent_transform:
             if random.random() < self.p:
@@ -978,7 +1172,14 @@ class RandomGrayscale:
 
 
 class ColorJitter:
-    def __init__(self, consistent_transform, brightness, contrast, saturation, hue):
+    def __init__(
+        self,
+        consistent_transform: bool,
+        brightness: float | list[float] | None,
+        contrast: float | list[float] | None,
+        saturation: float | list[float] | None,
+        hue: float | list[float] | None,
+    ) -> None:
         self.consistent_transform = consistent_transform
         self.brightness = self._range(brightness, lower_bound=0.0)
         self.contrast = self._range(contrast, lower_bound=0.0)
@@ -986,7 +1187,9 @@ class ColorJitter:
         self.hue = hue if isinstance(hue, list) or hue is None else [-hue, hue]
 
     @staticmethod
-    def _range(value, lower_bound=None):
+    def _range(
+        value: float | list[float] | None, lower_bound: float | None = None
+    ) -> list[float] | None:
         if value is None:
             return None
         if isinstance(value, list):
@@ -996,7 +1199,9 @@ class ColorJitter:
             low = max(lower_bound, low)
         return [low, high]
 
-    def _params(self):
+    def _params(
+        self,
+    ) -> tuple[list[int], float | None, float | None, float | None, float | None]:
         order = [0, 1, 2, 3]
         random.shuffle(order)
         return (
@@ -1008,19 +1213,25 @@ class ColorJitter:
         )
 
     @staticmethod
-    def _adjust_hue(image: PILImage.Image, hue_factor: float):
+    def _adjust_hue(image: PILImage.Image, hue_factor: float) -> PILImage.Image:
         if hue_factor == 0:
             return image
         hsv = np.asarray(image.convert("HSV")).copy()
         hsv[..., 0] = (hsv[..., 0].astype(np.int16) + int(hue_factor * 255)) % 255
         return PILImage.fromarray(hsv, mode="HSV").convert(image.mode)
 
-    def _apply(self, data, params):
+    def _apply(
+        self,
+        data: ImageData,
+        params: tuple[
+            list[int], float | None, float | None, float | None, float | None
+        ],
+    ) -> ImageData:
         order, brightness_factor, contrast_factor, saturation_factor, hue_factor = (
             params
         )
 
-        def transform(image):
+        def transform(image: PILImage.Image) -> PILImage.Image:
             out = image
             for fn_id in order:
                 if fn_id == 0 and brightness_factor is not None:
@@ -1035,7 +1246,7 @@ class ColorJitter:
 
         return _apply_pil_transform(data, transform)
 
-    def __call__(self, datapoint: Datapoint, **kwargs):
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
         del kwargs
         params = self._params() if self.consistent_transform else None
         for image in datapoint.images:
@@ -1046,25 +1257,26 @@ class ColorJitter:
 class RandomAffine:
     def __init__(
         self,
-        degrees,
-        consistent_transform,
-        scale=None,
-        translate=None,
-        shear=None,
-        image_mean=(123, 116, 103),
-        log_warning=True,
-        num_tentatives=1,
-        image_interpolation="bicubic",
-    ):
+        degrees: float | list[float],
+        consistent_transform: bool,
+        scale: tuple[float, float] | None = None,
+        translate: tuple[float, float] | None = None,
+        shear: float | list[float] | None = None,
+        image_mean: int | Sequence[int] = (123, 116, 103),
+        log_warning: bool = True,
+        num_tentatives: int = 1,
+        image_interpolation: str = "bicubic",
+    ) -> None:
         self.degrees = degrees if isinstance(degrees, list) else [-degrees, degrees]
         self.scale = scale
         self.shear = (
             shear if isinstance(shear, list) else ([-shear, shear] if shear else None)
         )
         self.translate = translate
-        self.fill_img = (
-            tuple(image_mean) if isinstance(image_mean, (list, tuple)) else image_mean
-        )
+        if isinstance(image_mean, int):
+            self.fill_img = image_mean
+        else:
+            self.fill_img: int | tuple[int, ...] = tuple(int(v) for v in image_mean)
         self.consistent_transform = consistent_transform
         self.log_warning = log_warning
         self.num_tentatives = num_tentatives
@@ -1075,7 +1287,7 @@ class RandomAffine:
         else:
             raise ValueError(f"Unsupported image_interpolation={image_interpolation!r}")
 
-    def _sample_params(self, image_data):
+    def _sample_params(self, image_data: ImageData) -> AffineParams:
         width, height = _image_size(image_data)
         angle = random.uniform(*self.degrees)
         scale = random.uniform(*self.scale) if self.scale is not None else 1.0
@@ -1099,7 +1311,9 @@ class RandomAffine:
             )
         return angle, translations, scale, shear
 
-    def _apply_one(self, datapoint, image_index, params):
+    def _apply_one(
+        self, datapoint: Datapoint, image_index: int, params: AffineParams
+    ) -> Datapoint:
         image = datapoint.images[image_index]
         width, height = _image_size(image.data)
         forward, inverse = _affine_matrices(width, height, *params)
@@ -1108,8 +1322,9 @@ class RandomAffine:
         )
 
         for obj in image.objects:
-            if obj.segment is not None:
-                obj.segment = _apply_affine_mask(obj.segment, inverse)
+            segment = obj.segment
+            if segment is not None:
+                obj.segment = _apply_affine_mask(segment, inverse)
                 obj.bbox, obj.area = get_bbox_xyxy_abs_coords_from_mask(obj.segment)
             else:
                 obj.bbox = _transform_boxes_xyxy(obj.bbox, forward, width, height)
@@ -1129,7 +1344,7 @@ class RandomAffine:
                 )
         return datapoint
 
-    def transform_datapoint(self, datapoint: Datapoint):
+    def transform_datapoint(self, datapoint: Datapoint) -> Datapoint:
         params = (
             self._sample_params(datapoint.images[0].data)
             if self.consistent_transform
@@ -1143,7 +1358,7 @@ class RandomAffine:
             )
         return datapoint
 
-    def __call__(self, datapoint: Datapoint, **kwargs):
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
         del kwargs
         for _ in range(self.num_tentatives):
             return self.transform_datapoint(datapoint)
@@ -1153,22 +1368,24 @@ class RandomAffine:
 class RandomResizedCrop:
     def __init__(
         self,
-        consistent_transform,
-        size,
-        scale=None,
-        ratio=None,
-        log_warning=True,
-        num_tentatives=4,
-        keep_aspect_ratio=False,
-    ):
+        consistent_transform: bool,
+        size: int | Sequence[int],
+        scale: tuple[float, float] | None = None,
+        ratio: tuple[float, float] | None = None,
+        log_warning: bool = True,
+        num_tentatives: int = 4,
+        keep_aspect_ratio: bool = False,
+    ) -> None:
         if isinstance(size, int):
             self.size = (size, size)
-        elif len(size) == 1:
-            self.size = (size[0], size[0])
-        elif len(size) != 2:
-            raise ValueError("Please provide only two dimensions (h, w) for size.")
         else:
-            self.size = tuple(size)
+            size_values = [int(v) for v in size]
+            if len(size_values) == 1:
+                self.size = (size_values[0], size_values[0])
+            elif len(size_values) != 2:
+                raise ValueError("Please provide only two dimensions (h, w) for size.")
+            else:
+                self.size = (size_values[0], size_values[1])
         self.scale = scale if scale is not None else (0.08, 1.0)
         self.ratio = ratio if ratio is not None else (3.0 / 4.0, 4.0 / 3.0)
         self.consistent_transform = consistent_transform
@@ -1176,7 +1393,7 @@ class RandomResizedCrop:
         self.num_tentatives = num_tentatives
         self.keep_aspect_ratio = keep_aspect_ratio
 
-    def _sample_crop(self, image):
+    def _sample_crop(self, image: ImageData) -> CropRegion:
         width, height = _image_size(image)
         area = width * height
         for _ in range(10):
@@ -1194,7 +1411,7 @@ class RandomResizedCrop:
         left = (width - side) // 2
         return top, left, side, side
 
-    def __call__(self, datapoint: Datapoint, **kwargs):
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
         del kwargs
         crop_param = (
             self._sample_crop(datapoint.images[0].data)
@@ -1209,10 +1426,10 @@ class RandomResizedCrop:
 
 
 class ResizeToMaxIfAbove:
-    def __init__(self, max_size=None):
+    def __init__(self, max_size: int | None = None) -> None:
         self.max_size = max_size
 
-    def __call__(self, datapoint: Datapoint, **kwargs):
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
         del kwargs
         if self.max_size is None:
             return datapoint
@@ -1230,24 +1447,26 @@ class ResizeToMaxIfAbove:
         return datapoint
 
 
-def get_bbox_xyxy_abs_coords_from_mask(mask):
-    mask_array = mx.array(mask, dtype=mx.bool_)
-    if mask_array.ndim == 2:
+def get_bbox_xyxy_abs_coords_from_mask(mask: object) -> tuple[mx.array, mx.array]:
+    mask_array = _mx_array(_mask_array(mask), dtype=mx.bool_)
+    if _mx_ops(mask_array).ndim == 2:
         mask_array = mask_array[None, :, :]
-    boxes = masks_to_boxes(mask_array)
-    area = mx.sum(mask_array.astype(mx.float32), axis=(1, 2))
-    return boxes.reshape(-1, 4), area
+    boxes = _masks_to_boxes(mask_array)
+    area = mx.sum(_mx_ops(mask_array).astype(mx.float32), axis=(1, 2))
+    return _mx_ops(boxes).reshape(-1, 4), area
 
 
 class MotionBlur:
-    def __init__(self, kernel_size=5, consistent_transform=True, p=0.5):
+    def __init__(
+        self, kernel_size: int = 5, consistent_transform: bool = True, p: float = 0.5
+    ) -> None:
         if kernel_size % 2 != 1:
             raise AssertionError("Kernel size must be odd.")
         self.kernel_size = kernel_size
         self.consistent_transform = consistent_transform
         self.p = p
 
-    def _filter(self):
+    def _filter(self) -> ImageFilter.Kernel:
         kernel = np.zeros((self.kernel_size, self.kernel_size), dtype=np.float32)
         direction = random.choice(["horizontal", "vertical", "diagonal"])
         center = self.kernel_size // 2
@@ -1264,33 +1483,37 @@ class MotionBlur:
             scale=1.0,
         )
 
-    def __call__(self, datapoint: Datapoint, **kwargs):
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
         del kwargs
         if random.random() >= self.p:
             return datapoint
         image_filter = self._filter() if self.consistent_transform else None
         for image in datapoint.images:
             filt = image_filter or self._filter()
-            image.data = _apply_pil_transform(image.data, lambda img: img.filter(filt))
+
+            def transform(image: PILImage.Image) -> PILImage.Image:
+                return image.filter(filt)
+
+            image.data = _apply_pil_transform(image.data, transform)
         return datapoint
 
 
 class LargeScaleJitter:
     def __init__(
         self,
-        scale_range=(0.1, 2.0),
-        aspect_ratio_range=(0.75, 1.33),
-        crop_size=(640, 640),
-        consistent_transform=True,
-        p=0.5,
-    ):
+        scale_range: tuple[float, float] = (0.1, 2.0),
+        aspect_ratio_range: tuple[float, float] = (0.75, 1.33),
+        crop_size: tuple[int, int] = (640, 640),
+        consistent_transform: bool = True,
+        p: float = 0.5,
+    ) -> None:
         self.scale_range = scale_range
         self.aspect_ratio_range = aspect_ratio_range
         self.crop_size = crop_size
         self.consistent_transform = consistent_transform
         self.p = p
 
-    def _sample(self, image_data):
+    def _sample(self, image_data: ImageData) -> CropRegion:
         width, height = _image_size(image_data)
         target_area = width * height * random.uniform(*self.scale_range)
         aspect = float(
@@ -1307,7 +1530,7 @@ class LargeScaleJitter:
         top = random.randint(0, max(0, height - crop_height))
         return top, left, crop_height, crop_width
 
-    def __call__(self, datapoint: Datapoint, **kwargs):
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
         del kwargs
         if random.random() >= self.p:
             return datapoint

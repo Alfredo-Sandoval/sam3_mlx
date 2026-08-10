@@ -67,7 +67,7 @@ class Object:
     area: Union[float, mx.array]
     object_id: Optional[int] = -1
     frame_index: Optional[int] = -1
-    segment: Optional[Union[mx.array, dict]] = None
+    segment: Optional[Union[mx.array, dict[str, object]]] = None
     is_crowd: bool = False
     source: Optional[str] = None
 

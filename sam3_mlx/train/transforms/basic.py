@@ -8,62 +8,76 @@ from __future__ import annotations
 
 import math
 import random
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
+from typing import Protocol, TypeAlias, overload
 
 import mlx.core as mx
 import numpy as np
+from numpy.typing import NDArray
 from PIL import Image as PILImage
 from PIL import ImageOps
 
-from sam3_mlx.model.box_ops import box_xyxy_to_cxcywh
+from sam3_mlx.train.transforms._array_contracts import (
+    ArrayData,
+    ImageInput,
+    ImageSize,
+    Padding,
+    as_float_array as _as_float_array,
+    box_xyxy_to_cxcywh as _box_xyxy_to_cxcywh,
+    image_size as _image_size,
+    is_mlx_array as _is_mlx_array,
+    mx_array as _mx_array,
+    mx_dtype as _mx_dtype,
+    mx_ops as _mx_ops,
+    mx_shape as _mx_shape,
+    restore_array,
+    to_numpy as _to_numpy,
+)
 
 MLX_BASIC_TRANSFORMS_BASE_COMMIT = "629029d376426710c263b606aa137ec17dc55a94"
 
-
-def _is_mlx_array(value) -> bool:
-    return isinstance(value, mx.array)
-
-
-def _to_numpy(value) -> np.ndarray:
-    if isinstance(value, np.ndarray):
-        return value
-    if _is_mlx_array(value):
-        mx.eval(value)
-    return np.asarray(value)
+TargetValue: TypeAlias = ArrayData | str
+TargetDict: TypeAlias = dict[str, TargetValue]
+ResizeArg: TypeAlias = int | Sequence[int]
 
 
-def _as_float_array(value) -> mx.array:
-    if _is_mlx_array(value):
-        return value.astype(mx.float32)
-    return mx.array(value, dtype=mx.float32)
+class _ImageTransform(Protocol):
+    def __call__(
+        self, image: ImageInput, target: TargetDict | None
+    ) -> tuple[ImageInput, TargetDict | None]: ...
 
 
-def _restore_array(value: np.ndarray, like):
-    if _is_mlx_array(like):
-        return mx.array(value)
+@overload
+def _restore_array(value: NDArray[np.generic], like: mx.array) -> mx.array: ...
+
+
+@overload
+def _restore_array(
+    value: NDArray[np.generic], like: NDArray[np.generic]
+) -> NDArray[np.generic]: ...
+
+
+def _restore_array(value: NDArray[np.generic], like: ArrayData) -> ArrayData:
+    return restore_array(value, like, preserve_dtype=False)
+
+
+def _target_array(target: TargetDict, key: str) -> ArrayData:
+    value = target[key]
+    if isinstance(value, str):
+        raise TypeError(f"Target field {key!r} must be array-like.")
     return value
 
 
-def _image_size(image) -> tuple[int, int]:
-    if isinstance(image, PILImage.Image):
-        return image.size
-    array = _to_numpy(image)
-    if array.ndim == 3 and array.shape[0] in (1, 3, 4):
-        return int(array.shape[2]), int(array.shape[1])
-    if array.ndim >= 2:
-        return int(array.shape[1]), int(array.shape[0])
-    raise TypeError(f"Unsupported image shape: {array.shape}.")
-
-
-def _pil_from_array_image(image):
+def _pil_from_array_image(image: ArrayData) -> tuple[PILImage.Image, bool]:
     array = _to_numpy(image)
     chw = array.ndim == 3 and array.shape[0] in (1, 3, 4)
     if chw:
         array = array.transpose(1, 2, 0)
     if np.issubdtype(array.dtype, np.floating):
+        float_array = array.astype(np.float32, copy=False)
         if array.size and array.min() >= 0.0 and array.max() <= 1.0:
-            array = array * 255.0
-        array = np.clip(array, 0, 255).astype(np.uint8)
+            float_array = float_array * 255.0
+        array = np.clip(float_array, 0.0, 255.0).astype(np.uint8)
     elif array.dtype != np.uint8:
         array = np.clip(array, 0, 255).astype(np.uint8)
     if array.ndim == 3 and array.shape[-1] == 1:
@@ -71,7 +85,21 @@ def _pil_from_array_image(image):
     return PILImage.fromarray(array), chw
 
 
-def _restore_image(pil_image: PILImage.Image, like, chw: bool | None = None):
+@overload
+def _restore_image(
+    pil_image: PILImage.Image, like: PILImage.Image, chw: bool | None = None
+) -> PILImage.Image: ...
+
+
+@overload
+def _restore_image(
+    pil_image: PILImage.Image, like: ArrayData, chw: bool | None = None
+) -> ArrayData: ...
+
+
+def _restore_image(
+    pil_image: PILImage.Image, like: ImageInput, chw: bool | None = None
+) -> ImageInput:
     if isinstance(like, PILImage.Image):
         return pil_image
     array = np.asarray(pil_image)
@@ -80,30 +108,23 @@ def _restore_image(pil_image: PILImage.Image, like, chw: bool | None = None):
     if chw:
         array = array.transpose(2, 0, 1)
     if _is_mlx_array(like):
-        return mx.array(array, dtype=like.dtype)
-    return array.astype(getattr(like, "dtype", array.dtype), copy=False)
+        return _mx_array(array, dtype=_mx_dtype(like))
+    if isinstance(like, np.ndarray):
+        return array.astype(like.dtype, copy=False)
+    raise TypeError(f"Unsupported image type: {type(like)!r}")
 
 
-def _crop_image(image, top: int, left: int, height: int, width: int):
+def _crop_image(
+    image: ImageInput, top: int, left: int, height: int, width: int
+) -> ImageInput:
     if isinstance(image, PILImage.Image):
-        return ImageOps.crop(
-            image,
-            border=(left, top, image.width - left - width, image.height - top - height),
-        )
+        return image.crop((left, top, left + width, top + height))
     pil_image, chw = _pil_from_array_image(image)
-    cropped = ImageOps.crop(
-        pil_image,
-        border=(
-            left,
-            top,
-            pil_image.width - left - width,
-            pil_image.height - top - height,
-        ),
-    )
+    cropped = pil_image.crop((left, top, left + width, top + height))
     return _restore_image(cropped, image, chw)
 
 
-def _resize_image(image, size_hw: tuple[int, int]):
+def _resize_image(image: ImageInput, size_hw: ImageSize) -> ImageInput:
     height, width = size_hw
     if isinstance(image, PILImage.Image):
         return image.resize((width, height), resample=PILImage.Resampling.BILINEAR)
@@ -112,7 +133,7 @@ def _resize_image(image, size_hw: tuple[int, int]):
     return _restore_image(resized, image, chw)
 
 
-def _pad_image(image, padding):
+def _pad_image(image: ImageInput, padding: Padding) -> ImageInput:
     if len(padding) == 2:
         border = (0, 0, padding[0], padding[1])
     else:
@@ -124,7 +145,7 @@ def _pad_image(image, padding):
     return _restore_image(padded, image, chw)
 
 
-def _hflip_image(image):
+def _hflip_image(image: ImageInput) -> ImageInput:
     if isinstance(image, PILImage.Image):
         return ImageOps.mirror(image)
     pil_image, chw = _pil_from_array_image(image)
@@ -132,12 +153,12 @@ def _hflip_image(image):
     return _restore_image(flipped, image, chw)
 
 
-def _resize_masks(masks, size_hw: tuple[int, int]):
+def _resize_masks(masks: ArrayData, size_hw: ImageSize) -> ArrayData:
     masks_np = _to_numpy(masks).astype(np.uint8, copy=False)
     if masks_np.ndim == 2:
         masks_np = masks_np[None, :, :]
     height, width = size_hw
-    resized = []
+    resized: list[NDArray[np.uint8]] = []
     for mask in masks_np:
         mask_img = PILImage.fromarray(mask)
         resized.append(
@@ -149,7 +170,7 @@ def _resize_masks(masks, size_hw: tuple[int, int]):
     return _restore_array(np.stack(resized, axis=0).astype(bool), masks)
 
 
-def _pad_masks(masks, padding):
+def _pad_masks(masks: ArrayData, padding: Padding) -> ArrayData:
     masks_np = _to_numpy(masks)
     if len(padding) == 2:
         left, top, right, bottom = 0, 0, padding[0], padding[1]
@@ -159,18 +180,22 @@ def _pad_masks(masks, padding):
     return _restore_array(padded, masks)
 
 
-def _take_first_dim(value, keep):
+def _take_first_dim(value: ArrayData, keep: ArrayData) -> ArrayData:
     keep_np = _to_numpy(keep).astype(bool, copy=False)
     return _restore_array(_to_numpy(value)[keep_np], value)
 
 
-def _filter_fields(target: dict, fields: list[str], keep):
+def _filter_fields(target: TargetDict, fields: Sequence[str], keep: ArrayData) -> None:
     for field in fields:
         if field in target:
-            target[field] = _take_first_dim(target[field], keep)
+            target[field] = _take_first_dim(_target_array(target, field), keep)
 
 
-def crop(image, target, region):
+def crop(
+    image: ImageInput,
+    target: TargetDict | None,
+    region: Sequence[int | float],
+) -> tuple[ImageInput, TargetDict | None]:
     top, left, height, width = [int(round(v)) for v in region]
     cropped_image = _crop_image(image, top, left, height, width)
 
@@ -182,46 +207,57 @@ def crop(image, target, region):
     fields = ["labels", "area", "iscrowd", "positive_map"]
 
     if "boxes" in target:
-        boxes = _to_numpy(target["boxes"]).astype(np.float32, copy=False)
+        boxes_like = _target_array(target, "boxes")
+        boxes = _to_numpy(boxes_like).astype(np.float32, copy=False)
         max_size = np.array([width, height], dtype=np.float32)
         cropped_boxes = boxes - np.array([left, top, left, top], dtype=np.float32)
         cropped_boxes = np.minimum(cropped_boxes.reshape(-1, 2, 2), max_size)
         cropped_boxes = np.maximum(cropped_boxes, 0)
         area = np.prod(cropped_boxes[:, 1, :] - cropped_boxes[:, 0, :], axis=1)
-        target["boxes"] = _restore_array(cropped_boxes.reshape(-1, 4), target["boxes"])
-        target["area"] = _restore_array(
-            area.astype(np.float32), target.get("area", area)
-        )
+        target["boxes"] = _restore_array(cropped_boxes.reshape(-1, 4), boxes_like)
+        area_like = _target_array(target, "area") if "area" in target else area
+        target["area"] = _restore_array(area.astype(np.float32), area_like)
         fields.append("boxes")
 
     if "input_boxes" in target:
-        boxes = _to_numpy(target["input_boxes"]).astype(np.float32, copy=False)
+        boxes_like = _target_array(target, "input_boxes")
+        boxes = _to_numpy(boxes_like).astype(np.float32, copy=False)
         max_size = np.array([width, height], dtype=np.float32)
         cropped_boxes = boxes - np.array([left, top, left, top], dtype=np.float32)
         cropped_boxes = np.minimum(cropped_boxes.reshape(-1, 2, 2), max_size)
         cropped_boxes = np.maximum(cropped_boxes, 0)
-        target["input_boxes"] = _restore_array(
-            cropped_boxes.reshape(-1, 4), target["input_boxes"]
-        )
+        target["input_boxes"] = _restore_array(cropped_boxes.reshape(-1, 4), boxes_like)
 
     if "masks" in target:
-        masks = _to_numpy(target["masks"])
+        masks_like = _target_array(target, "masks")
+        masks = _to_numpy(masks_like)
         cropped = masks[:, top : top + height, left : left + width]
-        target["masks"] = _restore_array(cropped, target["masks"])
+        target["masks"] = _restore_array(cropped, masks_like)
         fields.append("masks")
 
     if "boxes" in target:
-        cropped_boxes = _to_numpy(target["boxes"]).reshape(-1, 2, 2)
+        cropped_boxes = (
+            _to_numpy(_target_array(target, "boxes"))
+            .astype(np.float32, copy=False)
+            .reshape(-1, 2, 2)
+        )
         keep = np.all(cropped_boxes[:, 1, :] > cropped_boxes[:, 0, :], axis=1)
         _filter_fields(target, fields, keep)
     elif "masks" in target:
-        keep = _to_numpy(target["masks"]).reshape(target["masks"].shape[0], -1).any(1)
+        masks = _target_array(target, "masks")
+        masks_np = _to_numpy(masks)
+        keep = np.asarray(
+            masks_np.reshape(masks_np.shape[0], -1).any(axis=1),
+            dtype=np.bool_,
+        )
         _filter_fields(target, fields, keep)
 
     return cropped_image, target
 
 
-def hflip(image, target):
+def hflip(
+    image: ImageInput, target: TargetDict | None
+) -> tuple[ImageInput, TargetDict | None]:
     flipped_image = _hflip_image(image)
     width, _height = _image_size(image)
 
@@ -230,26 +266,27 @@ def hflip(image, target):
     target = target.copy()
 
     if "boxes" in target:
-        boxes = _to_numpy(target["boxes"]).astype(np.float32, copy=False)
+        boxes_like = _target_array(target, "boxes")
+        boxes = _to_numpy(boxes_like).astype(np.float32, copy=False)
         flipped = boxes[:, [2, 1, 0, 3]] * np.array([-1, 1, -1, 1])
         flipped = flipped + np.array([width, 0, width, 0], dtype=np.float32)
-        target["boxes"] = _restore_array(flipped, target["boxes"])
+        target["boxes"] = _restore_array(flipped, boxes_like)
 
     if "input_boxes" in target:
-        boxes = _to_numpy(target["input_boxes"]).astype(np.float32, copy=False)
+        boxes_like = _target_array(target, "input_boxes")
+        boxes = _to_numpy(boxes_like).astype(np.float32, copy=False)
         flipped = boxes[:, [2, 1, 0, 3]] * np.array([-1, 1, -1, 1])
         flipped = flipped + np.array([width, 0, width, 0], dtype=np.float32)
-        target["input_boxes"] = _restore_array(flipped, target["input_boxes"])
+        target["input_boxes"] = _restore_array(flipped, boxes_like)
 
     if "masks" in target:
-        target["masks"] = _restore_array(
-            np.flip(_to_numpy(target["masks"]), -1), target["masks"]
-        )
+        masks_like = _target_array(target, "masks")
+        target["masks"] = _restore_array(np.flip(_to_numpy(masks_like), -1), masks_like)
 
-    if "text_input" in target:
+    text_input = target.get("text_input")
+    if isinstance(text_input, str):
         target["text_input"] = (
-            target["text_input"]
-            .replace("left", "[TMP]")
+            text_input.replace("left", "[TMP]")
             .replace("right", "left")
             .replace("[TMP]", "right")
         )
@@ -257,31 +294,46 @@ def hflip(image, target):
     return flipped_image, target
 
 
-def resize(image, target, size, max_size=None, square=False):
-    def get_size_with_aspect_ratio(image_size, size, max_size=None):
+def resize(
+    image: ImageInput,
+    target: TargetDict | None,
+    size: ResizeArg,
+    max_size: int | None = None,
+    square: bool = False,
+) -> tuple[ImageInput, TargetDict | None]:
+    def get_size_with_aspect_ratio(
+        image_size: ImageSize, requested_size: int, max_size: int | None = None
+    ) -> ImageSize:
         width, height = image_size
         if max_size is not None:
             min_original_size = float(min((width, height)))
             max_original_size = float(max((width, height)))
-            if max_original_size / min_original_size * size > max_size:
-                size = int(round(max_size * min_original_size / max_original_size))
+            if max_original_size / min_original_size * requested_size > max_size:
+                requested_size = int(
+                    round(max_size * min_original_size / max_original_size)
+                )
 
-        if (width <= height and width == size) or (height <= width and height == size):
+        if (width <= height and width == requested_size) or (
+            height <= width and height == requested_size
+        ):
             return height, width
         if width < height:
-            out_width = size
-            out_height = int(size * height / width)
+            out_width = requested_size
+            out_height = int(requested_size * height / width)
         else:
-            out_height = size
-            out_width = int(size * width / height)
+            out_height = requested_size
+            out_width = int(requested_size * width / height)
         return out_height, out_width
 
     if square:
+        if not isinstance(size, int):
+            raise TypeError("square resize expects an integer size.")
         size_hw = (size, size)
-    elif isinstance(size, (list, tuple)):
-        size_hw = tuple(size[::-1])
+    elif isinstance(size, Sequence) and not isinstance(size, (str, bytes)):
+        dims = list(size)
+        size_hw = (int(dims[1]), int(dims[0]))
     else:
-        size_hw = get_size_with_aspect_ratio(_image_size(image), size, max_size)
+        size_hw = get_size_with_aspect_ratio(_image_size(image), int(size), max_size)
 
     old_width, old_height = _image_size(image)
     rescaled_image = _resize_image(image, size_hw)
@@ -297,26 +349,34 @@ def resize(image, target, size, max_size=None, square=False):
     )
 
     if "boxes" in target:
+        boxes_like = _target_array(target, "boxes")
         target["boxes"] = _restore_array(
-            _to_numpy(target["boxes"]) * scale, target["boxes"]
+            _to_numpy(boxes_like).astype(np.float32, copy=False) * scale,
+            boxes_like,
         )
     if "input_boxes" in target:
+        boxes_like = _target_array(target, "input_boxes")
         target["input_boxes"] = _restore_array(
-            _to_numpy(target["input_boxes"]) * scale, target["input_boxes"]
+            _to_numpy(boxes_like).astype(np.float32, copy=False) * scale, boxes_like
         )
     if "area" in target:
+        area_like = _target_array(target, "area")
         target["area"] = _restore_array(
-            _to_numpy(target["area"]) * (ratio_width * ratio_height), target["area"]
+            _to_numpy(area_like).astype(np.float32, copy=False)
+            * (ratio_width * ratio_height),
+            area_like,
         )
     target["size"] = mx.array([new_height, new_width], dtype=mx.int64)
 
     if "masks" in target:
-        target["masks"] = _resize_masks(target["masks"], size_hw)
+        target["masks"] = _resize_masks(_target_array(target, "masks"), size_hw)
 
     return rescaled_image, target
 
 
-def pad(image, target, padding):
+def pad(
+    image: ImageInput, target: TargetDict | None, padding: Padding
+) -> tuple[ImageInput, TargetDict | None]:
     padded_image = _pad_image(image, padding)
 
     if target is None:
@@ -330,24 +390,30 @@ def pad(image, target, padding):
             [padding[0], padding[1], padding[0], padding[1]], dtype=np.float32
         )
         if "boxes" in target:
+            boxes_like = _target_array(target, "boxes")
             target["boxes"] = _restore_array(
-                _to_numpy(target["boxes"]) + offset, target["boxes"]
+                _to_numpy(boxes_like).astype(np.float32, copy=False) + offset,
+                boxes_like,
             )
         if "input_boxes" in target:
+            boxes_like = _target_array(target, "input_boxes")
             target["input_boxes"] = _restore_array(
-                _to_numpy(target["input_boxes"]) + offset, target["input_boxes"]
+                _to_numpy(boxes_like).astype(np.float32, copy=False) + offset,
+                boxes_like,
             )
 
     if "masks" in target:
-        target["masks"] = _pad_masks(target["masks"], padding)
+        target["masks"] = _pad_masks(_target_array(target, "masks"), padding)
     return padded_image, target
 
 
 class RandomCrop:
-    def __init__(self, size):
-        self.size = size
+    def __init__(self, size: Sequence[int]) -> None:
+        self.size = (int(size[0]), int(size[1]))
 
-    def __call__(self, img, target):
+    def __call__(
+        self, img: ImageInput, target: TargetDict | None
+    ) -> tuple[ImageInput, TargetDict | None]:
         height, width = self.size
         image_width, image_height = _image_size(img)
         top = random.randint(0, max(image_height - height, 0))
@@ -363,10 +429,12 @@ class RandomSizeCrop:
         self.max_size = max_size
         self.respect_boxes = respect_boxes
 
-    def __call__(self, img: PILImage.Image, target: dict):
+    def __call__(
+        self, img: ImageInput, target: TargetDict | None
+    ) -> tuple[ImageInput, TargetDict | None]:
         image_width, image_height = _image_size(img)
         if self.respect_boxes and target is not None and "boxes" in target:
-            boxes = _to_numpy(target["boxes"])
+            boxes = _to_numpy(_target_array(target, "boxes"))
             if len(boxes) > 0:
                 min_width = min(image_width, self.min_size)
                 min_height = min(image_height, self.min_size)
@@ -396,10 +464,12 @@ class RandomSizeCrop:
 
 
 class CenterCrop:
-    def __init__(self, size):
-        self.size = size
+    def __init__(self, size: Sequence[int]) -> None:
+        self.size = (int(size[0]), int(size[1]))
 
-    def __call__(self, img, target):
+    def __call__(
+        self, img: ImageInput, target: TargetDict | None
+    ) -> tuple[ImageInput, TargetDict | None]:
         image_width, image_height = _image_size(img)
         crop_height, crop_width = self.size
         crop_top = int(round((image_height - crop_height) / 2.0))
@@ -408,45 +478,56 @@ class CenterCrop:
 
 
 class RandomHorizontalFlip:
-    def __init__(self, p=0.5):
+    def __init__(self, p: float = 0.5) -> None:
         self.p = p
 
-    def __call__(self, img, target):
+    def __call__(
+        self, img: ImageInput, target: TargetDict | None
+    ) -> tuple[ImageInput, TargetDict | None]:
         if random.random() < self.p:
             return hflip(img, target)
         return img, target
 
 
 class RandomResize:
-    def __init__(self, sizes, max_size=None, square=False):
+    def __init__(
+        self,
+        sizes: int | Iterable[int],
+        max_size: int | None = None,
+        square: bool = False,
+    ) -> None:
         if isinstance(sizes, int):
             sizes = (sizes,)
-        if not isinstance(sizes, Iterable):
-            raise AssertionError("sizes must be an int or iterable.")
-        self.sizes = list(sizes)
+        self.sizes = [int(size) for size in sizes]
         self.max_size = max_size
         self.square = square
 
-    def __call__(self, img, target=None):
+    def __call__(
+        self, img: ImageInput, target: TargetDict | None = None
+    ) -> tuple[ImageInput, TargetDict | None]:
         size = random.choice(self.sizes)
         return resize(img, target, size, self.max_size, square=self.square)
 
 
 class RandomPad:
-    def __init__(self, max_pad):
+    def __init__(self, max_pad: int) -> None:
         self.max_pad = max_pad
 
-    def __call__(self, img, target):
+    def __call__(
+        self, img: ImageInput, target: TargetDict | None
+    ) -> tuple[ImageInput, TargetDict | None]:
         pad_x = random.randint(0, self.max_pad)
         pad_y = random.randint(0, self.max_pad)
         return pad(img, target, (pad_x, pad_y))
 
 
 class PadToSize:
-    def __init__(self, size):
+    def __init__(self, size: int) -> None:
         self.size = size
 
-    def __call__(self, img, target):
+    def __call__(
+        self, img: ImageInput, target: TargetDict | None
+    ) -> tuple[ImageInput, TargetDict | None]:
         width, height = _image_size(img)
         pad_x = self.size - width
         pad_y = self.size - height
@@ -460,34 +541,45 @@ class PadToSize:
 
 
 class Identity:
-    def __call__(self, img, target):
+    def __call__(
+        self, img: ImageInput, target: TargetDict | None
+    ) -> tuple[ImageInput, TargetDict | None]:
         return img, target
 
 
 class RandomSelect:
-    def __init__(self, transforms1=None, transforms2=None, p=0.5):
+    def __init__(
+        self,
+        transforms1: _ImageTransform | None = None,
+        transforms2: _ImageTransform | None = None,
+        p: float = 0.5,
+    ) -> None:
         self.transforms1 = transforms1 or Identity()
         self.transforms2 = transforms2 or Identity()
         self.p = p
 
-    def __call__(self, img, target):
+    def __call__(
+        self, img: ImageInput, target: TargetDict | None
+    ) -> tuple[ImageInput, TargetDict | None]:
         if random.random() < self.p:
             return self.transforms1(img, target)
         return self.transforms2(img, target)
 
 
 class ToTensor:
-    def __call__(self, img, target):
+    def __call__(
+        self, img: ImageInput, target: TargetDict | None
+    ) -> tuple[mx.array, TargetDict | None]:
         if isinstance(img, PILImage.Image):
             array = np.asarray(img)
             if array.ndim == 2:
                 array = array[:, :, None]
-            image = mx.array(array.transpose(2, 0, 1), dtype=mx.float32) / 255.0
+            image = _mx_array(array.transpose(2, 0, 1), dtype=mx.float32) / 255.0
             return image, target
         array = _to_numpy(img)
         if array.ndim == 3 and array.shape[-1] in (1, 3, 4):
             array = array.transpose(2, 0, 1)
-        image = mx.array(array, dtype=mx.float32)
+        image = _mx_array(array, dtype=mx.float32)
         if array.dtype == np.uint8:
             image = image / 255.0
         return image, target
@@ -496,25 +588,27 @@ class ToTensor:
 class RandomErasing:
     def __init__(
         self,
-        p=0.5,
-        scale=(0.02, 0.33),
-        ratio=(0.3, 3.3),
-        value=0.0,
-        inplace=False,
-    ):
+        p: float = 0.5,
+        scale: tuple[float, float] = (0.02, 0.33),
+        ratio: tuple[float, float] = (0.3, 3.3),
+        value: float = 0.0,
+        inplace: bool = False,
+    ) -> None:
         self.p = p
         self.scale = scale
         self.ratio = ratio
         self.value = value
         self.inplace = inplace
 
-    def __call__(self, img, target):
+    def __call__(
+        self, img: ImageInput, target: TargetDict | None
+    ) -> tuple[ImageInput, TargetDict | None]:
         if random.random() >= self.p:
             return img, target
-        image = mx.array(img, dtype=mx.float32)
-        if image.ndim != 3:
+        image = _mx_array(_to_numpy(img), dtype=mx.float32)
+        if _mx_ops(image).ndim != 3:
             raise ValueError("RandomErasing expects a CHW image array.")
-        channels, height, width = image.shape
+        _channels, height, width = _mx_shape(image)
         area = height * width
         for _ in range(10):
             erase_area = random.uniform(*self.scale) * area
@@ -528,62 +622,74 @@ class RandomErasing:
                 left = random.randint(0, width - erase_w)
                 image_np = _to_numpy(image).copy()
                 image_np[:, top : top + erase_h, left : left + erase_w] = self.value
-                return mx.array(image_np, dtype=image.dtype), target
+                return _mx_array(image_np, dtype=_mx_dtype(image)), target
         return img, target
 
 
 class Normalize:
-    def __init__(self, mean, std):
-        self.mean = mx.array(mean, dtype=mx.float32).reshape(-1, 1, 1)
-        self.std = mx.array(std, dtype=mx.float32).reshape(-1, 1, 1)
+    def __init__(self, mean: Sequence[float], std: Sequence[float]) -> None:
+        self.mean = _mx_ops(_mx_array(mean, dtype=mx.float32)).reshape(-1, 1, 1)
+        self.std = _mx_ops(_mx_array(std, dtype=mx.float32)).reshape(-1, 1, 1)
 
-    def __call__(self, image, target=None):
+    def __call__(
+        self, image: ImageInput, target: TargetDict | None = None
+    ) -> tuple[mx.array, TargetDict | None]:
         if isinstance(image, PILImage.Image):
             image, target = ToTensor()(image, target)
-        image = (mx.array(image, dtype=mx.float32) - self.mean) / self.std
+        image = (_mx_array(_to_numpy(image), dtype=mx.float32) - self.mean) / self.std
         if target is None:
             return image, None
         target = target.copy()
-        height, width = image.shape[-2:]
-        norm = mx.array([width, height, width, height], dtype=mx.float32)
+        height, width = _mx_shape(image)[-2:]
+        norm = _mx_array([width, height, width, height], dtype=mx.float32)
         if "boxes" in target:
             target["boxes"] = (
-                box_xyxy_to_cxcywh(_as_float_array(target["boxes"])) / norm
+                _box_xyxy_to_cxcywh(_as_float_array(_target_array(target, "boxes")))
+                / norm
             )
         if "input_boxes" in target:
             target["input_boxes"] = (
-                box_xyxy_to_cxcywh(_as_float_array(target["input_boxes"])) / norm
+                _box_xyxy_to_cxcywh(
+                    _as_float_array(_target_array(target, "input_boxes"))
+                )
+                / norm
             )
         return image, target
 
 
 class RemoveDifficult:
-    def __init__(self, enabled=False):
+    def __init__(self, enabled: bool = False) -> None:
         self.remove_difficult = enabled
 
-    def __call__(self, image, target=None):
+    def __call__(
+        self, image: ImageInput, target: TargetDict | None = None
+    ) -> tuple[ImageInput, TargetDict | None]:
         if target is None:
             return image, None
         target = target.copy()
         if "iscrowd" not in target:
             return image, target
-        keep = ~_to_numpy(target["iscrowd"]).astype(bool) | (not self.remove_difficult)
+        keep = ~_to_numpy(_target_array(target, "iscrowd")).astype(bool) | (
+            not self.remove_difficult
+        )
         for field in ("boxes", "labels", "iscrowd"):
             if field in target:
-                target[field] = _take_first_dim(target[field], keep)
+                target[field] = _take_first_dim(_target_array(target, field), keep)
         return image, target
 
 
 class Compose:
-    def __init__(self, transforms):
+    def __init__(self, transforms: Sequence[_ImageTransform]) -> None:
         self.transforms = transforms
 
-    def __call__(self, image, target):
+    def __call__(
+        self, image: ImageInput, target: TargetDict | None
+    ) -> tuple[ImageInput, TargetDict | None]:
         for transform in self.transforms:
             image, target = transform(image, target)
         return image, target
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         format_string = self.__class__.__name__ + "("
         for transform in self.transforms:
             format_string += "\n"
@@ -592,13 +698,13 @@ class Compose:
         return format_string
 
 
-def get_random_resize_scales(size, min_size, rounded):
+def get_random_resize_scales(size: int, min_size: int, rounded: bool) -> list[int]:
     stride = 128 if rounded else 32
     min_size = int(stride * math.ceil(min_size / stride))
     return list(range(min_size, size + 1, stride))
 
 
-def get_random_resize_max_size(size, ratio=5 / 3):
+def get_random_resize_max_size(size: int, ratio: float = 5 / 3) -> int:
     return round(ratio * size)
 
 
