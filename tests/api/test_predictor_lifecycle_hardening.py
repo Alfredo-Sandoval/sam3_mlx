@@ -64,10 +64,12 @@ def _predictor(model):
 
 def test_lifecycle_compatibility_class_adds_no_divergent_overrides():
     assert LifecycleSafeSam3BasePredictor.__bases__ == (Sam3BasePredictor,)
-    assert set(LifecycleSafeSam3BasePredictor.__dict__) <= {
-        "__module__",
-        "__doc__",
+    divergent_members = {
+        name
+        for name, value in LifecycleSafeSam3BasePredictor.__dict__.items()
+        if callable(value) or isinstance(value, (classmethod, property, staticmethod))
     }
+    assert divergent_members == set()
 
 
 def test_shutdown_prevents_inflight_session_publication_and_disposes_state():

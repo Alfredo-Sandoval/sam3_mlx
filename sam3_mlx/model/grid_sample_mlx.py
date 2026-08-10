@@ -1,30 +1,132 @@
+from __future__ import annotations
+
+from collections.abc import Callable, Sequence
+from typing import Protocol, cast
+
 import mlx.core as mx
 
 
-_METAL_KERNEL_CACHE = {}
+Shape4D = tuple[int, int, int, int]
+LaunchShape = tuple[int, int, int]
+KernelTemplate = tuple[str, mx.Dtype]
 
 
-def _cached_metal_kernel(cache_key: str, **kwargs):
+class _ArrayMetadata(Protocol):
+    @property
+    def ndim(self) -> int: ...
+
+    @property
+    def shape(self) -> tuple[int, ...]: ...
+
+    @property
+    def dtype(self) -> mx.Dtype: ...
+
+
+class _MetalKernel(Protocol):
+    def __call__(
+        self,
+        *,
+        inputs: Sequence[mx.array],
+        template: Sequence[KernelTemplate],
+        output_shapes: Sequence[Sequence[int]],
+        output_dtypes: Sequence[mx.Dtype],
+        grid: LaunchShape,
+        threadgroup: LaunchShape,
+        init_value: int | float | None = None,
+    ) -> Sequence[mx.array]: ...
+
+
+class _MetalKernelFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        name: str,
+        input_names: Sequence[str],
+        output_names: Sequence[str],
+        source: str,
+        header: str = "",
+        ensure_row_contiguous: bool = True,
+        atomic_outputs: bool = False,
+    ) -> _MetalKernel: ...
+
+
+class _GridSampleFunction(Protocol):
+    def __call__(self, x: mx.array, grid: mx.array) -> mx.array: ...
+
+    def vjp(
+        self,
+        callback: Callable[
+            [tuple[mx.array, mx.array], mx.array, object],
+            tuple[mx.array, mx.array],
+        ],
+    ) -> Callable[
+        [tuple[mx.array, mx.array], mx.array, object],
+        tuple[mx.array, mx.array],
+    ]: ...
+
+
+class _CustomFunctionFactory(Protocol):
+    def __call__(
+        self, function: Callable[[mx.array, mx.array], mx.array]
+    ) -> _GridSampleFunction: ...
+
+
+_metal_kernel = cast(_MetalKernelFactory, mx.fast.metal_kernel)
+_custom_function = cast(_CustomFunctionFactory, mx.custom_function)
+_METAL_KERNEL_CACHE: dict[str, _MetalKernel] = {}
+
+
+def _array_metadata(array: mx.array) -> _ArrayMetadata:
+    return cast(_ArrayMetadata, array)
+
+
+def _shape4(array: mx.array, *, name: str) -> Shape4D:
+    metadata = _array_metadata(array)
+    assert metadata.ndim == 4, f"`{name}` must be 4D."
+    shape = metadata.shape
+    assert len(shape) == 4, f"`{name}` must be 4D."
+    return shape
+
+
+def _dtype(array: mx.array) -> mx.Dtype:
+    return _array_metadata(array).dtype
+
+
+def _cached_metal_kernel(
+    cache_key: str,
+    *,
+    name: str,
+    input_names: Sequence[str],
+    output_names: Sequence[str],
+    source: str,
+    header: str = "",
+    ensure_row_contiguous: bool = True,
+    atomic_outputs: bool = False,
+) -> _MetalKernel:
     kernel = _METAL_KERNEL_CACHE.get(cache_key)
     if kernel is None:
-        kernel = mx.fast.metal_kernel(**kwargs)
+        kernel = _metal_kernel(
+            name=name,
+            input_names=input_names,
+            output_names=output_names,
+            source=source,
+            header=header,
+            ensure_row_contiguous=ensure_row_contiguous,
+            atomic_outputs=atomic_outputs,
+        )
         _METAL_KERNEL_CACHE[cache_key] = kernel
     return kernel
 
 
-@mx.custom_function
-def grid_sample(x, grid):
+def _grid_sample_impl(x: mx.array, grid: mx.array) -> mx.array:
     """Grid sample that matches torch.nn.functional.grid_sample with default arguments."""
 
-    assert x.ndim == 4, "`x` must be 4D."
-    assert grid.ndim == 4, "`grid` must be 4D."
+    batch, _, _, channels = _shape4(x, name="x")
+    _, grid_height, grid_width, coords = _shape4(grid, name="grid")
+    out_shape: Shape4D = (batch, grid_height, grid_width, channels)
+    out_size = batch * grid_height * grid_width * channels
 
-    B, _, _, C = x.shape
-    _, gN, gM, D = grid.shape
-    out_shape = (B, gN, gM, C)
-    out_size = B * gN * gM * C
-
-    assert D == 2, "Last dim of `grid` must be size 2."
+    assert coords == 2, "Last dim of `grid` must be size 2."
 
     source = """
         uint elem = thread_position_in_grid.x;
@@ -79,28 +181,34 @@ def grid_sample(x, grid):
     kernel = _cached_metal_kernel(
         "grid_sample",
         name="grid_sample",
-        input_names=["x", "grid"],
-        output_names=["out"],
+        input_names=("x", "grid"),
+        output_names=("out",),
         source=source,
     )
+    x_dtype = _dtype(x)
     outputs = kernel(
         inputs=[x, grid],
-        template=[("T", x.dtype)],
+        template=[("T", x_dtype)],
         output_shapes=[out_shape],
-        output_dtypes=[x.dtype],
+        output_dtypes=[x_dtype],
         grid=(out_size, 1, 1),
         threadgroup=(256, 1, 1),
     )
     return outputs[0]
 
 
-@grid_sample.vjp
-def grid_sample_vjp(primals, cotangent, _):
-    x, grid = primals
-    B, _, _, C = x.shape
-    _, gN, gM, D = grid.shape
+grid_sample = _custom_function(_grid_sample_impl)
 
-    assert D == 2, "Last dim of `grid` must be size 2."
+
+@grid_sample.vjp
+def grid_sample_vjp(
+    primals: tuple[mx.array, mx.array], cotangent: mx.array, _: object
+) -> tuple[mx.array, mx.array]:
+    x, grid = primals
+    batch, _, _, channels = _shape4(x, name="x")
+    _, grid_height, grid_width, coords = _shape4(grid, name="grid")
+
+    assert coords == 2, "Last dim of `grid` must be size 2."
 
     source = """
         uint elem = thread_position_in_grid.x;
@@ -177,20 +285,21 @@ def grid_sample_vjp(primals, cotangent, _):
     kernel = _cached_metal_kernel(
         "grid_sample_grad",
         name="grid_sample_grad",
-        input_names=["x", "grid", "cotangent"],
-        output_names=["x_grad", "grid_grad"],
+        input_names=("x", "grid", "cotangent"),
+        output_names=("x_grad", "grid_grad"),
         source=source,
         atomic_outputs=True,
     )
     # pad output channels to simd group size
     simdgroup_size = 32
-    C_padded = (C + simdgroup_size - 1) // simdgroup_size * simdgroup_size
-    grid_size = B * gN * gM * C_padded
+    padded_channels = (channels + simdgroup_size - 1) // simdgroup_size * simdgroup_size
+    grid_size = batch * grid_height * grid_width * padded_channels
+    x_dtype = _dtype(x)
     outputs = kernel(
         inputs=[x, grid, cotangent],
-        template=[("T", x.dtype)],
+        template=[("T", x_dtype)],
         output_shapes=[x.shape, grid.shape],
-        output_dtypes=[x.dtype, x.dtype],
+        output_dtypes=[x_dtype, x_dtype],
         grid=(grid_size, 1, 1),
         threadgroup=(256, 1, 1),
         init_value=0,

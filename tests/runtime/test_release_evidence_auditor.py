@@ -1,9 +1,12 @@
 from copy import deepcopy
-from pathlib import Path
 
 import pytest
 
-from sam3_mlx.release_contract import build_oracle_bindings, canonical_json_sha256, sha256_path
+from sam3_mlx.release_contract import (
+    build_oracle_bindings,
+    canonical_json_sha256,
+    sha256_path,
+)
 from scripts.audit_release_evidence import (
     EvidenceAuditError,
     HARDENED_ORACLE,

@@ -10,13 +10,42 @@ import hashlib
 import json
 import math
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Mapping, TypedDict
 
 PACKAGE_VERSION = "0.1.2"
 REPORT_SCHEMA_VERSION = 2
 ORACLE_SCHEMA_VERSION = 2
 EVIDENCE_SCHEMA_VERSION = 1
 COMPARISON_ALGORITHM = "hungarian-max-mask-iou-v1"
+
+
+class ReleaseImage(TypedDict):
+    path: str
+    sha256: str
+    size: list[int]
+
+
+class RepoRevision(TypedDict):
+    repo: str
+    revision: str
+
+
+class CheckpointRevision(RepoRevision):
+    sha256: str
+
+
+class OracleBindings(TypedDict):
+    schema_version: int
+    official_code: RepoRevision
+    official_checkpoint: CheckpointRevision
+    image_sha256: str
+    case_spec_sha256: str
+    confidence_threshold: float
+    precision: str
+    cpu_adapters: list[str]
+    oracle_runner_sha256: str
+    release_contract_sha256: str
+
 
 OFFICIAL_CODE_REPO = "https://github.com/facebookresearch/sam3"
 OFFICIAL_CODE_REVISION = "2814fa619404a722d03e9a012e083e4f293a4e53"
@@ -43,7 +72,7 @@ RELEASE_THRESHOLDS = {
 
 # Pin both the calibration image and the independently selected holdout. A new
 # image corpus is a new release contract, not an in-place regeneration detail.
-RELEASE_IMAGES = {
+RELEASE_IMAGES: dict[str, ReleaseImage] = {
     "example": {
         "path": "official-checkout/assets/images/test_image.jpg",
         "sha256": "979f120edcb0050a12d5b4a1f1eaf6bc888b89f675524e7ffcf6ae5b77aa6bc4",
@@ -56,7 +85,7 @@ RELEASE_IMAGES = {
     },
 }
 
-EXPECTED_CASE_NAMES = {
+EXPECTED_CASE_NAMES: dict[str, tuple[str, ...]] = {
     "example": (
         "text_shoe_1008",
         "text_nonsense_1008",
@@ -96,7 +125,7 @@ def sha256_path(path: str | Path) -> str:
     return digest.hexdigest()
 
 
-def canonical_json_bytes(value: Any) -> bytes:
+def canonical_json_bytes(value: object) -> bytes:
     """Serialize evidence deterministically for content-addressed bindings."""
 
     return json.dumps(
@@ -108,7 +137,7 @@ def canonical_json_bytes(value: Any) -> bytes:
     ).encode("utf-8")
 
 
-def canonical_json_sha256(value: Any) -> str:
+def canonical_json_sha256(value: object) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
@@ -119,7 +148,7 @@ def build_oracle_bindings(
     confidence_threshold: float,
     oracle_runner_sha256: str,
     release_contract_sha256: str | None = None,
-) -> dict[str, Any]:
+) -> OracleBindings:
     """Build the complete cache identity for upstream oracle outputs."""
 
     if not math.isfinite(float(confidence_threshold)):
@@ -148,8 +177,8 @@ def build_oracle_bindings(
 
 
 def validate_exact_mapping(
-    observed: Mapping[str, Any],
-    expected: Mapping[str, Any],
+    observed: Mapping[str, object],
+    expected: Mapping[str, object],
     *,
     label: str,
 ) -> None:

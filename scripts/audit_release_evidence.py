@@ -10,7 +10,7 @@ import math
 from pathlib import Path
 import re
 import sys
-from typing import Any, Mapping
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -69,12 +69,16 @@ def _repo_file(value: Any, *, label: str) -> Path:
         raise EvidenceAuditError(f"{label} path must be a non-empty string.")
     path = Path(value)
     if path.is_absolute():
-        raise EvidenceAuditError(f"{label} path must be repository-relative: {value!r}.")
+        raise EvidenceAuditError(
+            f"{label} path must be repository-relative: {value!r}."
+        )
     resolved = (REPO_ROOT / path).resolve()
     try:
         resolved.relative_to(REPO_ROOT.resolve())
     except ValueError as exc:
-        raise EvidenceAuditError(f"{label} path escapes the repository: {value!r}.") from exc
+        raise EvidenceAuditError(
+            f"{label} path escapes the repository: {value!r}."
+        ) from exc
     if not resolved.is_file():
         raise EvidenceAuditError(f"{label} file does not exist: {value!r}.")
     return resolved
@@ -126,7 +130,9 @@ def _case_spec_sha256(specs: list[dict[str, Any]]) -> str:
 def _validate_case_semantics(cases: list[dict[str, Any]], *, profile: str) -> None:
     by_name = {case["name"]: case for case in cases}
     for case in cases:
-        _require_exact(case.get("status"), "passed", label=f"case {case['name']} status")
+        _require_exact(
+            case.get("status"), "passed", label=f"case {case['name']} status"
+        )
         _require_exact(
             case.get("detection_count_match"),
             True,
@@ -497,7 +503,9 @@ def audit_release_evidence(receipt_path: Path) -> dict[str, Any]:
     receipt = _load_json(receipt_path, label="runtime release receipt")
     _require_exact(receipt.get("schema_version"), 1, label="receipt schema")
     _require_exact(receipt.get("status"), "passed", label="receipt status")
-    _require_exact(receipt.get("package_version"), PACKAGE_VERSION, label="package version")
+    _require_exact(
+        receipt.get("package_version"), PACKAGE_VERSION, label="package version"
+    )
     git_commit = receipt.get("git_commit")
     if not isinstance(git_commit, str) or not _COMMIT_PATTERN.fullmatch(git_commit):
         raise EvidenceAuditError("Receipt git_commit must be a lowercase commit SHA.")
@@ -519,7 +527,9 @@ def audit_release_evidence(receipt_path: Path) -> dict[str, Any]:
         "official_sha256": OFFICIAL_CHECKPOINT_SHA256,
     }
     for field, expected in expected_checkpoint.items():
-        _require_exact(checkpoint.get(field), expected, label=f"receipt checkpoint {field}")
+        _require_exact(
+            checkpoint.get(field), expected, label=f"receipt checkpoint {field}"
+        )
 
     tests = receipt.get("tests")
     if not isinstance(tests, dict):
@@ -545,9 +555,15 @@ def audit_release_evidence(receipt_path: Path) -> dict[str, Any]:
         raise EvidenceAuditError("Receipt parity section is missing.")
     _require_exact(parity.get("status"), "passed", label="receipt parity status")
     _require_exact(parity.get("mode"), "official-torch-vs-mlx", label="parity mode")
-    _require_exact(parity.get("thresholds"), RELEASE_THRESHOLDS, label="receipt thresholds")
-    _require_exact(parity.get("calibration_profile"), "example", label="calibration profile")
-    _require_exact(parity.get("validation_profile"), "holdout", label="validation profile")
+    _require_exact(
+        parity.get("thresholds"), RELEASE_THRESHOLDS, label="receipt thresholds"
+    )
+    _require_exact(
+        parity.get("calibration_profile"), "example", label="calibration profile"
+    )
+    _require_exact(
+        parity.get("validation_profile"), "holdout", label="validation profile"
+    )
 
     report_refs = parity.get("reports")
     if not isinstance(report_refs, list) or len(report_refs) != 2:
@@ -556,17 +572,23 @@ def audit_release_evidence(receipt_path: Path) -> dict[str, Any]:
     report_paths: dict[str, Path] = {}
     for reference in report_refs:
         if not isinstance(reference, dict) or set(reference) != {"path", "sha256"}:
-            raise EvidenceAuditError("Parity report references must contain path and sha256.")
+            raise EvidenceAuditError(
+                "Parity report references must contain path and sha256."
+            )
         path = _repo_file(reference["path"], label="parity report")
         digest = _require_sha256(reference["sha256"], label="parity report digest")
         _require_exact(sha256_path(path), digest, label=f"parity report {path} digest")
         candidate = _load_json(path, label="parity report")
         profile = candidate.get("case_profile")
         if profile not in EXPECTED_CASE_NAMES or profile in reports:
-            raise EvidenceAuditError(f"Invalid or duplicate parity profile: {profile!r}.")
+            raise EvidenceAuditError(
+                f"Invalid or duplicate parity profile: {profile!r}."
+            )
         reports[profile] = _validate_report(path, expected_profile=profile)
         report_paths[profile] = path
-    _require_exact(set(reports), set(EXPECTED_CASE_NAMES), label="parity report profiles")
+    _require_exact(
+        set(reports), set(EXPECTED_CASE_NAMES), label="parity report profiles"
+    )
 
     projected_cases = []
     for profile in ("example", "holdout"):
@@ -580,7 +602,9 @@ def audit_release_evidence(receipt_path: Path) -> dict[str, Any]:
                     "report": _repo_relative(report_paths[profile]),
                 }
             )
-    _require_exact(parity.get("cases"), projected_cases, label="receipt parity case projection")
+    _require_exact(
+        parity.get("cases"), projected_cases, label="receipt parity case projection"
+    )
 
     performance_runs = [
         {

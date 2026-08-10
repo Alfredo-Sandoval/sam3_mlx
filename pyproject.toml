@@ -79,6 +79,9 @@ norecursedirs = [
     "third_party",
 ]
 
+[tool.pyright]
+typeCheckingMode = "strict"
+
 [dependency-groups]
 dev = [
     "pytest-reportlog>=1.0.0",

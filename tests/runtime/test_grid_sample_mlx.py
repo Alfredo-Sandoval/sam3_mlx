@@ -1,7 +1,29 @@
+from __future__ import annotations
+
+from collections.abc import Callable, Sequence
+from typing import Protocol, cast
+
 import numpy as np
 import mlx.core as mx
 
+from sam3_mlx.mlx_runtime import evaluate_boundary, to_numpy
 from sam3_mlx.model.grid_sample_mlx import grid_sample
+
+
+class _MlxVjp(Protocol):
+    def __call__(
+        self,
+        fun: Callable[[mx.array, mx.array], mx.array],
+        primals: Sequence[mx.array],
+        cotangents: Sequence[mx.array],
+    ) -> tuple[list[mx.array], list[mx.array]]: ...
+
+
+class _ArrayTranspose(Protocol):
+    def transpose(self, *axes: int) -> mx.array: ...
+
+
+_mlx_vjp = cast(_MlxVjp, getattr(mx, "vjp"))
 
 
 def _grid_sample_numpy_bilinear_zero_nhwc(
@@ -35,9 +57,8 @@ def _grid_sample_numpy_bilinear_zero_nhwc(
     return out
 
 
-def _mlx_to_numpy(array: mx.array) -> np.ndarray:
-    mx.eval(array)
-    return np.asarray(array)
+def _transpose(array: mx.array, *axes: int) -> mx.array:
+    return cast(_ArrayTranspose, array).transpose(*axes)
 
 
 def test_grid_sample_forward_matches_numpy_reference_at_normalized_border_edges():
@@ -64,7 +85,7 @@ def test_grid_sample_forward_matches_numpy_reference_at_normalized_border_edges(
     actual = grid_sample(mx.array(x_np), mx.array(grid_np))
     expected = _grid_sample_numpy_bilinear_zero_nhwc(x_np, grid_np)
 
-    np.testing.assert_allclose(_mlx_to_numpy(actual), expected, rtol=0, atol=1e-6)
+    np.testing.assert_allclose(to_numpy(actual), expected, rtol=0, atol=1e-6)
     np.testing.assert_allclose(
         expected,
         np.array([[[[0.25], [0.75]], [[1.75], [2.25]]]], dtype=np.float32),
@@ -88,7 +109,7 @@ def test_grid_sample_forward_matches_numpy_reference_for_center_interpolation():
     actual = grid_sample(mx.array(x_np), mx.array(grid_np))
     expected = _grid_sample_numpy_bilinear_zero_nhwc(x_np, grid_np)
 
-    np.testing.assert_allclose(_mlx_to_numpy(actual), expected, rtol=0, atol=1e-6)
+    np.testing.assert_allclose(to_numpy(actual), expected, rtol=0, atol=1e-6)
     np.testing.assert_array_equal(expected, np.array([[[[3.0]]]], dtype=np.float32))
 
 
@@ -115,7 +136,7 @@ def test_grid_sample_forward_matches_numpy_reference_for_out_of_bounds_zero_padd
     actual = grid_sample(mx.array(x_np), mx.array(grid_np))
     expected = _grid_sample_numpy_bilinear_zero_nhwc(x_np, grid_np)
 
-    np.testing.assert_allclose(_mlx_to_numpy(actual), expected, rtol=0, atol=1e-6)
+    np.testing.assert_allclose(to_numpy(actual), expected, rtol=0, atol=1e-6)
     np.testing.assert_allclose(
         expected,
         np.array([[[[1.0], [0.0]], [[0.5], [0.0]]]], dtype=np.float32),
@@ -143,7 +164,7 @@ def test_grid_sample_forward_matches_numpy_for_batched_non_square_multi_channel(
     actual = grid_sample(mx.array(x_np), mx.array(grid_np))
     expected = _grid_sample_numpy_bilinear_zero_nhwc(x_np, grid_np)
 
-    np.testing.assert_allclose(_mlx_to_numpy(actual), expected, rtol=0, atol=1e-5)
+    np.testing.assert_allclose(to_numpy(actual), expected, rtol=0, atol=1e-5)
 
 
 def test_grid_sample_forward_matches_numpy_for_simdgroup_channel_boundaries():
@@ -162,7 +183,7 @@ def test_grid_sample_forward_matches_numpy_for_simdgroup_channel_boundaries():
         expected = _grid_sample_numpy_bilinear_zero_nhwc(x_np, grid_np)
 
         np.testing.assert_allclose(
-            _mlx_to_numpy(actual),
+            to_numpy(actual),
             expected,
             rtol=0,
             atol=1e-5,
@@ -172,7 +193,7 @@ def test_grid_sample_forward_matches_numpy_for_simdgroup_channel_boundaries():
 def test_grid_sample_forward_accepts_transposed_non_contiguous_nhwc_input():
     nchw_np = np.arange(1 * 3 * 3 * 5, dtype=np.float32).reshape(1, 3, 3, 5)
     x_np = np.transpose(nchw_np, (0, 2, 3, 1))
-    x = mx.array(nchw_np).transpose(0, 2, 3, 1)
+    x = _transpose(mx.array(nchw_np), 0, 2, 3, 1)
     grid_np = np.array(
         [[[[0.0, 0.0], [0.4, -0.4]], [[-0.8, 0.8], [1.2, 0.0]]]],
         dtype=np.float32,
@@ -181,7 +202,7 @@ def test_grid_sample_forward_accepts_transposed_non_contiguous_nhwc_input():
     actual = grid_sample(x, mx.array(grid_np))
     expected = _grid_sample_numpy_bilinear_zero_nhwc(x_np, grid_np)
 
-    np.testing.assert_allclose(_mlx_to_numpy(actual), expected, rtol=0, atol=1e-5)
+    np.testing.assert_allclose(to_numpy(actual), expected, rtol=0, atol=1e-5)
 
 
 def test_grid_sample_vjp_at_center_matches_hand_derived_bilinear_gradients():
@@ -199,23 +220,23 @@ def test_grid_sample_vjp_at_center_matches_hand_derived_bilinear_gradients():
     grid = mx.array(grid_np)
     cotangent = mx.ones((1, 1, 1, 1), dtype=mx.float32)
 
-    outputs, vjps = mx.vjp(grid_sample, [x, grid], [cotangent])
-    mx.eval(outputs[0], vjps[0], vjps[1])
+    outputs, vjps = _mlx_vjp(grid_sample, [x, grid], [cotangent])
+    evaluate_boundary(outputs[0], vjps[0], vjps[1])
 
     np.testing.assert_allclose(
-        np.asarray(outputs[0]),
+        to_numpy(outputs[0]),
         np.array([[[[1.5]]]], dtype=np.float32),
         rtol=0,
         atol=1e-6,
     )
     np.testing.assert_allclose(
-        np.asarray(vjps[0]),
+        to_numpy(vjps[0]),
         np.full((1, 2, 2, 1), 0.25, dtype=np.float32),
         rtol=0,
         atol=1e-6,
     )
     np.testing.assert_allclose(
-        np.asarray(vjps[1]),
+        to_numpy(vjps[1]),
         np.array([[[[1.0, 2.0]]]], dtype=np.float32),
         rtol=0,
         atol=1e-6,
@@ -230,25 +251,25 @@ def test_grid_sample_vjp_handles_channel_padding_above_simdgroup_size():
     grid = mx.array([[[[0.0, 0.0]]]], dtype=mx.float32)
     cotangent = mx.ones((1, 1, 1, 33), dtype=mx.float32)
 
-    outputs, vjps = mx.vjp(grid_sample, [x, grid], [cotangent])
-    mx.eval(outputs[0], vjps[0], vjps[1])
+    outputs, vjps = _mlx_vjp(grid_sample, [x, grid], [cotangent])
+    evaluate_boundary(outputs[0], vjps[0], vjps[1])
 
     expected_output = np.full((1, 1, 1, 33), 1.5, dtype=np.float32)
     expected_output += np.arange(33, dtype=np.float32).reshape(1, 1, 1, 33)
     np.testing.assert_allclose(
-        np.asarray(outputs[0]),
+        to_numpy(outputs[0]),
         expected_output,
         rtol=0,
         atol=1e-6,
     )
     np.testing.assert_allclose(
-        np.asarray(vjps[0]),
+        to_numpy(vjps[0]),
         np.full((1, 2, 2, 33), 0.25, dtype=np.float32),
         rtol=0,
         atol=1e-6,
     )
     np.testing.assert_allclose(
-        np.asarray(vjps[1]),
+        to_numpy(vjps[1]),
         np.array([[[[33.0, 66.0]]]], dtype=np.float32),
         rtol=0,
         atol=1e-5,

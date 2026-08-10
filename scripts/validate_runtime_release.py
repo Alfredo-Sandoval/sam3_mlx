@@ -29,7 +29,6 @@ import hashlib
 import json
 import math
 import os
-import platform
 import statistics
 import subprocess
 from datetime import datetime, timezone
@@ -153,13 +152,31 @@ def _package_version() -> str:
         return sam3_mlx.__version__
 
 
-def _mlx_version() -> str | None:
-    try:
-        from importlib.metadata import version
+def _test_environment(python_command: list[str]) -> dict[str, str | None]:
+    """Read release metadata from the interpreter that will execute pytest."""
 
-        return version("mlx")
-    except Exception:
-        return None
+    probe = (
+        "import json, platform\n"
+        "from importlib.metadata import PackageNotFoundError, version\n"
+        "try:\n"
+        "    mlx_version = version('mlx')\n"
+        "except PackageNotFoundError:\n"
+        "    mlx_version = None\n"
+        "print(json.dumps({\n"
+        "    'python_version': platform.python_version(),\n"
+        "    'mlx_version': mlx_version,\n"
+        "    'platform': platform.platform(),\n"
+        "    'machine': platform.machine(),\n"
+        "}, sort_keys=True))\n"
+    )
+    completed = _run([*python_command, "-c", probe], cwd=REPO_ROOT)
+    metadata = json.loads(completed.stdout)
+    required = {"python_version", "mlx_version", "platform", "machine"}
+    if not isinstance(metadata, dict) or set(metadata) != required:
+        raise ReceiptError(
+            f"Test interpreter returned invalid environment metadata: {metadata!r}."
+        )
+    return metadata
 
 
 def _sha256(path: Path) -> str:
@@ -330,7 +347,11 @@ def _validate_performance(performance: dict[str, Any], *, profile: str) -> None:
         field=f"Parity profile {profile!r} cold_load_s",
     )
     peak_memory = performance.get("peak_active_memory_bytes")
-    if isinstance(peak_memory, bool) or not isinstance(peak_memory, int) or peak_memory <= 0:
+    if (
+        isinstance(peak_memory, bool)
+        or not isinstance(peak_memory, int)
+        or peak_memory <= 0
+    ):
         raise ReceiptError(f"Parity profile {profile!r} peak memory is invalid.")
     latencies = performance.get("latency_by_resolution_s")
     if not isinstance(latencies, dict) or set(latencies) != {"1008", "672", "504"}:
@@ -362,9 +383,7 @@ def _validate_performance(performance: dict[str, Any], *, profile: str) -> None:
         for field, expected in expected_metrics.items():
             observed = _require_finite_number(
                 summary.get(field),
-                field=(
-                    f"Parity profile {profile!r} resolution {resolution} {field}"
-                ),
+                field=(f"Parity profile {profile!r} resolution {resolution} {field}"),
             )
             if not math.isclose(observed, expected, rel_tol=0.0, abs_tol=1e-15):
                 raise ReceiptError(
@@ -501,7 +520,9 @@ def validate_receipt(
         report_paths = []
         for report in reports:
             if not isinstance(report, dict) or set(report) != {"path", "sha256"}:
-                raise ReceiptError("Parity report references must contain path and sha256.")
+                raise ReceiptError(
+                    "Parity report references must contain path and sha256."
+                )
             report_path = _evidence_path(report["path"], root=evidence_root)
             if _sha256(report_path) != report["sha256"]:
                 raise ReceiptError(
@@ -583,6 +604,7 @@ def _parse_pytest_report_log(report_path: Path) -> dict[str, Any]:
 def generate_stub_receipt(
     *,
     pytest_command: list[str],
+    test_python_command: list[str],
     checkpoint_path: str | None,
 ) -> dict[str, Any]:
     """Create a schema-complete receipt without claiming e2e parity.
@@ -594,6 +616,7 @@ def generate_stub_receipt(
 
     git_commit = _git_commit()
     package_version = _package_version()
+    test_environment = _test_environment(test_python_command)
 
     report_path = REPO_ROOT / "parity" / "receipts" / ".pytest-report.jsonl"
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -654,10 +677,7 @@ def generate_stub_receipt(
         "package_version": package_version,
         "git_commit": git_commit,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "python_version": platform.python_version(),
-        "mlx_version": _mlx_version(),
-        "platform": platform.platform(),
-        "machine": platform.machine(),
+        **test_environment,
         "checkpoint": {
             "official_repo": "facebook/sam3",
             "official_revision": "not_recorded",
@@ -799,9 +819,7 @@ def _measured_evidence_projection(
         for report in reports
     ]
 
-    measurement_boundaries = {
-        run["measurement_boundary"] for run in performance_runs
-    }
+    measurement_boundaries = {run["measurement_boundary"] for run in performance_runs}
     if len(measurement_boundaries) != 1:
         raise ReceiptError("Parity reports disagree on the performance boundary.")
     return {
@@ -919,8 +937,10 @@ def main() -> None:
         # interpreter does not have dev dependencies installed.
         if args.pytest_python is None:
             pytest_command = ["uv", "run", "pytest"]
+            test_python_command = ["uv", "run", "python"]
         else:
             pytest_command = [str(args.pytest_python), "-m", "pytest"]
+            test_python_command = [str(args.pytest_python)]
         pytest_command.extend(
             [
                 "-q",
@@ -935,6 +955,7 @@ def main() -> None:
             pytest_command.append("tests")
         receipt = generate_stub_receipt(
             pytest_command=pytest_command,
+            test_python_command=test_python_command,
             checkpoint_path=args.checkpoint,
         )
         if args.parity_report or args.lineage_report:

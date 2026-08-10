@@ -9,10 +9,11 @@ same binary EDT contract with NumPy and returns an MLX array for MLX inputs.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Never, cast
 
 import mlx.core as mx
 import numpy as np
+from numpy.typing import NDArray
 
 from sam3_mlx._unsupported import raise_unsupported
 from sam3_mlx.mlx_runtime import to_numpy
@@ -21,19 +22,19 @@ from sam3_mlx.mlx_runtime import to_numpy
 _INF = 1.0e18
 
 
-def _is_mlx_array(value: Any) -> bool:
+def _is_mlx_array(value: object) -> bool:
     return type(value).__module__.startswith("mlx.")
 
 
-def _to_host_edt_input(value: Any) -> np.ndarray:
+def _to_host_edt_input(value: object) -> NDArray[np.generic]:
     """Synchronize and export masks at the explicit CPU EDT boundary."""
 
     if isinstance(value, np.ndarray):
-        return value
-    return to_numpy(value)
+        return cast(NDArray[np.generic], value)
+    return cast(NDArray[np.generic], to_numpy(value))
 
 
-def _edt_1d_squared(f: np.ndarray) -> np.ndarray:
+def _edt_1d_squared(f: NDArray[np.float64]) -> NDArray[np.float64]:
     """Felzenszwalb-Huttenlocher squared distance transform for one row."""
 
     n = f.shape[0]
@@ -70,7 +71,7 @@ def _edt_1d_squared(f: np.ndarray) -> np.ndarray:
     return d
 
 
-def edt_numpy(data: Any) -> np.ndarray:
+def edt_numpy(data: object) -> NDArray[np.float32]:
     """
     Compute the Euclidean distance transform of a batch of binary images.
 
@@ -100,13 +101,13 @@ def edt_numpy(data: Any) -> np.ndarray:
     return np.sqrt(col_pass, dtype=np.float64).astype(np.float32, copy=False)
 
 
-def edt_mlx(data: Any) -> mx.array:
+def edt_mlx(data: object) -> mx.array:
     """Compute binary EDT at the named CPU boundary and return an MLX array."""
 
     return mx.array(edt_numpy(data), dtype=mx.float32)
 
 
-def edt_triton(data: Any):
+def edt_triton(data: object) -> mx.array | NDArray[np.float32]:
     """
     Compatibility wrapper for upstream ``edt_triton``.
 
@@ -120,7 +121,7 @@ def edt_triton(data: Any):
     return edt_numpy(data)
 
 
-def edt_kernel(*args, **kwargs):
+def edt_kernel(*args: object, **kwargs: object) -> Never:
     del args, kwargs
     raise_unsupported(
         "sam3_mlx.model.edt.edt_kernel",

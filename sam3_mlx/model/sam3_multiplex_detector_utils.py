@@ -89,10 +89,10 @@ def _pairwise_mask_iou_mlx(pred_masks: Any, gt_masks: Any) -> mx.array:
     gt_masks_mlx = _to_mlx(gt_masks)
     _validate_pairwise_mask_shapes(pred_masks_mlx.shape, gt_masks_mlx.shape)
     spatial_size = pred_masks_mlx.shape[1] * pred_masks_mlx.shape[2]
-    pred_flat = pred_masks_mlx.reshape(pred_masks_mlx.shape[0], spatial_size).astype(
-        mx.float32
-    )
-    gt_flat = gt_masks_mlx.reshape(gt_masks_mlx.shape[0], spatial_size).astype(
+    pred_flat = mx.reshape(
+        pred_masks_mlx, (pred_masks_mlx.shape[0], spatial_size)
+    ).astype(mx.float32)
+    gt_flat = mx.reshape(gt_masks_mlx, (gt_masks_mlx.shape[0], spatial_size)).astype(
         mx.float32
     )
     intersection = mx.matmul(pred_flat, mx.swapaxes(gt_flat, 0, 1))
@@ -119,10 +119,10 @@ def _pairwise_mask_iom_mlx(pred_masks: Any, gt_masks: Any) -> mx.array:
     gt_masks_mlx = _to_mlx(gt_masks)
     _validate_pairwise_mask_shapes(pred_masks_mlx.shape, gt_masks_mlx.shape)
     spatial_size = pred_masks_mlx.shape[1] * pred_masks_mlx.shape[2]
-    pred_flat = pred_masks_mlx.reshape(pred_masks_mlx.shape[0], spatial_size).astype(
-        mx.float32
-    )
-    gt_flat = gt_masks_mlx.reshape(gt_masks_mlx.shape[0], spatial_size).astype(
+    pred_flat = mx.reshape(
+        pred_masks_mlx, (pred_masks_mlx.shape[0], spatial_size)
+    ).astype(mx.float32)
+    gt_flat = mx.reshape(gt_masks_mlx, (gt_masks_mlx.shape[0], spatial_size)).astype(
         mx.float32
     )
     intersection = mx.matmul(pred_flat, mx.swapaxes(gt_flat, 0, 1))
@@ -145,30 +145,12 @@ def _self_mask_iom_source_area_mlx(masks: Any) -> mx.array:
     masks_mlx = _to_mlx(masks)
     _validate_pairwise_mask_shapes(masks_mlx.shape, masks_mlx.shape)
     spatial_size = masks_mlx.shape[1] * masks_mlx.shape[2]
-    masks_flat = masks_mlx.reshape(masks_mlx.shape[0], spatial_size).astype(mx.float32)
+    masks_flat = mx.reshape(masks_mlx, (masks_mlx.shape[0], spatial_size)).astype(
+        mx.float32
+    )
     intersection = mx.matmul(masks_flat, mx.swapaxes(masks_flat, 0, 1))
     area = mx.sum(masks_flat, axis=-1)[:, None]
     return _divide_with_eps_mlx(intersection, area, _IOM_EPS)
-
-
-def _generic_nms_keep_np(
-    overlaps: np.ndarray,
-    scores: np.ndarray,
-    is_valid: np.ndarray,
-    iou_threshold: float,
-) -> np.ndarray:
-    order = np.argsort(scores)[::-1]
-    keep = np.zeros(scores.shape[0], dtype=bool)
-    suppressed = np.zeros(scores.shape[0], dtype=bool)
-
-    for idx in order:
-        if suppressed[idx] or not is_valid[idx]:
-            continue
-        keep[idx] = True
-        suppressed |= overlaps[idx] > iou_threshold
-        suppressed[idx] = False
-
-    return keep
 
 
 def _generic_nms_mask_np(
@@ -271,30 +253,6 @@ def _nms_masks_core_mlx(
     )
 
 
-def _nms_masks_core_batched(
-    pred_probs: Any,
-    pred_masks: Any,
-    prob_threshold: float,
-    iou_threshold: float,
-    nms_use_iom: bool = False,
-) -> Any:
-    if _has_mlx_array(pred_probs, pred_masks):
-        return _nms_masks_core_batched_mlx(
-            _to_mlx(pred_probs),
-            _to_mlx(pred_masks),
-            prob_threshold,
-            iou_threshold,
-            nms_use_iom,
-        )
-
-    probs_np = _to_numpy(pred_probs)
-    masks_np = _to_numpy(pred_masks)
-    keep = _nms_masks_core_batched_np(
-        probs_np, masks_np, prob_threshold, iou_threshold, nms_use_iom
-    )
-    return _from_numpy(keep, pred_probs, pred_masks)
-
-
 def _nms_masks_core_batched_mlx(
     pred_probs: mx.array,
     pred_masks: mx.array,
@@ -381,7 +339,7 @@ def _nms_masks_core_batched_np(
     return keep
 
 
-def _batched_mask_iou(masks: Any) -> Any:
+def batched_mask_iou(masks: Any) -> Any:
     if _is_mlx_array(masks):
         return _batched_mask_iou_mlx(masks)
 
@@ -394,7 +352,7 @@ def _batched_mask_iou_mlx(masks: Any) -> mx.array:
     _validate_batched_mask_shape(masks_mlx.shape)
     batch_size, num_masks = masks_mlx.shape[:2]
     spatial_size = masks_mlx.shape[2] * masks_mlx.shape[3]
-    masks_flat = masks_mlx.reshape(batch_size, num_masks, spatial_size).astype(
+    masks_flat = mx.reshape(masks_mlx, (batch_size, num_masks, spatial_size)).astype(
         mx.float32
     )
     intersection = mx.matmul(masks_flat, mx.swapaxes(masks_flat, 1, 2))
@@ -414,7 +372,7 @@ def _batched_mask_iou_np(masks: np.ndarray) -> np.ndarray:
     return intersection / (union + _IOU_EPS)
 
 
-def _batched_mask_iom(masks: Any) -> Any:
+def batched_mask_iom(masks: Any) -> Any:
     if _is_mlx_array(masks):
         return _batched_mask_iom_mlx(masks)
 
@@ -427,7 +385,7 @@ def _batched_mask_iom_mlx(masks: Any) -> mx.array:
     _validate_batched_mask_shape(masks_mlx.shape)
     batch_size, num_masks = masks_mlx.shape[:2]
     spatial_size = masks_mlx.shape[2] * masks_mlx.shape[3]
-    masks_flat = masks_mlx.reshape(batch_size, num_masks, spatial_size).astype(
+    masks_flat = mx.reshape(masks_mlx, (batch_size, num_masks, spatial_size)).astype(
         mx.float32
     )
     intersection = mx.matmul(masks_flat, mx.swapaxes(masks_flat, 1, 2))
@@ -445,51 +403,6 @@ def _batched_mask_iom_np(masks: np.ndarray) -> np.ndarray:
     areas = masks_flat.sum(axis=-1)
     min_area = np.minimum(areas[:, :, None], areas[:, None, :])
     return intersection / (min_area + _IOM_EPS)
-
-
-def _batched_generic_nms_mask(
-    ious: Any,
-    scores: Any,
-    is_valid: Any,
-    iou_threshold: float,
-) -> Any:
-    # host-postprocess-boundary: batched greedy NMS is host-side.
-    ious_np = _to_host_postprocess_numpy(ious)
-    scores_np = _to_host_postprocess_numpy(scores)
-    is_valid_np = _to_host_postprocess_numpy(is_valid).astype(bool)
-    keep = np.zeros_like(is_valid_np, dtype=bool)
-    for batch_idx in range(scores_np.shape[0]):
-        keep[batch_idx] = _generic_nms_keep_np(
-            ious_np[batch_idx],
-            scores_np[batch_idx],
-            is_valid_np[batch_idx],
-            iou_threshold,
-        )
-    return _from_numpy(keep, ious, scores, is_valid)
-
-
-def _nms_masks_core_single(
-    pred_probs: Any,
-    pred_masks: Any,
-    prob_threshold: float,
-    iou_threshold: float,
-    nms_use_iom: bool = False,
-) -> Any:
-    if _has_mlx_array(pred_probs, pred_masks):
-        return _nms_masks_core_single_mlx(
-            _to_mlx(pred_probs),
-            _to_mlx(pred_masks),
-            prob_threshold,
-            iou_threshold,
-            nms_use_iom,
-        )
-
-    probs_np = _to_numpy(pred_probs)
-    masks_np = _to_numpy(pred_masks)
-    keep = _nms_masks_core_single_np(
-        probs_np, masks_np, prob_threshold, iou_threshold, nms_use_iom
-    )
-    return _from_numpy(keep, pred_probs, pred_masks)
 
 
 def _nms_masks_core_single_mlx(

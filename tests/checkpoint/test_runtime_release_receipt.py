@@ -1,7 +1,10 @@
-import importlib.util
 import copy
 import hashlib
+import importlib.util
 import json
+import platform
+import sys
+
 import pytest
 
 from tests._paths import REPO_ROOT
@@ -15,6 +18,15 @@ _validate_runtime_release = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_validate_runtime_release)
 ReceiptError = _validate_runtime_release.ReceiptError
 validate_receipt = _validate_runtime_release.validate_receipt
+
+
+def test_test_environment_comes_from_selected_interpreter():
+    observed = _validate_runtime_release._test_environment([sys.executable])
+
+    assert observed["python_version"] == platform.python_version()
+    assert observed["machine"] == platform.machine()
+    assert observed["platform"] == platform.platform()
+    assert observed["mlx_version"]
 
 
 def _valid_receipt(**overrides):

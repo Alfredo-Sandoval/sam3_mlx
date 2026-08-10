@@ -476,10 +476,10 @@ def test_batched_mask_iou_and_iom_mlx_match_numpy_outputs():
         dtype=np.float32,
     )
 
-    numpy_iou = utils._batched_mask_iou(masks)
-    mlx_iou = utils._batched_mask_iou(mx.array(masks))
-    numpy_iom = utils._batched_mask_iom(masks)
-    mlx_iom = utils._batched_mask_iom(mx.array(masks))
+    numpy_iou = utils.batched_mask_iou(masks)
+    mlx_iou = utils.batched_mask_iou(mx.array(masks))
+    numpy_iom = utils.batched_mask_iom(masks)
+    mlx_iom = utils.batched_mask_iom(mx.array(masks))
 
     np.testing.assert_allclose(numpy_iou, expected_iou, rtol=1e-6, atol=1e-6)
     np.testing.assert_allclose(_as_numpy(mlx_iou), numpy_iou, rtol=1e-6, atol=1e-6)
@@ -507,10 +507,10 @@ def test_batched_mask_overlap_zero_detections_preserve_empty_square_shape():
     masks = np.zeros((2, 0, 2, 2), dtype=np.float32)
     expected = np.zeros((2, 0, 0), dtype=np.float32)
 
-    numpy_iou = utils._batched_mask_iou(masks)
-    mlx_iou = utils._batched_mask_iou(mx.array(masks))
-    numpy_iom = utils._batched_mask_iom(masks)
-    mlx_iom = utils._batched_mask_iom(mx.array(masks))
+    numpy_iou = utils.batched_mask_iou(masks)
+    mlx_iou = utils.batched_mask_iou(mx.array(masks))
+    numpy_iom = utils.batched_mask_iom(masks)
+    mlx_iom = utils.batched_mask_iom(mx.array(masks))
 
     np.testing.assert_array_equal(numpy_iou, expected)
     np.testing.assert_array_equal(_as_numpy(mlx_iou), expected)
@@ -574,9 +574,7 @@ def test_pairwise_mask_overlap_rejects_invalid_shapes(overlap_fn, as_mlx):
 
 
 @pytest.mark.parametrize("as_mlx", [False, True])
-@pytest.mark.parametrize(
-    "overlap_fn", [utils._batched_mask_iou, utils._batched_mask_iom]
-)
+@pytest.mark.parametrize("overlap_fn", [utils.batched_mask_iou, utils.batched_mask_iom])
 def test_batched_mask_overlap_rejects_invalid_rank(overlap_fn, as_mlx):
     with pytest.raises(ValueError, match="batched masks"):
         overlap_fn(_maybe_mlx(np.zeros((2, 2, 2), dtype=np.float32), as_mlx))

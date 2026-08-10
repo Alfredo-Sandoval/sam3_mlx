@@ -2,26 +2,42 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
-from typing import Any
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Any, NotRequired, Protocol, Required, SupportsInt, TypedDict, cast
 
 import numpy as np
+from numpy.typing import DTypeLike, NDArray
 from PIL import Image as PILImage
 from PIL import ImageDraw
 
 
-def _is_mlx_array(value) -> bool:
+type BoolArray = NDArray[np.bool_]
+
+
+class CocoRle(TypedDict):
+    size: Required[list[int]]
+    counts: Required[str | bytes]
+    area: NotRequired[int]
+
+
+class _MlxEval(Protocol):
+    def __call__(self, *values: object) -> None: ...
+
+
+def _is_mlx_array(value: object) -> bool:
     return type(value).__module__.startswith("mlx.")
 
 
-def _to_numpy(value, dtype=None) -> np.ndarray:
+def _to_numpy(value: object, dtype: DTypeLike | None = None) -> NDArray[Any]:
+    array: NDArray[Any]
     if isinstance(value, np.ndarray):
-        array = value
+        array = cast(NDArray[Any], value)
     else:
         if _is_mlx_array(value):
             import mlx.core as mx
 
-            mx.eval(value)
+            mlx_eval = cast(_MlxEval, getattr(mx, "eval"))
+            mlx_eval(value)
         array = np.asarray(value)
     return array.astype(dtype, copy=False) if dtype is not None else array
 
@@ -52,14 +68,12 @@ def _decode_compressed_rle_counts(counts: str | bytes) -> list[int]:
     return decoded
 
 
-def _normalize_rle_counts(counts: Any) -> list[int]:
+def _normalize_rle_counts(counts: object) -> list[int]:
     if isinstance(counts, (str, bytes)):
         return _decode_compressed_rle_counts(counts)
-    if isinstance(counts, np.ndarray):
-        counts = counts.tolist()
     if not isinstance(counts, Iterable):
         raise TypeError("COCO RLE counts must be a sequence, str, or bytes.")
-    return [int(count) for count in counts]
+    return [int(count) for count in cast(Iterable[SupportsInt], counts)]
 
 
 def _encode_compressed_rle_counts(counts: Sequence[int]) -> str:
@@ -99,7 +113,7 @@ def _encode_counts_for_size(counts: Sequence[int], height: int, width: int) -> s
     return _encode_compressed_rle_counts(counts_list)
 
 
-def _mask_to_uncompressed_counts(mask: np.ndarray) -> list[int]:
+def _mask_to_uncompressed_counts(mask: BoolArray) -> list[int]:
     pixels = np.asarray(mask, dtype=bool).reshape(-1, order="F")
     counts: list[int] = []
     last = False
@@ -116,54 +130,86 @@ def _mask_to_uncompressed_counts(mask: np.ndarray) -> list[int]:
     return counts
 
 
-def rle_encode(orig_mask, return_areas=False):
-    """Encode boolean ``(N, H, W)`` masks as local COCO RLE dictionaries."""
-
-    masks = _to_numpy(orig_mask)
+def _require_bool_mask_batch(value: object) -> BoolArray:
+    masks = _to_numpy(value)
     if masks.ndim != 3:
         raise ValueError("Mask must have shape (N, H, W).")
     if masks.dtype != np.bool_:
         raise TypeError("Mask must have boolean dtype.")
+    return cast(BoolArray, masks)
+
+
+def _rle_item(
+    *, height: int, width: int, counts: str | bytes, area: int | None = None
+) -> CocoRle:
+    item: CocoRle = {"size": [height, width], "counts": counts}
+    if area is not None:
+        item["area"] = area
+    return item
+
+
+def _parse_rle_payload(rle: object) -> tuple[int, int, object]:
+    if not isinstance(rle, dict):
+        raise TypeError("COCO RLE must be a dict with 'size' and 'counts'.")
+    payload = cast(Mapping[str, object], rle)
+    if "size" not in payload or "counts" not in payload:
+        raise ValueError("COCO RLE must contain 'size' and 'counts'.")
+
+    size = payload["size"]
+    if not isinstance(size, Sequence) or isinstance(size, (str, bytes)):
+        raise ValueError("COCO RLE size must be a length-2 sequence.")
+    size_sequence = cast(Sequence[object], size)
+    if len(size_sequence) != 2:
+        raise ValueError("COCO RLE size must be a length-2 sequence.")
+
+    height = int(cast(SupportsInt, size_sequence[0]))
+    width = int(cast(SupportsInt, size_sequence[1]))
+    return height, width, payload["counts"]
+
+
+def _polygon_vertices(polygon: object) -> list[tuple[float, float]]:
+    points = np.asarray(polygon, dtype=np.float32).reshape(-1, 2)
+    if len(points) < 3:
+        return []
+    return [(float(point[0]), float(point[1])) for point in points]
+
+
+def rle_encode(orig_mask: object, return_areas: bool = False) -> list[CocoRle]:
+    """Encode boolean ``(N, H, W)`` masks as local COCO RLE dictionaries."""
+
+    masks = _require_bool_mask_batch(orig_mask)
     if masks.size == 0:
         return []
 
-    encoded = []
-    for mask in masks:
+    encoded: list[CocoRle] = []
+    for index in range(masks.shape[0]):
+        mask = cast(BoolArray, masks[index])
         counts = _mask_to_uncompressed_counts(mask)
-        item = {
-            "size": list(mask.shape),
-            "counts": _encode_compressed_rle_counts(counts),
-        }
-        if return_areas:
-            item["area"] = int(mask.sum())
-        encoded.append(item)
+        encoded.append(
+            _rle_item(
+                height=int(mask.shape[0]),
+                width=int(mask.shape[1]),
+                counts=_encode_compressed_rle_counts(counts),
+                area=int(mask.sum()) if return_areas else None,
+            )
+        )
     return encoded
 
 
-def robust_rle_encode(masks):
+def robust_rle_encode(masks: object) -> list[CocoRle]:
     """Encode a collection of boolean masks as local COCO RLE dictionaries."""
 
-    masks_np = _to_numpy(masks)
-    if masks_np.ndim != 3:
-        raise ValueError("Mask must have shape (N, H, W).")
-    if masks_np.dtype != np.bool_:
-        raise TypeError("Mask must have boolean dtype.")
-    return rle_encode(masks_np)
+    return rle_encode(_require_bool_mask_batch(masks))
 
 
-def rle_decode(rle: dict[str, Any]) -> np.ndarray:
+def rle_decode(rle: object) -> BoolArray:
     """Decode a compressed or uncompressed COCO RLE dictionary."""
 
-    if not isinstance(rle, dict):
-        raise TypeError("COCO RLE must be a dict with 'size' and 'counts'.")
-    if "size" not in rle or "counts" not in rle:
-        raise ValueError("COCO RLE must contain 'size' and 'counts'.")
-
-    height, width = [int(v) for v in rle["size"]]
+    height, width, counts_value = _parse_rle_payload(rle)
     if height < 0 or width < 0:
         raise ValueError("COCO RLE size values must be non-negative.")
 
-    counts = _normalize_rle_counts(rle["counts"])
+    counts = _normalize_rle_counts(counts_value)
     total = height * width
     flat = np.zeros((total,), dtype=bool)
     offset = 0
@@ -185,16 +231,16 @@ def rle_decode(rle: dict[str, Any]) -> np.ndarray:
             f"COCO RLE decoded to {offset} pixels, expected {total} "
             f"for size {(height, width)}."
         )
-    return flat.reshape((width, height)).T
+    return cast(BoolArray, flat.reshape((width, height)).T)
 
 
-def rle_area(rle: dict[str, Any]) -> int:
+def rle_area(rle: object) -> int:
     """Return foreground area for a COCO RLE dictionary."""
 
     return int(rle_decode(rle).sum())
 
 
-def rle_to_bbox(rle: dict[str, Any]) -> list[float]:
+def rle_to_bbox(rle: object) -> list[float]:
     """Return ``[x, y, w, h]`` for a COCO RLE dictionary."""
 
     mask = rle_decode(rle)
@@ -206,7 +252,7 @@ def rle_to_bbox(rle: dict[str, Any]) -> list[float]:
     return [float(x0), float(y0), float(x1 - x0 + 1), float(y1 - y0 + 1)]
 
 
-def ann_to_rle(segm, im_info):
+def ann_to_rle(segm: object, im_info: Mapping[str, SupportsInt]) -> CocoRle:
     """Convert COCO polygons or RLE annotations to a local COCO RLE dict."""
 
     try:
@@ -218,27 +264,40 @@ def ann_to_rle(segm, im_info):
     if isinstance(segm, list):
         mask = PILImage.new("L", (width, height), 0)
         draw = ImageDraw.Draw(mask)
-        for polygon in segm:
-            points = np.asarray(polygon, dtype=np.float32).reshape(-1, 2)
-            if len(points) >= 3:
-                draw.polygon([tuple(point) for point in points], outline=1, fill=1)
-        mask_array = np.asarray(mask, dtype=bool)
+        for polygon in cast(Sequence[object], segm):
+            vertices = _polygon_vertices(polygon)
+            if vertices:
+                draw.polygon(vertices, outline=1, fill=1)
+        mask_array = cast(BoolArray, np.asarray(mask, dtype=bool))
         return rle_encode(mask_array[None, :, :])[0]
 
     if not isinstance(segm, dict):
         raise TypeError("COCO segmentation must be polygons or an RLE dict.")
-    if "counts" not in segm:
+    payload = cast(Mapping[str, object], segm)
+    if "counts" not in payload:
         raise ValueError("COCO RLE segmentation must contain 'counts'.")
 
-    counts = segm["counts"]
+    counts = payload["counts"]
     if isinstance(counts, np.ndarray):
-        return {
-            "size": [height, width],
-            "counts": _encode_counts_for_size(counts.tolist(), height, width),
-        }
+        return _rle_item(
+            height=height,
+            width=width,
+            counts=_encode_counts_for_size(
+                [int(cast(SupportsInt, count)) for count in counts.tolist()],
+                height,
+                width,
+            ),
+        )
     if isinstance(counts, Sequence) and not isinstance(counts, (str, bytes)):
-        return {
-            "size": [height, width],
-            "counts": _encode_counts_for_size(counts, height, width),
-        }
-    return {"size": [height, width], "counts": counts}
+        return _rle_item(
+            height=height,
+            width=width,
+            counts=_encode_counts_for_size(
+                [int(count) for count in cast(Sequence[SupportsInt], counts)],
+                height,
+                width,
+            ),
+        )
+    if isinstance(counts, (str, bytes)):
+        return _rle_item(height=height, width=width, counts=counts)
+    raise TypeError("COCO RLE counts must be a sequence, str, or bytes.")
