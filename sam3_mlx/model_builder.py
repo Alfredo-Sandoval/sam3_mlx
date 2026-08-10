@@ -1,23 +1,29 @@
+from __future__ import annotations
+
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import (
+    TYPE_CHECKING,
+    Literal,
+    Never,
+    NotRequired,
+    Protocol,
+    TypedDict,
+    TypeAlias,
+    TypeVar,
+    cast,
+)
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx.utils import tree_flatten
+import mlx.utils as mlx_utils
 
 from sam3_mlx._device import is_mlx_runtime_device
 from sam3_mlx._unsupported import raise_unsupported
-from sam3_mlx.convert import (
-    DEFAULT_MLX_CHECKPOINT,
-    MLX_COMMUNITY_REPO,
-    download_and_convert,
-    load_from_hub,
-    normalize_sam3_image_weight_layout,
-)
+import sam3_mlx.convert as sam3_convert
 from sam3_mlx.model.sam3_image import Sam3Image
 from sam3_mlx.model.sam3_tracking_predictor import Sam3TrackerPredictor
 from sam3_mlx.model.sam1_task_predictor import (
@@ -65,6 +71,120 @@ from sam3_mlx.model.model_misc import (
     TransformerWrapper,
 )
 
+if TYPE_CHECKING:
+    from sam3_mlx.model.sam3_multiplex_detector import Sam3MultiplexDetector
+    from sam3_mlx.model.sam3_multiplex_tracking import (
+        Sam3MultiplexTrackingWithInteractivity,
+    )
+    from sam3_mlx.model.sam3_multiplex_video_predictor import (
+        Sam3MultiplexVideoPredictor,
+    )
+    from sam3_mlx.model.sam3_video_inference import (
+        Sam3VideoInferenceWithInstanceInteractivity,
+    )
+    from sam3_mlx.model.sam3_video_predictor import Sam3VideoPredictor
+    from sam3_mlx.model.video_tracking_multiplex_demo import (
+        Sam3VideoTrackingMultiplexDemo,
+    )
+
+
+ComputeDevice: TypeAlias = Literal["mlx"] | None
+PathLikeStr: TypeAlias = str | os.PathLike[str]
+CompileMode: TypeAlias = str | bool | None
+ImageStats: TypeAlias = tuple[float, float, float]
+CheckpointSource: TypeAlias = Mapping[str, object]
+NormalizedWeights: TypeAlias = dict[str, mx.array]
+
+_ModelT = TypeVar("_ModelT", bound="_SupportsEval")
+
+
+class _SupportsEval(Protocol):
+    def eval(self) -> object: ...
+
+
+class _HasParameters(Protocol):
+    def parameters(self) -> object: ...
+
+
+class _CheckpointLoadable(_HasParameters, Protocol):
+    def load_weights(
+        self,
+        file_or_weights: str | list[tuple[str, mx.array]],
+        strict: bool = True,
+    ) -> object: ...
+
+
+class _TreeFlatten(Protocol):
+    def __call__(
+        self,
+        tree: object,
+        prefix: str = "",
+        is_leaf: Callable[..., object] | None = None,
+        destination: NormalizedWeights | None = None,
+    ) -> NormalizedWeights: ...
+
+
+class _NormalizeImageWeightLayout(Protocol):
+    def __call__(self, key: str, value: mx.array) -> mx.array: ...
+
+
+class _MlxEval(Protocol):
+    def __call__(self, *values: object) -> None: ...
+
+
+class _MlxLoad(Protocol):
+    def __call__(self, file: PathLikeStr, /) -> object: ...
+
+
+class _Transpose4D(Protocol):
+    def __call__(
+        self,
+        axis0: int,
+        axis1: int,
+        axis2: int,
+        axis3: int,
+        /,
+        stream: object | None = None,
+    ) -> mx.array: ...
+
+
+class _HfHubDownload(Protocol):
+    def __call__(self, repo_id: str, filename: str, **kwargs: object) -> str: ...
+
+
+class _VideoPredictorFactory(Protocol):
+    def __call__(
+        self,
+        *model_args: object,
+        **model_kwargs: object,
+    ) -> Sam3VideoPredictor: ...
+
+
+class _CheckpointProvenance(TypedDict):
+    status: str
+    repo: str | None
+    revision: str | None
+    output_sha256: str | None
+    checkpoint_path: NotRequired[str]
+
+
+class _MultiplexPredictorKwargs(TypedDict, total=False):
+    session_expiration_sec: int
+    default_output_prob_thresh: float
+    score_threshold_detection: float
+    image_only_det_thresh: float
+    suppress_det_close_to_boundary: bool
+    strict_state_dict_loading: bool
+
+
+_tree_flatten = cast(_TreeFlatten, getattr(mlx_utils, "tree_flatten"))
+_normalize_sam3_image_weight_layout = cast(
+    _NormalizeImageWeightLayout,
+    getattr(sam3_convert, "normalize_sam3_image_weight_layout"),
+)
+_mx_eval = cast(_MlxEval, getattr(mx, "eval"))
+_mx_load = cast(_MlxLoad, getattr(mx, "load"))
+
 
 @dataclass(frozen=True)
 class Sam3CheckpointShapeMismatch:
@@ -81,6 +201,41 @@ class Sam3CheckpointLoadReport:
     missing: tuple[str, ...]
     extra: tuple[str, ...]
     shape_mismatched: tuple[Sam3CheckpointShapeMismatch, ...]
+
+
+def _flatten_model_parameters(model: _HasParameters) -> NormalizedWeights:
+    return _tree_flatten(model.parameters(), destination={})
+
+
+def _require_checkpoint_mapping(payload: object, *, message: str) -> CheckpointSource:
+    ckpt = _unwrap_checkpoint_payload(payload)
+    if not isinstance(ckpt, Mapping):
+        raise ValueError(message)
+    raw_ckpt = cast(Mapping[object, object], ckpt)
+    normalized: dict[str, object] = {}
+    for key, value in raw_ckpt.items():
+        if not isinstance(key, str):
+            raise ValueError(message)
+        normalized[key] = value
+    return normalized
+
+
+def _require_mx_array(value: object, *, key: str) -> mx.array:
+    if not isinstance(value, mx.array):
+        raise TypeError(
+            f"Expected checkpoint value for {key!r} to be an MLX array, "
+            f"got {type(value).__name__}."
+        )
+    return value
+
+
+def _has_inst_interactivity(model: object) -> bool:
+    return getattr(model, "inst_interactive_predictor", None) is not None
+
+
+def _transpose_4d(value: mx.array, axes: tuple[int, int, int, int]) -> mx.array:
+    transpose = cast(_Transpose4D, getattr(value, "transpose"))
+    return transpose(*axes)
 
 
 def _setup_tf32() -> None:
@@ -106,7 +261,7 @@ def _raise_builder_unsupported(
     reason: str,
     detail: str,
     alternative: str | None = None,
-):
+) -> Never:
     raise_unsupported(
         feature,
         reason=reason,
@@ -115,7 +270,7 @@ def _raise_builder_unsupported(
     )
 
 
-def _raise_compile_unsupported(feature: str):
+def _raise_compile_unsupported(feature: str) -> Never:
     _raise_builder_unsupported(
         feature,
         reason="torch-compile",
@@ -124,7 +279,7 @@ def _raise_compile_unsupported(feature: str):
     )
 
 
-def _normalize_mlx_api_device(device) -> str:
+def _normalize_mlx_api_device(device: ComputeDevice) -> str:
     if is_mlx_runtime_device(device):
         return "mlx"
     _raise_builder_unsupported(
@@ -138,7 +293,7 @@ def _normalize_mlx_api_device(device) -> str:
     )
 
 
-def _validate_mlx_device(device) -> None:
+def _validate_mlx_device(device: ComputeDevice) -> None:
     _normalize_mlx_api_device(device)
 
 
@@ -146,7 +301,7 @@ def _validate_sam3_video_runtime_options(
     feature_prefix: str,
     *,
     compile: bool,
-    device,
+    device: ComputeDevice,
     has_presence_token: bool,
     geo_encoder_use_img_cross_attn: bool,
     strict_state_dict_loading: bool,
@@ -185,16 +340,22 @@ def _validate_sam3_video_runtime_options(
         )
 
 
-def _setup_device_and_mode(model, device, eval_mode):
+def _setup_device_and_mode(
+    model: _ModelT,
+    device: ComputeDevice,
+    eval_mode: bool,
+) -> _ModelT:
     """Setup the explicit MLX device contract and evaluation mode."""
 
     _validate_mlx_device(device)
-    if eval_mode and hasattr(model, "eval"):
+    if eval_mode:
         model.eval()
     return model
 
 
-def _create_position_encoding(precompute_resolution=None):
+def _create_position_encoding(
+    precompute_resolution: int | None = None,
+) -> PositionEmbeddingSine:
     """Create a PositionEmbeddingSine block (used by the backbone and geometry encoder)."""
     return PositionEmbeddingSine(
         num_pos_feats=256,
@@ -205,7 +366,7 @@ def _create_position_encoding(precompute_resolution=None):
     )
 
 
-def _create_vit_backbone(compile_mode=None):
+def _create_vit_backbone(compile_mode: str | None = None) -> ViT:
     """Create the ViT backbone."""
     return ViT(
         img_size=1008,
@@ -235,7 +396,11 @@ def _create_vit_backbone(compile_mode=None):
     )
 
 
-def _create_vit_neck(position_encoding, vit_backbone, enable_inst_interactivity=False):
+def _create_vit_neck(
+    position_encoding: PositionEmbeddingSine,
+    vit_backbone: ViT,
+    enable_inst_interactivity: bool = False,
+) -> Sam3DualViTDetNeck:
     """Create ViT neck for feature pyramid."""
     return Sam3DualViTDetNeck(
         position_encoding=position_encoding,
@@ -246,7 +411,10 @@ def _create_vit_neck(position_encoding, vit_backbone, enable_inst_interactivity=
     )
 
 
-def _create_vl_backbone(vit_neck, text_encoder):
+def _create_vl_backbone(
+    vit_neck: Sam3DualViTDetNeck,
+    text_encoder: VETextEncoder,
+) -> SAM3VLBackbone:
     """Create visual-language backbone."""
     return SAM3VLBackbone(visual=vit_neck, text=text_encoder, scalp=1)
 
@@ -254,7 +422,7 @@ def _create_vl_backbone(vit_neck, text_encoder):
 def _create_transformer_encoder() -> TransformerEncoderFusion:
     """Create the transformer encoder."""
 
-    def encoder_layer():
+    def encoder_layer() -> TransformerEncoderLayer:
         return TransformerEncoderLayer(
             activation="relu",
             d_model=256,
@@ -290,7 +458,7 @@ def _create_transformer_encoder() -> TransformerEncoderFusion:
 def _create_transformer_decoder() -> TransformerDecoder:
     """Create the transformer decoder."""
 
-    def decoder_layer():
+    def decoder_layer() -> TransformerDecoderLayer:
         return TransformerDecoderLayer(
             activation="relu",
             d_model=256,
@@ -325,7 +493,7 @@ def _create_transformer_decoder() -> TransformerDecoder:
     return decoder
 
 
-def _create_dot_product_scoring():
+def _create_dot_product_scoring() -> DotProductScoring:
     """Create dot product scoring module."""
     prompt_mlp = MLP(
         input_dim=256,
@@ -339,7 +507,7 @@ def _create_dot_product_scoring():
     return DotProductScoring(d_model=256, d_proj=256, prompt_mlp=prompt_mlp)
 
 
-def _create_segmentation_head():
+def _create_segmentation_head() -> UniversalSegmentationHead:
     pixel_decoder = PixelDecoder(
         num_upsampling_stages=3,
         interpolation_mode="nearest",
@@ -363,10 +531,10 @@ def _create_segmentation_head():
     return segmentation_head
 
 
-def _create_geometry_encoder():
+def _create_geometry_encoder() -> SequenceGeometryEncoder:
     geo_pos_enc = _create_position_encoding()
 
-    def geo_layer():
+    def geo_layer() -> TransformerEncoderLayer:
         return TransformerEncoderLayer(
             activation="relu",
             d_model=256,
@@ -405,7 +573,7 @@ def _create_geometry_encoder():
     return input_geometry_encoder
 
 
-def _create_inst_interactive_predictor():
+def _create_inst_interactive_predictor() -> SAM3InteractiveImagePredictor:
     interactive_model = SAM3InteractiveImageModel(
         image_size=1008,
         backbone_stride=14,
@@ -424,44 +592,28 @@ def _create_inst_interactive_predictor():
 
 
 def _create_sam3_model(
-    backbone,
-    transformer,
-    input_geometry_encoder,
-    segmentation_head,
-    dot_prod_scoring,
-    inst_interactive_predictor=None,
-):
-    common_params = {
-        "backbone": backbone,
-        "transformer": transformer,
-        "input_geometry_encoder": input_geometry_encoder,
-        "segmentation_head": segmentation_head,
-        "num_feature_levels": 1,
-        "o2m_mask_predict": True,
-        "dot_prod_scoring": dot_prod_scoring,
-        "use_instance_query": False,
-        "multimask_output": True,
-        "inst_interactive_predictor": inst_interactive_predictor,
-    }
-
-    model = Sam3Image(**common_params)
-    return model
-
-
-def _unsupported_tracker_builder(feature: str):
-    _raise_builder_unsupported(
-        f"sam3_mlx.model_builder.{feature}",
-        reason="video-multiplex",
-        detail=(
-            "This builder depends on the official Torch-only tracker or multiplex "
-            "runtime. The current MLX port exposes the image model and selected-frame "
-            "video API slice."
-        ),
-        alternative="build_sam3_predictor(version='sam3')",
+    backbone: SAM3VLBackbone,
+    transformer: TransformerWrapper,
+    input_geometry_encoder: SequenceGeometryEncoder,
+    segmentation_head: UniversalSegmentationHead | None,
+    dot_prod_scoring: DotProductScoring,
+    inst_interactive_predictor: SAM3InteractiveImagePredictor | None = None,
+) -> Sam3Image:
+    return Sam3Image(
+        backbone=backbone,
+        transformer=transformer,
+        input_geometry_encoder=input_geometry_encoder,
+        segmentation_head=segmentation_head,
+        num_feature_levels=1,
+        o2m_mask_predict=True,
+        dot_prod_scoring=dot_prod_scoring,
+        use_instance_query=False,
+        multimask_output=True,
+        inst_interactive_predictor=inst_interactive_predictor,
     )
 
 
-def _create_tracker_maskmem_backbone():
+def _create_tracker_maskmem_backbone() -> SimpleMaskEncoder:
     """Create the SAM3 Tracker memory encoder (SimpleMaskEncoder)."""
     position_encoding = PositionEmbeddingSine(
         num_pos_feats=64,
@@ -489,7 +641,7 @@ def _create_tracker_maskmem_backbone():
     )
 
 
-def _create_tracker_transformer():
+def _create_tracker_transformer() -> TransformerWrapper:
     """Create the SAM3 Tracker memory-attention transformer (encoder-only)."""
     self_attention = RoPEAttention(
         embedding_dim=256,
@@ -546,9 +698,9 @@ def _create_tracker_transformer():
 def build_tracker(
     apply_temporal_disambiguation: bool,
     with_backbone: bool = False,
-    compile_mode=None,
-    checkpoint_path=None,
-):
+    compile_mode: CompileMode = None,
+    checkpoint_path: PathLikeStr | None = None,
+) -> Sam3TrackerPredictor:
     """Build the SAM3 SAM2-style tracker predictor."""
     if compile_mode not in (None, False):
         _raise_compile_unsupported("sam3_mlx.model_builder.build_tracker(compile_mode)")
@@ -613,7 +765,8 @@ def _create_text_encoder(bpe_path: str) -> VETextEncoder:
 
 
 def _create_vision_backbone(
-    compile_mode=None, enable_inst_interactivity=True
+    compile_mode: str | None = None,
+    enable_inst_interactivity: bool = True,
 ) -> Sam3DualViTDetNeck:
     position_encoding = _create_position_encoding(precompute_resolution=1008)
     vit_backbone = _create_vit_backbone(compile_mode=compile_mode)
@@ -626,44 +779,54 @@ def _create_vision_backbone(
     return vit_neck
 
 
-def _create_sam3_transformer(has_presence_token: bool = True):
+def _create_sam3_transformer(
+    has_presence_token: bool = True,
+) -> TransformerWrapper:
     encoder: TransformerEncoderFusion = _create_transformer_encoder()
     decoder: TransformerDecoder = _create_transformer_decoder()
 
     return TransformerWrapper(encoder=encoder, decoder=decoder, d_model=256)
 
 
-def _unwrap_checkpoint_payload(payload):
-    if isinstance(payload, Mapping) and isinstance(payload.get("model"), Mapping):
-        return payload["model"]
+def _unwrap_checkpoint_payload(payload: object) -> object:
+    if isinstance(payload, Mapping):
+        source = cast(Mapping[object, object], payload)
+        model_payload = source.get("model")
+        if isinstance(model_payload, Mapping):
+            return cast(Mapping[object, object], model_payload)
+        return source
     return payload
 
 
-def _normalize_sam3_image_weights(payload, include_tracker: bool):
+def _normalize_sam3_image_weights(
+    payload: object,
+    include_tracker: bool,
+) -> NormalizedWeights:
     """Normalize official SAM3 checkpoint keys to the local image model names."""
-    ckpt = _unwrap_checkpoint_payload(payload)
-    if not isinstance(ckpt, Mapping):
-        raise ValueError("SAM3 checkpoint payload must be a mapping of weight names.")
+    ckpt = _require_checkpoint_mapping(
+        payload,
+        message="SAM3 checkpoint payload must be a mapping of weight names.",
+    )
 
-    ckpt = dict(ckpt)
+    ckpt_dict = dict(ckpt)
     if any(
         key.startswith("sam3_model.") or key.startswith("sam2_predictor.")
-        for key in ckpt
+        for key in ckpt_dict
     ):
-        remapped = {}
-        for key, value in ckpt.items():
+        remapped: dict[str, object] = {}
+        for key, value in ckpt_dict.items():
             if key.startswith("sam3_model."):
                 key = "detector." + key[len("sam3_model.") :]
             elif key.startswith("sam2_predictor."):
                 key = "tracker." + key[len("sam2_predictor.") :]
             remapped[key] = value
-        ckpt = remapped
+        ckpt_dict = remapped
 
     has_official_prefix = any(
-        key.startswith("detector.") or key.startswith("tracker.") for key in ckpt
+        key.startswith("detector.") or key.startswith("tracker.") for key in ckpt_dict
     )
     if not has_official_prefix:
-        if any(key.startswith("detector_model.") for key in ckpt):
+        if any(key.startswith("detector_model.") for key in ckpt_dict):
             raise ValueError(
                 "Transformers-style SAM3 detector_model checkpoints are not yet "
                 "mapped into the sam3_mlx image model. Use the "
@@ -671,13 +834,16 @@ def _normalize_sam3_image_weights(payload, include_tracker: bool):
                 "tracker_model weights with interactive_checkpoint_path."
             )
         return {
-            key: normalize_sam3_image_weight_layout(key, value)
-            for key, value in ckpt.items()
+            key: _normalize_sam3_image_weight_layout(
+                key,
+                _require_mx_array(value, key=key),
+            )
+            for key, value in ckpt_dict.items()
         }
 
     image_weights = {
         key[len("detector.") :]: value
-        for key, value in ckpt.items()
+        for key, value in ckpt_dict.items()
         if key.startswith("detector.")
     }
     if not image_weights:
@@ -686,9 +852,12 @@ def _normalize_sam3_image_weights(payload, include_tracker: bool):
             "image model."
         )
     if include_tracker:
-        image_weights.update(_normalize_inst_interactive_weights(ckpt))
+        image_weights.update(_normalize_inst_interactive_weights(ckpt_dict))
     return {
-        key: normalize_sam3_image_weight_layout(key, value)
+        key: _normalize_sam3_image_weight_layout(
+            key,
+            _require_mx_array(value, key=key),
+        )
         for key, value in image_weights.items()
     }
 
@@ -744,7 +913,7 @@ _INTERACTIVE_CONVTRANSPOSE2D_TARGET_SHAPES = {
 }
 
 
-def _normalize_inst_interactive_weight_layout(key: str, value):
+def _normalize_inst_interactive_weight_layout(key: str, value: mx.array) -> mx.array:
     """Map SAM3 interactive conv kernels into MLX's channels-last layout."""
 
     target_shape = _INTERACTIVE_CONV2D_TARGET_SHAPES.get(key)
@@ -758,7 +927,7 @@ def _normalize_inst_interactive_weight_layout(key: str, value):
             target_shape[2],
         )
         if tuple(value.shape) == torch_shape:
-            return value.transpose(0, 2, 3, 1)
+            return _transpose_4d(value, (0, 2, 3, 1))
 
     target_shape = _INTERACTIVE_CONVTRANSPOSE2D_TARGET_SHAPES.get(key)
     if target_shape is not None and len(value.shape) == 4:
@@ -771,7 +940,7 @@ def _normalize_inst_interactive_weight_layout(key: str, value):
             target_shape[2],
         )
         if tuple(value.shape) == torch_shape:
-            return value.transpose(1, 2, 3, 0)
+            return _transpose_4d(value, (1, 2, 3, 0))
 
     return value
 
@@ -908,19 +1077,18 @@ def _map_tracker_model_key(key: str) -> str | None:
     return _INTERACTIVE_PREFIX + "sam_mask_decoder." + decoder_inner
 
 
-def _normalize_inst_interactive_weights(payload):
+def _normalize_inst_interactive_weights(payload: object) -> NormalizedWeights:
     """Normalize SAM3/SAM2 interactive predictor keys into local image-model keys."""
 
-    ckpt = _unwrap_checkpoint_payload(payload)
-    if not isinstance(ckpt, Mapping):
-        raise ValueError(
-            "SAM3 interactive checkpoint payload must be a mapping of weight names."
-        )
+    ckpt = _require_checkpoint_mapping(
+        payload,
+        message="SAM3 interactive checkpoint payload must be a mapping of weight names.",
+    )
 
-    weights = {}
+    weights: NormalizedWeights = {}
 
     point_embed = ckpt.get("tracker_model.prompt_encoder.point_embed.weight")
-    if point_embed is not None:
+    if isinstance(point_embed, mx.array):
         for index in range(min(4, int(point_embed.shape[0]))):
             key = (
                 _INTERACTIVE_PREFIX
@@ -945,7 +1113,7 @@ def _normalize_inst_interactive_weights(payload):
             continue
         weights[target_key] = _normalize_inst_interactive_weight_layout(
             target_key,
-            value,
+            _require_mx_array(value, key=target_key),
         )
 
     return weights
@@ -1108,33 +1276,37 @@ def _map_tracker_model_checkpoint_key(key: str) -> str | None:
     return None
 
 
-def _normalize_tracker_weight_to_shape(key: str, value, target_shape):
-    if not isinstance(value, mx.array):
-        raise TypeError(
-            f"Expected checkpoint value for {key!r} to be an MLX array, "
-            f"got {type(value).__name__}."
-        )
+def _normalize_tracker_weight_to_shape(
+    key: str,
+    value: object,
+    target_shape: Sequence[int],
+) -> mx.array:
+    value = _require_mx_array(value, key=key)
     if tuple(value.shape) == tuple(target_shape):
         return value
     if len(value.shape) == 4:
         for perm in ((0, 2, 3, 1), (1, 2, 3, 0)):
-            converted = value.transpose(*perm)
+            converted = _transpose_4d(value, perm)
             if tuple(converted.shape) == tuple(target_shape):
                 return converted
     return value
 
 
-def _normalize_tracker_checkpoint_weights(payload, model):
+def _normalize_tracker_checkpoint_weights(
+    payload: object,
+    model: _HasParameters,
+) -> NormalizedWeights:
     """Normalize official tracker checkpoint aliases into local tracker keys."""
-    ckpt = _unwrap_checkpoint_payload(payload)
-    if not isinstance(ckpt, Mapping):
-        raise ValueError("SAM3 tracker checkpoint payload must be a mapping.")
+    ckpt = _require_checkpoint_mapping(
+        payload,
+        message="SAM3 tracker checkpoint payload must be a mapping.",
+    )
 
-    model_weights = tree_flatten(model.parameters(), destination={})
-    weights = {}
+    model_weights = _flatten_model_parameters(model)
+    weights: NormalizedWeights = {}
 
     point_embed = ckpt.get("tracker_model.prompt_encoder.point_embed.weight")
-    if point_embed is not None:
+    if isinstance(point_embed, mx.array):
         for index in range(min(4, int(point_embed.shape[0]))):
             target_key = f"sam_prompt_encoder.point_embeddings.{index}.weight"
             if target_key in model_weights:
@@ -1186,14 +1358,14 @@ def _map_sam31_mlp_layer_alias(inner: str) -> str:
     return inner
 
 
-def _normalize_sam31_weight_to_shape(key: str, value, target_shape):
+def _normalize_sam31_weight_to_shape(
+    key: str,
+    value: object,
+    target_shape: Sequence[int],
+) -> mx.array:
     """Normalize a mapped SAM 3.1 checkpoint value to a local MLX parameter."""
 
-    if not isinstance(value, mx.array):
-        raise TypeError(
-            f"Expected checkpoint value for {key!r} to be an MLX array, "
-            f"got {type(value).__name__}."
-        )
+    value = _require_mx_array(value, key=key)
     if tuple(value.shape) == tuple(target_shape):
         return value
     if (
@@ -1214,7 +1386,7 @@ def _normalize_sam31_weight_to_shape(key: str, value, target_shape):
         return mx.concat([cls_slot, value], axis=1)
     if len(value.shape) == 4:
         for perm in ((0, 2, 3, 1), (1, 2, 3, 0)):
-            converted = value.transpose(*perm)
+            converted = _transpose_4d(value, perm)
             if tuple(converted.shape) == tuple(target_shape):
                 return converted
     return value
@@ -1247,7 +1419,7 @@ def _map_sam31_neck_inner_key(inner: str) -> str | None:
 
 def _map_sam31_detector_model_key(
     key: str,
-    value,
+    value: mx.array,
     qkv_groups: dict[str, dict[str, mx.array]],
 ) -> tuple[str, mx.array] | None:
     if key.startswith(
@@ -1735,22 +1907,23 @@ def _map_sam31_multiplex_tracker_inner_key(inner: str) -> str | None:
 
 
 def _normalize_sam31_multiplex_tracker_weights(
-    payload,
-    model,
+    payload: object,
+    model: _HasParameters,
     *,
     prefix: str = "",
-) -> dict[str, mx.array]:
-    ckpt = _unwrap_checkpoint_payload(payload)
-    if not isinstance(ckpt, Mapping):
-        raise ValueError("SAM 3.1 multiplex checkpoint payload must be a mapping.")
+) -> NormalizedWeights:
+    ckpt = _require_checkpoint_mapping(
+        payload,
+        message="SAM 3.1 multiplex checkpoint payload must be a mapping.",
+    )
 
-    model_weights = tree_flatten(model.parameters(), destination={})
-    weights: dict[str, mx.array] = {}
+    model_weights = _flatten_model_parameters(model)
+    weights: NormalizedWeights = {}
 
     point_embed = ckpt.get(
         "tracker_model.interactive_sam_prompt_encoder.point_embed.weight"
     )
-    if point_embed is not None:
+    if isinstance(point_embed, mx.array):
         for index in range(min(4, int(point_embed.shape[0]))):
             target_key = (
                 prefix
@@ -1783,18 +1956,22 @@ def _normalize_sam31_multiplex_tracker_weights(
     return weights
 
 
-def _normalize_sam31_multiplex_weights(payload, model) -> dict[str, mx.array]:
+def _normalize_sam31_multiplex_weights(
+    payload: object,
+    model: _HasParameters,
+) -> NormalizedWeights:
     """Normalize SAM 3.1 multiplex checkpoint keys into the local predictor tree."""
 
-    ckpt = _unwrap_checkpoint_payload(payload)
-    if not isinstance(ckpt, Mapping):
-        raise ValueError("SAM 3.1 multiplex checkpoint payload must be a mapping.")
+    ckpt = _require_checkpoint_mapping(
+        payload,
+        message="SAM 3.1 multiplex checkpoint payload must be a mapping.",
+    )
 
-    model_weights = tree_flatten(model.parameters(), destination={})
-    weights: dict[str, mx.array] = {}
+    model_weights = _flatten_model_parameters(model)
+    weights: NormalizedWeights = {}
     qkv_groups: dict[str, dict[str, mx.array]] = {}
 
-    def add_weight(target_key: str, value) -> None:
+    def add_weight(target_key: str, value: mx.array) -> None:
         if target_key not in model_weights:
             return
         weights[target_key] = _normalize_sam31_weight_to_shape(
@@ -1805,7 +1982,11 @@ def _normalize_sam31_multiplex_weights(payload, model) -> dict[str, mx.array]:
 
     for key, value in ckpt.items():
         if key.startswith("detector_model."):
-            mapped = _map_sam31_detector_model_key(key, value, qkv_groups)
+            mapped = _map_sam31_detector_model_key(
+                key,
+                _require_mx_array(value, key=key),
+                qkv_groups,
+            )
             if mapped is not None:
                 add_weight(*mapped)
 
@@ -1825,29 +2006,24 @@ def _normalize_sam31_multiplex_weights(payload, model) -> dict[str, mx.array]:
     return weights
 
 
-def _shape_tuple(value) -> tuple[int, ...]:
+def _shape_tuple(value: mx.array) -> tuple[int, ...]:
     return tuple(int(dim) for dim in value.shape)
 
 
 def _audit_sam3_image_checkpoint_load(
-    model,
+    model: _HasParameters,
     weights: Mapping[str, mx.array],
 ) -> Sam3CheckpointLoadReport:
     """Report compatible, missing, extra, and shape-mismatched checkpoint keys."""
 
-    model_weights = tree_flatten(model.parameters(), destination={})
+    model_weights = _flatten_model_parameters(model)
     model_keys = set(model_weights)
     checkpoint_keys = set(weights)
-    loaded = []
-    shape_mismatched = []
+    loaded: list[str] = []
+    shape_mismatched: list[Sam3CheckpointShapeMismatch] = []
 
     for key in sorted(model_keys & checkpoint_keys):
-        checkpoint_value = weights[key]
-        if not isinstance(checkpoint_value, mx.array):
-            raise ValueError(
-                "Expected checkpoint value for "
-                f"{key!r} to be an MLX array, got {type(checkpoint_value).__name__}."
-            )
+        checkpoint_value = _require_mx_array(weights[key], key=key)
         model_shape = _shape_tuple(model_weights[key])
         checkpoint_shape = _shape_tuple(checkpoint_value)
         if checkpoint_shape == model_shape:
@@ -1886,7 +2062,7 @@ def _format_checkpoint_shape_mismatches(
 
 
 def _validate_checkpoint_component_coverage(
-    model,
+    model: object,
     report: Sam3CheckpointLoadReport,
     checkpoint_path: Path | str,
 ) -> None:
@@ -1930,7 +2106,7 @@ def _validate_checkpoint_component_coverage(
                 "checkpoint_path."
             )
 
-    if getattr(model, "inst_interactive_predictor", None) is None:
+    if not _has_inst_interactivity(model):
         return
 
     missing_interactive = tuple(
@@ -2028,14 +2204,19 @@ def _validate_sam31_multiplex_checkpoint_coverage(
         )
 
 
-def _load_multiplex_tracker_checkpoint(model, checkpoint_path, *, strict=True):
+def _load_multiplex_tracker_checkpoint(
+    model: _CheckpointLoadable,
+    checkpoint_path: PathLikeStr,
+    *,
+    strict: bool = True,
+) -> Sam3CheckpointLoadReport:
     checkpoint_path = Path(checkpoint_path)
     if checkpoint_path.suffix in {".pt", ".pth"}:
         raise ValueError(
             "Official PyTorch SAM 3.1 multiplex checkpoints must be converted "
             "before MLX loading. Pass an MLX .safetensors/.npz checkpoint."
         )
-    payload = mx.load(str(checkpoint_path))
+    payload = _mx_load(str(checkpoint_path))
     weights = _normalize_sam31_multiplex_tracker_weights(payload, model)
     if not weights:
         raise ValueError(
@@ -2060,19 +2241,24 @@ def _load_multiplex_tracker_checkpoint(model, checkpoint_path, *, strict=True):
             f"{checkpoint_path}."
         )
     model.load_weights([(key, weights[key]) for key in report.loaded], strict=False)
-    mx.eval(model.parameters())
-    model.checkpoint_load_report = report
+    _mx_eval(model.parameters())
+    setattr(model, "checkpoint_load_report", report)
     return report
 
 
-def _load_multiplex_checkpoint(model, checkpoint_path, *, strict=True):
+def _load_multiplex_checkpoint(
+    model: _CheckpointLoadable,
+    checkpoint_path: PathLikeStr,
+    *,
+    strict: bool = True,
+) -> Sam3CheckpointLoadReport:
     checkpoint_path = Path(checkpoint_path)
     if checkpoint_path.suffix in {".pt", ".pth"}:
         raise ValueError(
             "Official PyTorch SAM 3.1 multiplex checkpoints must be converted "
             "before MLX loading. Pass an MLX .safetensors/.npz checkpoint."
         )
-    payload = mx.load(str(checkpoint_path))
+    payload = _mx_load(str(checkpoint_path))
     weights = _normalize_sam31_multiplex_weights(payload, model)
     if not weights:
         raise ValueError(
@@ -2096,19 +2282,22 @@ def _load_multiplex_checkpoint(model, checkpoint_path, *, strict=True):
             f"SAM 3.1 multiplex checkpoint did not load any weights: {checkpoint_path}."
         )
     model.load_weights([(key, weights[key]) for key in report.loaded], strict=False)
-    mx.eval(model.parameters())
-    model.checkpoint_load_report = report
+    _mx_eval(model.parameters())
+    setattr(model, "checkpoint_load_report", report)
     return report
 
 
-def _load_tracker_checkpoint(model, checkpoint_path):
+def _load_tracker_checkpoint(
+    model: _CheckpointLoadable,
+    checkpoint_path: PathLikeStr,
+) -> Sam3CheckpointLoadReport:
     checkpoint_path = Path(checkpoint_path)
     if checkpoint_path.suffix in {".pt", ".pth"}:
         raise ValueError(
             "Official PyTorch SAM3 tracker checkpoints must be converted before "
             "MLX loading. Pass an MLX .safetensors/.npz checkpoint."
         )
-    payload = mx.load(str(checkpoint_path))
+    payload = _mx_load(str(checkpoint_path))
     weights = _normalize_tracker_checkpoint_weights(payload, model)
     if not weights:
         raise ValueError(f"No tracker weights found in checkpoint: {checkpoint_path}")
@@ -2124,18 +2313,18 @@ def _load_tracker_checkpoint(model, checkpoint_path):
         )
     _validate_tracker_checkpoint_coverage(report, checkpoint_path)
     model.load_weights([(key, weights[key]) for key in report.loaded], strict=False)
-    mx.eval(model.parameters())
-    model.checkpoint_load_report = report
+    _mx_eval(model.parameters())
+    setattr(model, "checkpoint_load_report", report)
     return report
 
 
 def _load_checkpoint(
-    model,
-    checkpoint_path,
+    model: _CheckpointLoadable,
+    checkpoint_path: PathLikeStr,
     *,
-    interactive_checkpoint_path=None,
-    strict=True,
-):
+    interactive_checkpoint_path: PathLikeStr | None = None,
+    strict: bool = True,
+) -> Sam3CheckpointLoadReport:
     checkpoint_path = Path(checkpoint_path)
     if checkpoint_path.suffix in {".pt", ".pth"}:
         raise ValueError(
@@ -2143,14 +2332,14 @@ def _load_checkpoint(
             "Use build_sam3_image_model(convert_from_pytorch=True, ...) or "
             "sam3_mlx.convert.download_and_convert."
         )
-    payload = mx.load(str(checkpoint_path))
+    payload = _mx_load(str(checkpoint_path))
     weights = _normalize_sam3_image_weights(
         payload,
-        include_tracker=getattr(model, "inst_interactive_predictor", None) is not None,
+        include_tracker=_has_inst_interactivity(model),
     )
     checkpoint_label: Path | str = checkpoint_path
     if interactive_checkpoint_path is not None:
-        if getattr(model, "inst_interactive_predictor", None) is None:
+        if not _has_inst_interactivity(model):
             raise ValueError(
                 "interactive_checkpoint_path requires enable_inst_interactivity=True."
             )
@@ -2160,7 +2349,7 @@ def _load_checkpoint(
                 "Official PyTorch interactive checkpoints must be converted before "
                 "MLX loading. Pass an MLX .safetensors/.npz checkpoint."
             )
-        interactive_payload = mx.load(str(interactive_checkpoint_path))
+        interactive_payload = _mx_load(str(interactive_checkpoint_path))
         interactive_weights = _normalize_inst_interactive_weights(interactive_payload)
         if not interactive_weights:
             raise ValueError(
@@ -2186,14 +2375,16 @@ def _load_checkpoint(
     if strict:
         _validate_checkpoint_component_coverage(model, report, checkpoint_label)
     elif not report.loaded:
-        raise ValueError(f"SAM3 checkpoint did not load any weights: {checkpoint_label}.")
+        raise ValueError(
+            f"SAM3 checkpoint did not load any weights: {checkpoint_label}."
+        )
     model.load_weights([(key, weights[key]) for key in report.loaded], strict=False)
-    mx.eval(model.parameters())
-    model.checkpoint_load_report = report
+    _mx_eval(model.parameters())
+    setattr(model, "checkpoint_load_report", report)
     return report
 
 
-def download_ckpt_from_hf(version="sam3"):
+def download_ckpt_from_hf(version: str = "sam3") -> str:
     """Download an official PyTorch checkpoint for conversion/parity work."""
     if version == "sam3.1":
         repo_id = "facebook/sam3.1"
@@ -2204,31 +2395,32 @@ def download_ckpt_from_hf(version="sam3"):
     else:
         raise ValueError(f"Unknown version: {version!r}. Use 'sam3' or 'sam3.1'.")
 
-    from huggingface_hub import hf_hub_download
+    import huggingface_hub
 
-    _ = hf_hub_download(repo_id=repo_id, filename="config.json")
-    return hf_hub_download(repo_id=repo_id, filename=ckpt_name)
+    download = cast(_HfHubDownload, getattr(huggingface_hub, "hf_hub_download"))
+    _ = download(repo_id=repo_id, filename="config.json")
+    return download(repo_id=repo_id, filename=ckpt_name)
 
 
 def build_sam3_image_model(
-    bpe_path=None,
-    device="mlx",
-    eval_mode=True,
-    checkpoint_path=None,
-    load_from_HF=True,
-    enable_segmentation=True,
-    enable_inst_interactivity=False,
-    compile=False,
-    hf_repo=DEFAULT_MLX_CHECKPOINT.repo,
-    hf_revision=DEFAULT_MLX_CHECKPOINT.revision,
-    local_weights_dir=None,
-    convert_from_pytorch=False,
-    interactive_checkpoint_path=None,
-    strict_checkpoint_loading=True,
-    conversion_source_revision=None,
-    expected_output_sha256=None,
-    verify_hub_provenance=True,
-):
+    bpe_path: PathLikeStr | None = None,
+    device: ComputeDevice = "mlx",
+    eval_mode: bool = True,
+    checkpoint_path: PathLikeStr | None = None,
+    load_from_HF: bool = True,
+    enable_segmentation: bool = True,
+    enable_inst_interactivity: bool = False,
+    compile: bool = False,
+    hf_repo: str = sam3_convert.DEFAULT_MLX_CHECKPOINT.repo,
+    hf_revision: str = sam3_convert.DEFAULT_MLX_CHECKPOINT.revision,
+    local_weights_dir: str | None = None,
+    convert_from_pytorch: bool = False,
+    interactive_checkpoint_path: PathLikeStr | None = None,
+    strict_checkpoint_loading: bool = True,
+    conversion_source_revision: str | None = None,
+    expected_output_sha256: str | None = None,
+    verify_hub_provenance: bool = True,
+) -> Sam3Image:
     if compile:
         _raise_compile_unsupported(
             "sam3_mlx.model_builder.build_sam3_image_model(compile=True)"
@@ -2243,9 +2435,11 @@ def build_sam3_image_model(
         )
     if bpe_path is None:
         bpe_path = _default_bpe_path()
+    bpe_path = os.fspath(bpe_path)
 
     vision_encoder = _create_vision_backbone(
-        compile_mode=compile, enable_inst_interactivity=enable_inst_interactivity
+        compile_mode=None,
+        enable_inst_interactivity=enable_inst_interactivity,
     )
 
     text_encoder = _create_text_encoder(bpe_path)
@@ -2272,7 +2466,7 @@ def build_sam3_image_model(
         inst_interactive_predictor=inst_interactive_predictor,
     )
 
-    provenance = {
+    provenance: _CheckpointProvenance = {
         "status": "unloaded",
         "repo": None,
         "revision": None,
@@ -2281,34 +2475,43 @@ def build_sam3_image_model(
 
     if checkpoint_path is None and load_from_HF:
         if convert_from_pytorch:
-            checkpoint_path = download_and_convert(
+            source_revision = conversion_source_revision
+            if source_revision is None:
+                raise ValueError(
+                    "convert_from_pytorch=True requires conversion_source_revision to be "
+                    "an immutable Hugging Face commit."
+                )
+            checkpoint_path = sam3_convert.download_and_convert(
                 hf_repo="facebook/sam3",
                 mlx_path=local_weights_dir or "sam3-mod-weights",
-                source_revision=conversion_source_revision,
+                source_revision=source_revision,
             )
             provenance = {
                 "status": "converted-from-pytorch",
                 "repo": "facebook/sam3",
-                "revision": conversion_source_revision,
+                "revision": source_revision,
                 "output_sha256": None,
             }
         else:
-            if expected_output_sha256 is None and hf_repo == DEFAULT_MLX_CHECKPOINT.repo:
-                if hf_revision == DEFAULT_MLX_CHECKPOINT.revision:
-                    expected_output_sha256 = DEFAULT_MLX_CHECKPOINT.output_sha256
-            checkpoint_path = load_from_hub(
+            if (
+                expected_output_sha256 is None
+                and hf_repo == sam3_convert.DEFAULT_MLX_CHECKPOINT.repo
+            ):
+                if hf_revision == sam3_convert.DEFAULT_MLX_CHECKPOINT.revision:
+                    expected_output_sha256 = (
+                        sam3_convert.DEFAULT_MLX_CHECKPOINT.output_sha256
+                    )
+            checkpoint_path = sam3_convert.load_from_hub(
                 hf_repo=hf_repo,
                 local_dir=local_weights_dir,
                 revision=hf_revision,
                 expected_output_sha256=expected_output_sha256,
-                expected_architecture=DEFAULT_MLX_CHECKPOINT.architecture,
+                expected_architecture=sam3_convert.DEFAULT_MLX_CHECKPOINT.architecture,
                 verify_provenance=verify_hub_provenance,
             )
             provenance = {
                 "status": (
-                    "package-pinned"
-                    if verify_hub_provenance
-                    else "hub-unverified"
+                    "package-pinned" if verify_hub_provenance else "hub-unverified"
                 ),
                 "repo": hf_repo,
                 "revision": hf_revision,
@@ -2336,10 +2539,10 @@ def build_sam3_image_model(
 
 
 def build_sam3_video_predictor(
-    *model_args,
-    gpus_to_use=None,
-    **model_kwargs,
-):
+    *model_args: object,
+    gpus_to_use: object | None = None,
+    **model_kwargs: object,
+) -> Sam3VideoPredictor:
     if gpus_to_use is not None:
         _raise_builder_unsupported(
             "sam3_mlx.model_builder.build_sam3_video_predictor(gpus_to_use)",
@@ -2349,32 +2552,33 @@ def build_sam3_video_predictor(
         )
     from sam3_mlx.model.sam3_video_predictor import Sam3VideoPredictor
 
-    return Sam3VideoPredictor(*model_args, **model_kwargs)
+    predictor_cls = cast(_VideoPredictorFactory, Sam3VideoPredictor)
+    return predictor_cls(*model_args, **model_kwargs)
 
 
 def build_sam3_video_model(
-    checkpoint_path: Optional[str] = None,
-    load_from_HF=True,
-    bpe_path: Optional[str] = None,
-    has_presence_token=True,
-    geo_encoder_use_img_cross_attn=True,
-    strict_state_dict_loading=True,
-    apply_temporal_disambiguation=True,
-    device="mlx",
-    compile=False,
-    image_model=None,
-    image_size=1008,
-    image_mean=(0.5, 0.5, 0.5),
-    image_std=(0.5, 0.5, 0.5),
-    confidence_threshold=0.5,
-    hf_repo=MLX_COMMUNITY_REPO,
-    local_weights_dir=None,
-    convert_from_pytorch=False,
-    enable_segmentation=True,
-    processor_factory=None,
-    frame_feature_cache_size=4,
-    conversion_source_revision=None,
-):
+    checkpoint_path: PathLikeStr | None = None,
+    load_from_HF: bool = True,
+    bpe_path: PathLikeStr | None = None,
+    has_presence_token: bool = True,
+    geo_encoder_use_img_cross_attn: bool = True,
+    strict_state_dict_loading: bool = True,
+    apply_temporal_disambiguation: bool = True,
+    device: ComputeDevice = "mlx",
+    compile: bool = False,
+    image_model: Sam3Image | None = None,
+    image_size: int = 1008,
+    image_mean: ImageStats = (0.5, 0.5, 0.5),
+    image_std: ImageStats = (0.5, 0.5, 0.5),
+    confidence_threshold: float = 0.5,
+    hf_repo: str = sam3_convert.MLX_COMMUNITY_REPO,
+    local_weights_dir: str | None = None,
+    convert_from_pytorch: bool = False,
+    enable_segmentation: bool = True,
+    processor_factory: Callable[..., object] | None = None,
+    frame_feature_cache_size: int = 4,
+    conversion_source_revision: str | None = None,
+) -> Sam3VideoInferenceWithInstanceInteractivity:
     _validate_sam3_video_runtime_options(
         "sam3_mlx.model_builder.build_sam3_video_model",
         compile=compile,
@@ -2418,7 +2622,9 @@ def build_sam3_video_model(
     return _setup_device_and_mode(model, device, eval_mode=True)
 
 
-def _create_multiplex_maskmem_backbone(multiplex_count: int = 16):
+def _create_multiplex_maskmem_backbone(
+    multiplex_count: int = 16,
+) -> SimpleMaskEncoder:
     """Create the multiplex memory encoder with per-object mask channels."""
     position_encoding = PositionEmbeddingSine(
         num_pos_feats=256,
@@ -2504,10 +2710,10 @@ def _create_multiplex_transformer(use_fa3: bool = False, use_rope_real: bool = F
 
 
 def _create_multiplex_tri_backbone(
-    compile_mode=None,
+    compile_mode: str | None = None,
     use_fa3: bool = False,
     use_rope_real: bool = False,
-):
+) -> Sam3TriViTDetNeck:
     """Create the tri-head vision backbone used by the multiplex model."""
     del use_fa3, use_rope_real
     position_encoding = _create_position_encoding(precompute_resolution=1008)
@@ -2521,15 +2727,15 @@ def _create_multiplex_tri_backbone(
 
 
 def build_sam3_multiplex_video_model(
-    checkpoint_path: Optional[str] = None,
-    load_from_HF=True,
+    checkpoint_path: PathLikeStr | None = None,
+    load_from_HF: bool = True,
     multiplex_count: int = 16,
     use_fa3: bool = False,
     use_rope_real: bool = False,
     strict_state_dict_loading: bool = True,
-    device="mlx",
-    compile=False,
-):
+    device: ComputeDevice = "mlx",
+    compile: bool = False,
+) -> Sam3VideoTrackingMultiplexDemo:
     _validate_mlx_device(device)
     if compile:
         _raise_compile_unsupported(
@@ -2637,11 +2843,12 @@ def build_sam3_multiplex_video_model(
 
 def _build_multiplex_detector_for_predictor(
     *,
-    bpe_path: str,
+    bpe_path: PathLikeStr,
     use_fa3: bool,
     use_rope_real: bool,
-):
+) -> Sam3MultiplexDetector:
     """Build the text-grounded detector used by the SAM 3.1 predictor wrapper."""
+    bpe_path = os.fspath(bpe_path)
     tri_neck = _create_multiplex_tri_backbone(
         compile_mode=None,
         use_fa3=use_fa3,
@@ -2671,7 +2878,7 @@ def _build_multiplex_detector_for_predictor(
 
 def _build_checkpoint_free_multiplex_predictor_model(
     *,
-    bpe_path: str,
+    bpe_path: PathLikeStr,
     max_num_objects: int,
     multiplex_count: int,
     use_fa3: bool,
@@ -2680,7 +2887,7 @@ def _build_checkpoint_free_multiplex_predictor_model(
     score_threshold_detection: float = 0.4,
     image_only_det_thresh: float = 0.5,
     suppress_det_close_to_boundary: bool = True,
-):
+) -> Sam3MultiplexTrackingWithInteractivity:
     """Assemble the checkpoint-free MLX version of the official SAM 3.1 stack."""
     tracker_model = build_sam3_multiplex_video_model(
         checkpoint_path=None,
@@ -2692,7 +2899,7 @@ def _build_checkpoint_free_multiplex_predictor_model(
         device="mlx",
         compile=False,
     )
-    tracker_model.backbone = None
+    setattr(tracker_model, "backbone", None)
 
     from sam3_mlx.model.sam3_multiplex_base import Sam3MultiplexPredictorWrapper
     from sam3_mlx.model.sam3_multiplex_tracking import (
@@ -2751,8 +2958,8 @@ def _build_checkpoint_free_multiplex_predictor_model(
 
 
 def build_sam3_multiplex_video_predictor(
-    checkpoint_path: Optional[str] = None,
-    bpe_path: Optional[str] = None,
+    checkpoint_path: PathLikeStr | None = None,
+    bpe_path: PathLikeStr | None = None,
     max_num_objects: int = 16,
     multiplex_count: int = 16,
     use_fa3: bool = False,
@@ -2767,7 +2974,7 @@ def build_sam3_multiplex_video_predictor(
     image_only_det_thresh: float = 0.5,
     suppress_det_close_to_boundary: bool = True,
     strict_state_dict_loading: bool = True,
-):
+) -> Sam3MultiplexVideoPredictor:
     if load_from_HF:
         _raise_builder_unsupported(
             "sam3_mlx.model_builder.build_sam3_multiplex_video_predictor(load_from_HF=True)",
@@ -2784,6 +2991,7 @@ def build_sam3_multiplex_video_predictor(
         )
     if bpe_path is None:
         bpe_path = _default_bpe_path()
+    bpe_path = os.fspath(bpe_path)
 
     model = _build_checkpoint_free_multiplex_predictor_model(
         bpe_path=bpe_path,
@@ -2817,19 +3025,19 @@ def build_sam3_multiplex_video_predictor(
 
 
 def build_sam3_predictor(
-    checkpoint_path=None,
-    bpe_path=None,
-    version="sam3",
-    compile=False,
-    warm_up=False,
-    max_num_objects=16,
-    multiplex_count=16,
-    use_fa3=False,
-    use_rope_real=True,
-    async_loading_frames=False,
-    load_from_HF=True,
-    **kwargs,
-):
+    checkpoint_path: PathLikeStr | None = None,
+    bpe_path: PathLikeStr | None = None,
+    version: str = "sam3",
+    compile: bool = False,
+    warm_up: bool = False,
+    max_num_objects: int = 16,
+    multiplex_count: int = 16,
+    use_fa3: bool = False,
+    use_rope_real: bool = True,
+    async_loading_frames: bool = False,
+    load_from_HF: bool = True,
+    **kwargs: object,
+) -> Sam3VideoPredictor | Sam3MultiplexVideoPredictor:
     if version == "sam3.1":
         return build_sam3_multiplex_video_predictor(
             checkpoint_path=checkpoint_path,
@@ -2842,7 +3050,7 @@ def build_sam3_predictor(
             warm_up=warm_up,
             async_loading_frames=async_loading_frames,
             load_from_HF=load_from_HF,
-            **kwargs,
+            **cast(_MultiplexPredictorKwargs, kwargs),
         )
     if version == "sam3":
         return build_sam3_video_predictor(

@@ -12,6 +12,7 @@ from sam3_mlx.model.bounded_cache import BoundedLRUCache
 from sam3_mlx.model.box_ops import box_cxcywh_to_xyxy
 
 from sam3_mlx.model.model_misc import (
+    CloneableModule,
     MLP,
     get_activation_fn,
     get_clones,
@@ -270,8 +271,8 @@ class TransformerDecoder(nn.Module):
         self,
         d_model: int,
         frozen: bool,
-        interaction_layer,
-        layer,
+        interaction_layer: CloneableModule[TransformerDecoderLayer] | None,
+        layer: CloneableModule[TransformerDecoderLayer],
         num_layers: int,
         num_queries: int,
         return_intermediate: bool,

@@ -5,7 +5,12 @@ import mlx.nn as nn
 
 from sam3_mlx._unsupported import raise_unsupported
 from sam3_mlx.model.act_ckpt_utils import activation_ckpt_wrapper
-from sam3_mlx.model.model_misc import get_activation_fn, get_clones, get_valid_ratio
+from sam3_mlx.model.model_misc import (
+    CloneableModule,
+    get_activation_fn,
+    get_clones,
+    get_valid_ratio,
+)
 
 
 class TransformerEncoderLayer(nn.Module):
@@ -187,7 +192,7 @@ class TransformerEncoderLayer(nn.Module):
 class TransformerEncoder(nn.Module):
     def __init__(
         self,
-        layer: nn.Module,
+        layer: CloneableModule[TransformerEncoderLayer],
         num_layers: int,
         d_model: int,
         num_feature_levels: int,
@@ -358,7 +363,7 @@ class TransformerEncoder(nn.Module):
 class TransformerEncoderFusion(TransformerEncoder):
     def __init__(
         self,
-        layer: nn.Module,
+        layer: CloneableModule[TransformerEncoderLayer],
         num_layers: int,
         d_model: int,
         num_feature_levels: int,

@@ -8,7 +8,7 @@ from sam3_mlx._unsupported import raise_unsupported
 from sam3_mlx.model.grid_sample_mlx import grid_sample
 
 from sam3_mlx.model.box_ops import box_cxcywh_to_xyxy
-from sam3_mlx.model.model_misc import get_clones
+from sam3_mlx.model.model_misc import CloneableModule, get_clones
 from sam3_mlx.model.roi_align import roi_align
 
 
@@ -480,7 +480,7 @@ class SequenceGeometryEncoder(nn.Module):
         d_model: int,
         pos_enc,
         num_layers: int,
-        layer: nn.Module,
+        layer: CloneableModule[nn.Module],
         roi_size: int = 7,  # for boxes pool
         add_cls: bool = True,
         add_post_encode_proj: bool = True,

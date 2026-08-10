@@ -4,13 +4,28 @@ from contextlib import AbstractContextManager
 from copy import deepcopy
 from enum import Enum, auto
 from functools import partial
-from typing import Dict, Iterator, List, Optional, Tuple, Type, Union
+from typing import (
+    Callable,
+    Dict,
+    Iterator,
+    List,
+    Optional,
+    Tuple,
+    Type,
+    TypeAlias,
+    TypeVar,
+    Union,
+)
 
 import mlx.core as mx
 import mlx.nn as nn
 from mlx.utils import tree_map_with_path
 
 from sam3_mlx._unsupported import raise_unsupported
+
+
+_ModuleT = TypeVar("_ModuleT", bound=nn.Module)
+CloneableModule: TypeAlias = _ModuleT | Callable[[], _ModuleT]
 
 
 def _raise_attention_unsupported(feature: str, *, reason: str, detail: str) -> None:
@@ -978,7 +993,7 @@ class LayerNorm2d(nn.Module):
         return self.forward(x)
 
 
-def get_clones(module, N):
+def get_clones(module: CloneableModule[_ModuleT], N: int) -> list[_ModuleT]:
     if isinstance(module, nn.Module):
         return [deepcopy(module) for _ in range(N)]
     if callable(module):
