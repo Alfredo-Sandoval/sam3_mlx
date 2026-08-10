@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import TextIO
 
 
 LOG_LEVELS = {
@@ -18,7 +19,7 @@ LOG_LEVELS = {
 class ColoredFormatter(logging.Formatter):
     """A command-line formatter with different colors for each level."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         reset = "\033[0m"
         colors = {
@@ -38,12 +39,16 @@ class ColoredFormatter(logging.Formatter):
         }
         self.default_formatter = self.formatters[logging.INFO]
 
-    def format(self, record):
+    def format(self, record: logging.LogRecord) -> str:
         formatter = self.formatters.get(record.levelno, self.default_formatter)
         return formatter.format(record)
 
 
-def get_logger(name, level=logging.INFO):
+class _ColoredStreamHandler(logging.StreamHandler[TextIO]):
+    """Identify handlers installed by this module without dynamic attributes."""
+
+
+def get_logger(name: str, level: int = logging.INFO) -> logging.Logger:
     """Return a configured command-line logger."""
     if "LOG_LEVEL" in os.environ:
         level_name = os.environ["LOG_LEVEL"].upper()
@@ -57,11 +62,10 @@ def get_logger(name, level=logging.INFO):
     logger.setLevel(level)
     logger.propagate = False
     if not any(
-        getattr(handler, "_sam3_mlx_colored", False) for handler in logger.handlers
+        isinstance(handler, _ColoredStreamHandler) for handler in logger.handlers
     ):
-        handler = logging.StreamHandler()
+        handler = _ColoredStreamHandler()
         handler.setLevel(level)
         handler.setFormatter(ColoredFormatter())
-        handler._sam3_mlx_colored = True
         logger.addHandler(handler)
     return logger

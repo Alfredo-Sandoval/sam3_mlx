@@ -5,10 +5,11 @@ from __future__ import annotations
 import importlib.metadata
 import platform
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol, cast
 
 import mlx.core as mx
 import numpy as np
+from numpy.typing import DTypeLike, NDArray
 
 from sam3_mlx._unsupported import raise_unsupported
 
@@ -20,6 +21,13 @@ class MlxRuntimeInfo:
     default_device: str
     metal_available: bool
     platform: str
+
+
+class _MlxEval(Protocol):
+    def __call__(self, *values: mx.array) -> None: ...
+
+
+_mlx_eval = cast(_MlxEval, getattr(mx, "eval"))
 
 
 def runtime_info() -> MlxRuntimeInfo:
@@ -48,18 +56,24 @@ def require_mlx_runtime(feature: str = "sam3_mlx MLX runtime") -> MlxRuntimeInfo
     return info
 
 
-def evaluate_boundary(*values: Any) -> None:
+def evaluate_boundary(*values: mx.array) -> None:
     """Synchronize intentionally at a named MLX runtime boundary."""
 
     if values:
-        mx.eval(*values)
+        _mlx_eval(*values)
 
 
-def to_numpy(value: Any, *, dtype=None, copy: bool = False) -> np.ndarray:
+def to_numpy(
+    value: object,
+    *,
+    dtype: DTypeLike | None = None,
+    copy: bool = False,
+) -> NDArray[Any]:
     """Synchronize MLX arrays and convert to NumPy at an explicit host boundary."""
 
+    array: NDArray[Any]
     if isinstance(value, np.ndarray):
-        array = value
+        array = cast(NDArray[Any], value)
     else:
         if isinstance(value, mx.array):
             evaluate_boundary(value)
@@ -71,15 +85,14 @@ def to_numpy(value: Any, *, dtype=None, copy: bool = False) -> np.ndarray:
     return array
 
 
-def shape_dtype(value: Any) -> dict[str, object]:
+def shape_dtype(value: mx.array) -> dict[str, object]:
     """Return synchronized shape/dtype metadata for smoke reports."""
 
-    if isinstance(value, mx.array):
-        evaluate_boundary(value)
+    evaluate_boundary(value)
     return {"shape": list(value.shape), "dtype": str(value.dtype)}
 
 
-def finite_all(value: Any) -> bool:
+def finite_all(value: object) -> bool:
     """Return whether a value is finite after explicit host export."""
 
     return bool(np.isfinite(to_numpy(value)).all())

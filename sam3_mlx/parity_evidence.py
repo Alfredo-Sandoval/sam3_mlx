@@ -128,7 +128,9 @@ def optimal_assignment(scores: Any) -> list[tuple[int, int]]:
                     delta = minv[column]
                     column1 = column
             if not math.isfinite(float(delta)):
-                raise RuntimeError("Hungarian assignment could not find an augmenting path.")
+                raise RuntimeError(
+                    "Hungarian assignment could not find an augmenting path."
+                )
             for column in range(n + 1):
                 if used[column]:
                     u[p[column]] += delta
@@ -287,7 +289,7 @@ def write_evidence_bundle(
                 payload[f"case_{index}_{side}_{field}"] = normalized[field]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(output_path, **payload)
+    np.savez_compressed(output_path, allow_pickle=False, **payload)
     return output_path
 
 
@@ -318,12 +320,10 @@ def load_evidence_bundle(
         official_outputs: list[dict[str, np.ndarray]] = []
         mlx_outputs: list[dict[str, np.ndarray]] = []
         for index in range(case_count):
-            side_outputs = {}
+            side_outputs: dict[str, dict[str, np.ndarray]] = {}
             for side in ("official", "mlx"):
                 value = {
-                    field: np.array(
-                        archive[f"case_{index}_{side}_{field}"], copy=True
-                    )
+                    field: np.array(archive[f"case_{index}_{side}_{field}"], copy=True)
                     for field in ("masks", "boxes", "scores")
                 }
                 side_outputs[side] = normalize_outputs(value, label=side)

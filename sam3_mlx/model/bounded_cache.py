@@ -21,7 +21,7 @@ class BoundedLRUCache(Generic[K, V]):
     graph construction is never serialized unnecessarily.
     """
 
-    def __init__(self, maxsize: int = 8) -> None:
+    def __init__(self, maxsize: object = 8) -> None:
         if isinstance(maxsize, bool) or not isinstance(maxsize, int) or maxsize < 1:
             raise ValueError("maxsize must be a positive integer")
         self.maxsize = maxsize

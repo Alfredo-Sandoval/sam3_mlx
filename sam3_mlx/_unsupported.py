@@ -354,10 +354,16 @@ def _cli() -> int:
     return 0
 
 
+def main() -> int:
+    """Run the unsupported-feature documentation CLI."""
+
+    return _cli()
+
+
 if __name__ == "__main__":  # pragma: no cover - CLI entrypoint
     # Re-import the package copy so the registry walker's isinstance check
     # against UnsupportedFeatureInfo sees the same class as the decorated stubs
     # (running `python -m sam3_mlx._unsupported` otherwise loads two copies).
     import sam3_mlx._unsupported as _pkg
 
-    raise SystemExit(_pkg._cli())
+    raise SystemExit(_pkg.main())
