@@ -74,10 +74,17 @@ def _as_linear(module: object) -> _LinearModule:
     return cast(_LinearModule, module)
 
 
-def _add_optional(base: mx.array, other: mx.array | None) -> mx.array:
-    if other is None:
-        return base
-    return base + other
+def _with_pos_embed(
+    tensor: mx.array, pos: mx.array | None, *, enabled: bool
+) -> mx.array:
+    """Add positional encoding when enabled; fail fast if pos is missing."""
+    if not enabled:
+        return tensor
+    if pos is None:
+        raise TypeError(
+            "positional encoding is required when the corresponding pos_enc flag is enabled"
+        )
+    return tensor + pos
 
 
 class TransformerEncoderLayer(nn.Module):
@@ -136,7 +143,7 @@ class TransformerEncoderLayer(nn.Module):
         **kwargs: object,
     ) -> mx.array:
         del kwargs
-        q = k = _add_optional(tgt, query_pos) if self.pos_enc_at_attn else tgt
+        q = k = _with_pos_embed(tgt, query_pos, enabled=self.pos_enc_at_attn)
 
         # self attention
         tgt2 = self.self_attn(
@@ -147,14 +154,10 @@ class TransformerEncoderLayer(nn.Module):
 
         # cross attn to image
         tgt2 = self.cross_attn_image(
-            query=(
-                _add_optional(tgt, query_pos)
-                if self.pos_enc_at_cross_attn_queries
-                else tgt
+            query=_with_pos_embed(
+                tgt, query_pos, enabled=self.pos_enc_at_cross_attn_queries
             ),
-            key=_add_optional(memory, pos)
-            if self.pos_enc_at_cross_attn_keys
-            else memory,
+            key=_with_pos_embed(memory, pos, enabled=self.pos_enc_at_cross_attn_keys),
             value=memory,
             attn_mask=memory_mask,
             key_padding_mask=memory_key_padding_mask,
@@ -189,7 +192,7 @@ class TransformerEncoderLayer(nn.Module):
             other_tgt = tgt[tgt.shape[0] // 2 :]
             tgt = tgt[: tgt.shape[0] // 2]
         tgt2 = self.norm1(tgt)
-        q = k = _add_optional(tgt2, query_pos) if self.pos_enc_at_attn else tgt2
+        q = k = _with_pos_embed(tgt2, query_pos, enabled=self.pos_enc_at_attn)
         tgt2 = self.self_attn(
             q, k, values=tgt2, attn_mask=tgt_mask, key_padding_mask=tgt_key_padding_mask
         )
@@ -200,16 +203,10 @@ class TransformerEncoderLayer(nn.Module):
             tgt = _concat([tgt, other_tgt], axis=0)
         tgt2 = self.norm2(tgt)
         tgt2 = self.cross_attn_image(
-            queries=(
-                _add_optional(tgt2, query_pos)
-                if self.pos_enc_at_cross_attn_queries
-                else tgt2
+            queries=_with_pos_embed(
+                tgt2, query_pos, enabled=self.pos_enc_at_cross_attn_queries
             ),
-            keys=(
-                _add_optional(memory, pos)
-                if self.pos_enc_at_cross_attn_keys
-                else memory
-            ),
+            keys=_with_pos_embed(memory, pos, enabled=self.pos_enc_at_cross_attn_keys),
             values=memory,
             attn_mask=memory_mask,
             key_padding_mask=memory_key_padding_mask,
@@ -414,7 +411,7 @@ class TransformerEncoder(nn.Module):
     def forward(
         self,
         src: list[mx.array],
-        src_key_padding_masks: list[mx.array] | None = None,
+        src_key_padding_masks: list[mx.array | None] | None = None,
         pos: list[mx.array] | None = None,
         prompt: mx.array | None = None,
         prompt_key_padding_mask: mx.array | None = None,
@@ -472,7 +469,7 @@ class TransformerEncoder(nn.Module):
     def __call__(
         self,
         src: list[mx.array],
-        src_key_padding_masks: list[mx.array] | None = None,
+        src_key_padding_masks: list[mx.array | None] | None = None,
         pos: list[mx.array] | None = None,
         prompt: mx.array | None = None,
         prompt_key_padding_mask: mx.array | None = None,
@@ -611,7 +608,7 @@ class TransformerEncoderFusion(TransformerEncoder):
         ) = TransformerEncoder.forward(
             self,
             src=src,
-            src_key_padding_masks=cast(list[mx.array] | None, src_key_padding_mask),
+            src_key_padding_masks=src_key_padding_mask,
             pos=src_pos,
             prompt=mx.transpose(prompt, axes=(1, 0, 2)),
             prompt_key_padding_mask=prompt_key_padding_mask,

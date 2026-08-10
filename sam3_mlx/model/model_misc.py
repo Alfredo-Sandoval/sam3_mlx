@@ -115,6 +115,10 @@ class _ModuleUpdate(Protocol):
     def update(self, parameters: object) -> object: ...
 
 
+class _HasNumQueries(Protocol):
+    num_queries: int | None
+
+
 _tree_map_with_path = cast(_TreeMapWithPath, getattr(mlx_utils, "tree_map_with_path"))
 _pad = cast(_Pad, getattr(mx, "pad"))
 _stack = cast(_Stack, getattr(mx, "stack"))
@@ -577,7 +581,10 @@ def _as_array_callable(module: object) -> _ArrayCallable:
 
 
 class MultiheadAttentionWrapper(nn.Module):
-    """SAM3 multi-head attention with PyTorch-compatible kwargs and masks."""
+    """SAM3 multi-head attention with PyTorch-compatible kwargs and masks.
+
+    Parameter-key layout matches mlx.nn.MultiHeadAttention; this is not a subclass.
+    """
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__()
@@ -688,8 +695,9 @@ class MultiheadAttentionWrapper(nn.Module):
 
         query_in = dims_i if query_input_dims is None else cast(int, query_input_dims)
         key_in = dims_i if resolved_key_input is None else cast(int, resolved_key_input)
+        # Match MLX MultiHeadAttention: value_input_dims defaults to key_input_dims.
         value_in = (
-            dims_i if resolved_value_input is None else cast(int, resolved_value_input)
+            key_in if resolved_value_input is None else cast(int, resolved_value_input)
         )
 
         self.num_heads = num_heads_i
@@ -705,7 +713,10 @@ class MultiheadAttentionWrapper(nn.Module):
         self.batch_first = batch_first_b
         self.head_dim = dims_i // num_heads_i
         if self.head_dim * num_heads_i != dims_i:
-            raise AssertionError("embed_dim must be divisible by num_heads")
+            raise ValueError(
+                "The input feature dimensions should be divisible by the "
+                f"number of heads ({dims_i} % {num_heads_i}) != 0"
+            )
         self.use_act_checkpoint = use_act_checkpoint_b
         self.bias_k: mx.array | None = None
         self.bias_v: mx.array | None = None
@@ -1050,10 +1061,10 @@ class TransformerWrapper(nn.Module):
 
         self.encoder = encoder
         self.decoder = decoder
-        if decoder is not None and hasattr(decoder, "num_queries"):
-            self.num_queries = cast(int | None, getattr(decoder, "num_queries"))
-        else:
-            self.num_queries = None
+        # Real decoders define num_queries; missing attribute fails closed (AttributeError).
+        self.num_queries = (
+            cast(_HasNumQueries, decoder).num_queries if decoder is not None else None
+        )
         self.pos_enc_at_input_dec = pos_enc_at_input_dec
 
         # for two stage
@@ -1321,7 +1332,10 @@ def gen_sineembed_for_position(pos_array: mx.array, num_feats: int = 256) -> mx.
 
 
 class SAM3Output:
-    """Official-style SAM3 output container with selectable iteration modes."""
+    """Official-style SAM3 output container with selectable iteration modes.
+
+    List-like (append/iter/getitem/len) but not a list subclass.
+    """
 
     class IterMode(Enum):
         ALL_STEPS_PER_STAGE = auto()
