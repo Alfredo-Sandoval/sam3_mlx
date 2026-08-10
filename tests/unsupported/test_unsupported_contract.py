@@ -11,7 +11,6 @@ from sam3_mlx._unsupported import (
     raise_unsupported,
     unsupported_function,
 )
-from sam3_mlx.agent import _unsupported as agent_unsupported
 from sam3_mlx.eval import _unsupported as eval_unsupported
 from sam3_mlx.perflib import fa3
 from sam3_mlx.perflib.triton.connected_components import connected_components_triton
@@ -74,7 +73,6 @@ def test_unknown_reason_is_rejected_at_construction():
 @pytest.mark.parametrize(
     ("helper", "reason", "message"),
     [
-        (agent_unsupported, "agent-llm", "external LLM services"),
         (eval_unsupported, "eval-stack", "evaluation surface"),
         (train_unsupported, "training-loop", "Full training datasets"),
     ],
@@ -647,16 +645,6 @@ def test_runtime_surface_guards_raise_canonical_error(
             "training-loop",
             "NestedTensor.pin_memory(device='cpu')",
             "PyTorch CPU-pinning",
-        ),
-        (
-            lambda: import_module("sam3_mlx.agent.helpers.boxes").BoxMode.convert(
-                [0.0, 0.0, 10.0, 20.0],
-                import_module("sam3_mlx.agent.helpers.boxes").BoxMode.XYXY_ABS,
-                import_module("sam3_mlx.agent.helpers.boxes").BoxMode.XYWHA_ABS,
-            ),
-            "port-gap",
-            "BoxMode.convert",
-            "not supported yet",
         ),
         (
             lambda: import_module("sam3_mlx.model.edt").edt_kernel(),

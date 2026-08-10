@@ -13,8 +13,8 @@ from typing import Any, Optional
 
 import numpy as np
 
-from sam3_mlx.agent.helpers.rle import rle_area, rle_encode
 from sam3_mlx.eval.coco_eval_offline import convert_to_xywh
+from sam3_mlx.rle import rle_area, rle_encode
 
 
 class HeapElement:

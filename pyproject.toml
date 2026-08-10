@@ -72,8 +72,6 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["sam3_mlx", "sam3_mlx.*"]
 exclude = [
-    "sam3_mlx.agent",
-    "sam3_mlx.agent.*",
     "sam3_mlx.eval",
     "sam3_mlx.eval.*",
     "sam3_mlx.train",

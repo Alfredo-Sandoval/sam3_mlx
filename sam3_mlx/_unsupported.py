@@ -15,7 +15,6 @@ UPSTREAM_COMMIT = "2814fa619404a722d03e9a012e083e4f293a4e53"
 
 REASONS = frozenset(
     {
-        "agent-llm",
         "eval-stack",
         "flash-attn-3",
         "image-interactivity",

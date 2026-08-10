@@ -110,8 +110,6 @@ def test_distribution_excludes_unsupported_source_surfaces():
 
     assert package_find["include"] == ["sam3_mlx", "sam3_mlx.*"]
     assert set(package_find["exclude"]) == {
-        "sam3_mlx.agent",
-        "sam3_mlx.agent.*",
         "sam3_mlx.eval",
         "sam3_mlx.eval.*",
         "sam3_mlx.train",

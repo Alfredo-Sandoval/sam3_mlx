@@ -190,7 +190,7 @@ Unsupported paths raise `Sam3MlxUnsupportedError`:
 - **Training is currently not supported.** Training loops, autograd, distributed
   execution, and the official eval toolkit are not available yet.
 - **Source-only compatibility trees are not distributed.** The checkout keeps
-  `agent`, `eval`, `train`, and Triton compatibility modules for porting and
+  `eval`, `train`, and Triton compatibility modules for porting and
   contract tests; release wheels intentionally exclude those unsupported trees.
 
 ## Reproducibility
