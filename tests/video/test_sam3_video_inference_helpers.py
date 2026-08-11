@@ -6,10 +6,10 @@ import pytest
 
 from sam3_mlx._unsupported import Sam3MlxUnsupportedError
 from sam3_mlx.model.sam3_video_inference import (
-    _coerce_boxes,
-    _coerce_points,
-    _filter_outputs_by_removed_obj_ids,
-    _state_to_video_outputs,
+    _coerce_boxes,  # pyright: ignore[reportPrivateUsage]
+    _coerce_points,  # pyright: ignore[reportPrivateUsage]
+    _filter_outputs_by_removed_obj_ids,  # pyright: ignore[reportPrivateUsage]
+    _state_to_video_outputs,  # pyright: ignore[reportPrivateUsage]
 )
 
 
@@ -22,6 +22,7 @@ def test_coerce_boxes_converts_absolute_xywh_to_normalized_cxcywh_and_labels():
         orig_width=200,
     )
 
+    assert boxes is not None
     np.testing.assert_allclose(
         boxes,
         np.array([[0.125, 0.4, 0.15, 0.4]], dtype=np.float32),
@@ -58,6 +59,7 @@ def test_coerce_points_converts_absolute_xy_to_normalized_points_and_labels():
         orig_width=200,
     )
 
+    assert points is not None
     np.testing.assert_allclose(
         points,
         np.array([[0.25, 0.25], [0.5, 0.75]], dtype=np.float32),

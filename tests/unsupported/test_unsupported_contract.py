@@ -1,5 +1,6 @@
 import pytest
 from importlib import import_module
+from typing import Callable, Protocol, cast
 
 import mlx.core as mx
 
@@ -26,9 +27,20 @@ from tests._paths import REPO_ROOT
 
 sigmoid_focal_loss_module = import_module("sam3_mlx.train.loss.sigmoid_focal_loss")
 BLOCKED_ACCELERATOR = "cu" + "da"
+DynamicCallable = Callable[..., object]
 
 
-def _assert_unsupported(call, *, reason: str, feature_fragment: str, message: str):
+class _UnsupportedHelper(Protocol):
+    def raise_unsupported(self, feature: str) -> object: ...
+
+
+def _assert_unsupported(
+    call: Callable[[], object],
+    *,
+    reason: str,
+    feature_fragment: str,
+    message: str,
+) -> Sam3MlxUnsupportedError:
     with pytest.raises(Sam3MlxUnsupportedError, match=message) as exc_info:
         call()
 
@@ -79,7 +91,9 @@ def test_unknown_reason_is_rejected_at_construction():
         (train_unsupported, "training-loop", "Full training datasets"),
     ],
 )
-def test_domain_helpers_raise_canonical_error(helper, reason, message):
+def test_domain_helpers_raise_canonical_error(
+    helper: _UnsupportedHelper, reason: str, message: str
+) -> None:
     with pytest.raises(Sam3MlxUnsupportedError, match=message) as exc_info:
         helper.raise_unsupported("domain.feature")
 
@@ -95,7 +109,7 @@ def test_unsupported_function_metadata_and_raise_contract():
         alternative="compile=False",
         detail="torch.compile is unavailable in MLX.",
     )
-    def decorated(value):
+    def decorated(value: object) -> object:
         return value
 
     info = getattr(decorated, UNSUPPORTED_METADATA_ATTR)
@@ -123,8 +137,8 @@ def test_unsupported_function_metadata_and_raise_contract():
     ],
 )
 def test_triton_public_functions_fail_with_canonical_triton_kernel_error(
-    fn, feature, alternative
-):
+    fn: DynamicCallable, feature: str, alternative: str
+) -> None:
     info = getattr(fn, UNSUPPORTED_METADATA_ATTR)
     assert info.feature == feature
     assert info.reason == "triton-kernel"
@@ -171,7 +185,9 @@ def test_triton_public_functions_fail_with_canonical_triton_kernel_error(
         (triton_cc._broadcast_sizes_kernel, (None, None, None, 0, 0)),
     ],
 )
-def test_private_triton_kernel_shims_preserve_fail_fast_metadata(fn, args):
+def test_private_triton_kernel_shims_preserve_fail_fast_metadata(
+    fn: DynamicCallable, args: tuple[object, ...]
+) -> None:
     info = getattr(fn, UNSUPPORTED_METADATA_ATTR)
     assert info.reason == "triton-kernel"
     assert info.upstream_commit == "2814fa619404a722d03e9a012e083e4f293a4e53"
@@ -213,7 +229,7 @@ def test_private_triton_kernel_shims_preserve_fail_fast_metadata(fn, args):
         ),
         (
             checkpoint_utils.load_checkpoint,
-            ([],),
+            (cast(list[str], []),),
             "load_checkpoint",
             "training-loop",
             "torch.load",
@@ -249,8 +265,12 @@ def test_private_triton_kernel_shims_preserve_fail_fast_metadata(fn, args):
     ],
 )
 def test_migrated_helper_islands_raise_canonical_error(
-    call, args, feature, reason, message
-):
+    call: DynamicCallable,
+    args: tuple[object, ...],
+    feature: str,
+    reason: str,
+    message: str,
+) -> None:
     with pytest.raises(Sam3MlxUnsupportedError, match=message) as exc_info:
         call(*args)
 
@@ -398,8 +418,11 @@ def test_torch_compile_guard_raises_canonical_error():
     ],
 )
 def test_model_builder_runtime_guards_raise_canonical_error(
-    call, reason, feature_fragment, message
-):
+    call: Callable[[], object],
+    reason: str,
+    feature_fragment: str,
+    message: str,
+) -> None:
     error = _assert_unsupported(
         call,
         reason=reason,
@@ -484,8 +507,11 @@ def test_model_builder_runtime_guards_raise_canonical_error(
     ],
 )
 def test_attention_runtime_guards_raise_canonical_error(
-    call, reason, feature_fragment, message
-):
+    call: Callable[[], object],
+    reason: str,
+    feature_fragment: str,
+    message: str,
+) -> None:
     error = _assert_unsupported(
         call,
         reason=reason,
@@ -598,8 +624,11 @@ def test_video_inference_device_guard_raises_canonical_error():
     ],
 )
 def test_runtime_surface_guards_raise_canonical_error(
-    call, reason, feature_fragment, message
-):
+    call: Callable[[], object],
+    reason: str,
+    feature_fragment: str,
+    message: str,
+) -> None:
     error = _assert_unsupported(
         call,
         reason=reason,
@@ -717,8 +746,11 @@ def test_runtime_surface_guards_raise_canonical_error(
     ],
 )
 def test_misc_port_boundary_guards_raise_canonical_error(
-    call, reason, feature_fragment, message
-):
+    call: Callable[[], object],
+    reason: str,
+    feature_fragment: str,
+    message: str,
+) -> None:
     error = _assert_unsupported(
         call,
         reason=reason,
@@ -763,7 +795,7 @@ def test_no_residual_compile_mode_notimplementederror_in_package():
     pattern = re.compile(
         r"raise\s+NotImplementedError\([^)]*compile_(?:mode|model)", re.DOTALL
     )
-    offenders = []
+    offenders: list[str] = []
     for path in pkg.rglob("*.py"):
         text = path.read_text()
         if pattern.search(text):
@@ -777,7 +809,7 @@ def test_no_residual_compile_mode_notimplementederror_in_package():
 def test_no_bare_notimplementederror_in_trackeval_shims():
     """Regression guard: trackeval shims must route through raise_unsupported / @unsupported_function."""
     trackeval = REPO_ROOT / "sam3_mlx" / "eval" / "hota_eval_toolkit" / "trackeval"
-    offenders = []
+    offenders: list[str] = []
     for path in trackeval.rglob("*.py"):
         if "raise NotImplementedError" in path.read_text():
             offenders.append(str(path.relative_to(trackeval.parent.parent.parent)))
@@ -790,7 +822,7 @@ def test_no_bare_notimplementederror_in_trackeval_shims():
 
 def test_trackeval_base_metric_method_raises_canonical_error():
     from sam3_mlx.eval.hota_eval_toolkit.trackeval.metrics._base_metric import (
-        _BaseMetric,
+        _BaseMetric,  # pyright: ignore[reportPrivateUsage]
     )
 
     instance = _BaseMetric.__new__(_BaseMetric)
@@ -807,8 +839,8 @@ def test_upstream_md_unsupported_section_is_in_sync_with_registry():
     file is present, keep it synchronized with the registry; when absent, skip.
     """
     from sam3_mlx._unsupported import (
-        _UNSUPPORTED_DOCS_MARKER_BEGIN,
-        _UNSUPPORTED_DOCS_MARKER_END,
+        _UNSUPPORTED_DOCS_MARKER_BEGIN,  # pyright: ignore[reportPrivateUsage]
+        _UNSUPPORTED_DOCS_MARKER_END,  # pyright: ignore[reportPrivateUsage]
         render_unsupported_markdown,
     )
 

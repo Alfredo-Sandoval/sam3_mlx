@@ -1,6 +1,8 @@
 import numpy as np
 import pytest
 import mlx.core as mx
+from mlx import nn
+from typing import Callable, cast
 
 from sam3_mlx._unsupported import Sam3MlxUnsupportedError
 from sam3_mlx.model.sam3_video_base import (
@@ -9,15 +11,22 @@ from sam3_mlx.model.sam3_video_base import (
 )
 
 
+class _StubModule(nn.Module):
+    pass
+
+
+def _base(**kwargs: object) -> Sam3VideoBase:
+    constructor = cast(Callable[..., Sam3VideoBase], Sam3VideoBase)
+    return constructor(detector=_StubModule(), tracker=_StubModule(), **kwargs)
+
+
 def test_sam3_video_base_constructor_ports_upstream_state_for_helper_methods(
-    monkeypatch,
-):
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("RANK", "1")
     monkeypatch.setenv("WORLD_SIZE", "4")
 
-    base = Sam3VideoBase(
-        detector=object(),
-        tracker=object(),
+    base = _base(
         hotstart_delay=5,
         hotstart_unmatch_thresh=3,
         hotstart_dup_thresh=4,
@@ -38,16 +47,14 @@ def test_sam3_video_base_constructor_ports_upstream_state_for_helper_methods(
 
 def test_sam3_video_base_constructor_preserves_hotstart_threshold_assertions():
     with pytest.raises(AssertionError):
-        Sam3VideoBase(
-            detector=object(),
-            tracker=object(),
+        _base(
             hotstart_delay=2,
             hotstart_unmatch_thresh=3,
         )
 
 
 def test_sam3_video_base_object_limit_helpers_match_upstream_ordering_contract():
-    base = Sam3VideoBase(detector=object(), tracker=object())
+    base = _base()
 
     kept = base.drop_new_det_with_obj_limit(
         new_det_fa_inds=np.array([0, 1, 2, 3]),
@@ -64,7 +71,7 @@ def test_sam3_video_base_object_limit_helpers_match_upstream_ordering_contract()
 
 
 def test_sam3_video_base_prep_for_evaluator_builds_official_prediction_schema():
-    base = Sam3VideoBase(detector=object(), tracker=object())
+    base = _base()
     first_mask = np.zeros((1, 4, 5), dtype=bool)
     first_mask[0, 1, 2:4] = True
     tracking_res = {0: {2: first_mask}}
@@ -88,17 +95,18 @@ def test_sam3_video_base_prep_for_evaluator_builds_official_prediction_schema():
     )
     assert len(preds["masks_rle"]) == 1
     assert len(preds["masks_rle"][0]) == 2
-    assert preds["masks_rle"][0][0]["area"] == 2
-    assert preds["masks_rle"][0][1]["area"] == 0
+    assert preds["masks_rle"][0][0].get("area") == 2
+    assert preds["masks_rle"][0][1].get("area") == 0
 
 
 def test_sam3_video_base_forward_still_fails_with_canonical_boundary():
-    base = Sam3VideoBase(detector=object(), tracker=object())
+    base = _base()
 
     with pytest.raises(Sam3MlxUnsupportedError, match="tracker-memory") as exc_info:
         base.forward()
 
     assert exc_info.value.reason == "video-multiplex"
+    assert exc_info.value.alternative is not None
     assert exc_info.value.alternative.endswith("Sam3VideoInference")
 
 
