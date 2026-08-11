@@ -1,37 +1,44 @@
+from pathlib import Path
+
 import numpy as np
 import pytest
 import mlx.core as mx
-import mlx.nn as nn
-from mlx.utils import tree_flatten
+from mlx import nn
 
 from sam3_mlx._unsupported import Sam3MlxUnsupportedError
 from sam3_mlx.model_builder import (
+    Sam3CheckpointLoadReport,
     build_tracker,
-    _audit_sam3_image_checkpoint_load,
-    _load_checkpoint,
-    _load_multiplex_checkpoint,
-    _load_multiplex_tracker_checkpoint,
-    _load_tracker_checkpoint,
-    _is_generated_checkpoint_key,
+    _audit_sam3_image_checkpoint_load,  # pyright: ignore[reportPrivateUsage]
+    _load_checkpoint,  # pyright: ignore[reportPrivateUsage]
+    _load_multiplex_checkpoint,  # pyright: ignore[reportPrivateUsage]
+    _load_multiplex_tracker_checkpoint,  # pyright: ignore[reportPrivateUsage]
+    _load_tracker_checkpoint,  # pyright: ignore[reportPrivateUsage]
+    _is_generated_checkpoint_key,  # pyright: ignore[reportPrivateUsage]
 )
+from sam3_mlx.model.data_misc import reshape_array
+from tests._mlx_runtime import flat_parameters, save_safetensors
 
 
 class _TinyCheckpointModel(nn.Module):
-    def __init__(self):
+    checkpoint_load_report: Sam3CheckpointLoadReport | None
+
+    def __init__(self) -> None:
         super().__init__()
         self.inst_interactive_predictor = None
         self.head = nn.Linear(3, 2)
         self.scale = mx.ones((1,))
+        self.checkpoint_load_report = None
 
 
 class _WeightLeaf(nn.Module):
-    def __init__(self, shape):
+    def __init__(self, shape: tuple[int, ...]) -> None:
         super().__init__()
         self.weight = mx.zeros(shape)
 
 
 class _Sam2ConvStage(nn.Module):
-    def __init__(self, shape):
+    def __init__(self, shape: tuple[int, ...]) -> None:
         super().__init__()
         self.dconv_2x2 = _WeightLeaf(shape)
 
@@ -98,10 +105,6 @@ class _TinyMultiplexTrackerCheckpointModel(nn.Module):
         self.output_valid_embed = mx.zeros((2, 2))
 
 
-def _flat_parameters(model):
-    return tree_flatten(model.parameters(), destination={})
-
-
 def test_checkpoint_audit_reports_loaded_missing_extra_and_shape_mismatch():
     model = _TinyCheckpointModel()
     weights = {
@@ -127,13 +130,15 @@ def test_generated_checkpoint_allowlist_is_exact():
     assert not _is_generated_checkpoint_key("detector.attn_mask")
 
 
-def test_load_checkpoint_rejects_partial_checkpoint_without_mutating_model(tmp_path):
+def test_load_checkpoint_rejects_partial_checkpoint_without_mutating_model(
+    tmp_path: Path,
+) -> None:
     model = _TinyCheckpointModel()
     checkpoint_path = tmp_path / "partial.safetensors"
-    original = np.asarray(_flat_parameters(model)["head.weight"]).copy()
-    replacement = mx.arange(6).reshape(2, 3).astype(mx.float32)
-    mx.save_safetensors(
-        str(checkpoint_path),
+    original = np.asarray(flat_parameters(model)["head.weight"]).copy()
+    replacement = reshape_array(mx.arange(6), 2, 3).astype(mx.float32)
+    save_safetensors(
+        checkpoint_path,
         {"head.weight": replacement},
     )
 
@@ -141,16 +146,18 @@ def test_load_checkpoint_rejects_partial_checkpoint_without_mutating_model(tmp_p
         _load_checkpoint(model, checkpoint_path)
 
     np.testing.assert_array_equal(
-        np.asarray(_flat_parameters(model)["head.weight"]),
+        np.asarray(flat_parameters(model)["head.weight"]),
         original,
     )
 
 
-def test_load_checkpoint_allows_explicit_development_partial_load(tmp_path):
+def test_load_checkpoint_allows_explicit_development_partial_load(
+    tmp_path: Path,
+) -> None:
     model = _TinyCheckpointModel()
     checkpoint_path = tmp_path / "partial-development.safetensors"
-    replacement = mx.arange(6).reshape(2, 3).astype(mx.float32)
-    mx.save_safetensors(str(checkpoint_path), {"head.weight": replacement})
+    replacement = reshape_array(mx.arange(6), 2, 3).astype(mx.float32)
+    save_safetensors(checkpoint_path, {"head.weight": replacement})
 
     report = _load_checkpoint(model, checkpoint_path, strict=False)
 
@@ -158,16 +165,16 @@ def test_load_checkpoint_allows_explicit_development_partial_load(tmp_path):
     assert report.missing == ("head.bias", "scale")
     assert model.checkpoint_load_report is report
     np.testing.assert_array_equal(
-        np.asarray(_flat_parameters(model)["head.weight"]),
+        np.asarray(flat_parameters(model)["head.weight"]),
         np.asarray(replacement),
     )
 
 
-def test_load_checkpoint_rejects_unreviewed_source_weight(tmp_path):
+def test_load_checkpoint_rejects_unreviewed_source_weight(tmp_path: Path) -> None:
     model = _TinyCheckpointModel()
     checkpoint_path = tmp_path / "unexpected.safetensors"
-    mx.save_safetensors(
-        str(checkpoint_path),
+    save_safetensors(
+        checkpoint_path,
         {
             "head.weight": mx.ones((2, 3)),
             "head.bias": mx.ones((2,)),
@@ -180,13 +187,15 @@ def test_load_checkpoint_rejects_unreviewed_source_weight(tmp_path):
         _load_checkpoint(model, checkpoint_path)
 
 
-def test_load_checkpoint_rejects_shape_mismatch_without_partial_load(tmp_path):
+def test_load_checkpoint_rejects_shape_mismatch_without_partial_load(
+    tmp_path: Path,
+) -> None:
     model = _TinyCheckpointModel()
     checkpoint_path = tmp_path / "bad-shape.safetensors"
-    original_weight = np.asarray(_flat_parameters(model)["head.weight"]).copy()
-    replacement = mx.arange(6).reshape(2, 3).astype(mx.float32)
-    mx.save_safetensors(
-        str(checkpoint_path),
+    original_weight = np.asarray(flat_parameters(model)["head.weight"]).copy()
+    replacement = reshape_array(mx.arange(6), 2, 3).astype(mx.float32)
+    save_safetensors(
+        checkpoint_path,
         {
             "head.weight": replacement,
             "head.bias": mx.ones((3,)),
@@ -197,38 +206,42 @@ def test_load_checkpoint_rejects_shape_mismatch_without_partial_load(tmp_path):
         _load_checkpoint(model, checkpoint_path)
 
     np.testing.assert_array_equal(
-        np.asarray(_flat_parameters(model)["head.weight"]),
+        np.asarray(flat_parameters(model)["head.weight"]),
         original_weight,
     )
 
 
-def test_load_checkpoint_normalizes_known_conv_layout_before_audit(tmp_path):
+def test_load_checkpoint_normalizes_known_conv_layout_before_audit(
+    tmp_path: Path,
+) -> None:
     model = _TinyConvLayoutModel()
     checkpoint_path = tmp_path / "conv-layout.safetensors"
     key = "backbone.vision_backbone.sam2_convs.1.dconv_2x2.weight"
-    torch_layout = mx.arange(4 * 3 * 2 * 2).reshape(4, 3, 2, 2).astype(mx.float32)
-    mx.save_safetensors(str(checkpoint_path), {key: torch_layout})
+    torch_layout = reshape_array(mx.arange(4 * 3 * 2 * 2), 4, 3, 2, 2).astype(
+        mx.float32
+    )
+    save_safetensors(checkpoint_path, {key: torch_layout})
 
     report = _load_checkpoint(model, checkpoint_path, strict=False)
 
     assert report.loaded == (key,)
     assert report.shape_mismatched == ()
     np.testing.assert_array_equal(
-        np.asarray(_flat_parameters(model)[key]),
+        np.asarray(flat_parameters(model)[key]),
         np.asarray(torch_layout).transpose(1, 2, 3, 0),
     )
 
 
-def test_load_checkpoint_merges_explicit_interactive_checkpoint(tmp_path):
+def test_load_checkpoint_merges_explicit_interactive_checkpoint(tmp_path: Path) -> None:
     model = _TinyInteractiveCheckpointModel()
     checkpoint_path = tmp_path / "base.safetensors"
     interactive_checkpoint_path = tmp_path / "interactive.safetensors"
-    mx.save_safetensors(
-        str(checkpoint_path),
+    save_safetensors(
+        checkpoint_path,
         {"base.weight": mx.array([5.0], dtype=mx.float32)},
     )
-    mx.save_safetensors(
-        str(interactive_checkpoint_path),
+    save_safetensors(
+        interactive_checkpoint_path,
         {
             "tracker_model.no_memory_embedding": mx.array(
                 [[[7.0, 8.0]]],
@@ -247,7 +260,7 @@ def test_load_checkpoint_merges_explicit_interactive_checkpoint(tmp_path):
         "base.weight",
         "inst_interactive_predictor.model.no_mem_embed",
     )
-    params = _flat_parameters(model)
+    params = flat_parameters(model)
     np.testing.assert_array_equal(
         np.asarray(params["base.weight"]),
         np.array([5.0], dtype=np.float32),
@@ -258,16 +271,18 @@ def test_load_checkpoint_merges_explicit_interactive_checkpoint(tmp_path):
     )
 
 
-def test_load_checkpoint_rejects_interactive_checkpoint_without_interactivity(tmp_path):
+def test_load_checkpoint_rejects_interactive_checkpoint_without_interactivity(
+    tmp_path: Path,
+) -> None:
     model = _TinyCheckpointModel()
     checkpoint_path = tmp_path / "base.safetensors"
     interactive_checkpoint_path = tmp_path / "interactive.safetensors"
-    mx.save_safetensors(
-        str(checkpoint_path),
+    save_safetensors(
+        checkpoint_path,
         {"head.weight": mx.ones((2, 3))},
     )
-    mx.save_safetensors(
-        str(interactive_checkpoint_path),
+    save_safetensors(
+        interactive_checkpoint_path,
         {"tracker_model.no_memory_embedding": mx.ones((1, 1, 2))},
     )
 
@@ -283,21 +298,21 @@ def test_load_checkpoint_rejects_interactive_checkpoint_without_interactivity(tm
 
 
 def test_load_checkpoint_rejects_interactive_shape_mismatch_without_partial_load(
-    tmp_path,
-):
+    tmp_path: Path,
+) -> None:
     model = _TinyInteractiveCheckpointModel()
     checkpoint_path = tmp_path / "base.safetensors"
     interactive_checkpoint_path = tmp_path / "interactive-bad-shape.safetensors"
-    original_base = np.asarray(_flat_parameters(model)["base.weight"]).copy()
+    original_base = np.asarray(flat_parameters(model)["base.weight"]).copy()
     original_interactive = np.asarray(
-        _flat_parameters(model)["inst_interactive_predictor.model.no_mem_embed"]
+        flat_parameters(model)["inst_interactive_predictor.model.no_mem_embed"]
     ).copy()
-    mx.save_safetensors(
-        str(checkpoint_path),
+    save_safetensors(
+        checkpoint_path,
         {"base.weight": mx.array([5.0], dtype=mx.float32)},
     )
-    mx.save_safetensors(
-        str(interactive_checkpoint_path),
+    save_safetensors(
+        interactive_checkpoint_path,
         {
             "tracker_model.no_memory_embedding": mx.array(
                 [[[7.0, 8.0, 9.0]]],
@@ -319,7 +334,7 @@ def test_load_checkpoint_rejects_interactive_shape_mismatch_without_partial_load
             interactive_checkpoint_path=interactive_checkpoint_path,
         )
 
-    params = _flat_parameters(model)
+    params = flat_parameters(model)
     np.testing.assert_array_equal(
         np.asarray(params["base.weight"]),
         original_base,
@@ -330,11 +345,11 @@ def test_load_checkpoint_rejects_interactive_shape_mismatch_without_partial_load
     )
 
 
-def test_load_tracker_checkpoint_maps_official_alias_and_loads(tmp_path):
+def test_load_tracker_checkpoint_maps_official_alias_and_loads(tmp_path: Path) -> None:
     model = _TinyTrackerCheckpointModel()
     checkpoint_path = tmp_path / "tracker.safetensors"
-    mx.save_safetensors(
-        str(checkpoint_path),
+    save_safetensors(
+        checkpoint_path,
         {
             "tracker_model.no_memory_embedding": mx.array(
                 [[[7.0, 8.0]]],
@@ -347,19 +362,19 @@ def test_load_tracker_checkpoint_maps_official_alias_and_loads(tmp_path):
 
     assert report.loaded == ("no_mem_embed",)
     np.testing.assert_array_equal(
-        np.asarray(_flat_parameters(model)["no_mem_embed"]),
+        np.asarray(flat_parameters(model)["no_mem_embed"]),
         np.array([[[7.0, 8.0]]], dtype=np.float32),
     )
 
 
 def test_load_tracker_checkpoint_rejects_shape_mismatch_without_partial_load(
-    tmp_path,
-):
+    tmp_path: Path,
+) -> None:
     model = _TinyTrackerCheckpointModel()
     checkpoint_path = tmp_path / "tracker-bad.safetensors"
-    original = np.asarray(_flat_parameters(model)["no_mem_embed"]).copy()
-    mx.save_safetensors(
-        str(checkpoint_path),
+    original = np.asarray(flat_parameters(model)["no_mem_embed"]).copy()
+    save_safetensors(
+        checkpoint_path,
         {
             "tracker_model.no_memory_embedding": mx.array(
                 [[[7.0, 8.0, 9.0]]],
@@ -372,12 +387,14 @@ def test_load_tracker_checkpoint_rejects_shape_mismatch_without_partial_load(
         _load_tracker_checkpoint(model, checkpoint_path)
 
     np.testing.assert_array_equal(
-        np.asarray(_flat_parameters(model)["no_mem_embed"]),
+        np.asarray(flat_parameters(model)["no_mem_embed"]),
         original,
     )
 
 
-def test_load_multiplex_checkpoint_loads_detector_and_tracker_weights(tmp_path):
+def test_load_multiplex_checkpoint_loads_detector_and_tracker_weights(
+    tmp_path: Path,
+) -> None:
     model = _TinyMultiplexCheckpointModel()
     checkpoint_path = tmp_path / "multiplex.safetensors"
     text_projection = mx.array([[5.0, 6.0]], dtype=mx.float32)
@@ -387,8 +404,8 @@ def test_load_multiplex_checkpoint_loads_detector_and_tracker_weights(tmp_path):
         [[1.0, 2.0], [3.0, 4.0]],
         dtype=mx.float32,
     )
-    mx.save_safetensors(
-        str(checkpoint_path),
+    save_safetensors(
+        checkpoint_path,
         {
             "detector_model.text_encoder.text_projection.weight": text_projection,
             "detector_model.text_projection.weight": text_resizer,
@@ -405,7 +422,7 @@ def test_load_multiplex_checkpoint_loads_detector_and_tracker_weights(tmp_path):
         "detector.backbone.language_backbone.resizer.weight",
         "tracker.model.output_valid_embed",
     )
-    params = _flat_parameters(model)
+    params = flat_parameters(model)
     np.testing.assert_array_equal(
         np.asarray(
             params["detector.backbone.language_backbone.encoder.text_projection"]
@@ -426,11 +443,13 @@ def test_load_multiplex_checkpoint_loads_detector_and_tracker_weights(tmp_path):
     )
 
 
-def test_load_multiplex_checkpoint_requires_text_resizer_weights(tmp_path):
+def test_load_multiplex_checkpoint_requires_text_resizer_weights(
+    tmp_path: Path,
+) -> None:
     model = _TinyMultiplexCheckpointModel()
     checkpoint_path = tmp_path / "multiplex-missing-resizer.safetensors"
-    mx.save_safetensors(
-        str(checkpoint_path),
+    save_safetensors(
+        checkpoint_path,
         {
             "detector_model.text_encoder.text_projection.weight": mx.array(
                 [[5.0, 6.0]],
@@ -445,17 +464,17 @@ def test_load_multiplex_checkpoint_requires_text_resizer_weights(tmp_path):
 
 
 def test_load_multiplex_checkpoint_rejects_shape_mismatch_without_partial_load(
-    tmp_path,
-):
+    tmp_path: Path,
+) -> None:
     model = _TinyMultiplexCheckpointModel()
     checkpoint_path = tmp_path / "multiplex-bad.safetensors"
     original_text = np.asarray(
-        _flat_parameters(model)[
+        flat_parameters(model)[
             "detector.backbone.language_backbone.encoder.text_projection"
         ]
     ).copy()
-    mx.save_safetensors(
-        str(checkpoint_path),
+    save_safetensors(
+        checkpoint_path,
         {
             "detector_model.text_encoder.text_projection.weight": mx.array(
                 [[5.0, 6.0]],
@@ -470,7 +489,7 @@ def test_load_multiplex_checkpoint_rejects_shape_mismatch_without_partial_load(
 
     np.testing.assert_array_equal(
         np.asarray(
-            _flat_parameters(model)[
+            flat_parameters(model)[
                 "detector.backbone.language_backbone.encoder.text_projection"
             ]
         ),
@@ -478,7 +497,9 @@ def test_load_multiplex_checkpoint_rejects_shape_mismatch_without_partial_load(
     )
 
 
-def test_load_multiplex_checkpoint_rejects_pytorch_checkpoint_path(tmp_path):
+def test_load_multiplex_checkpoint_rejects_pytorch_checkpoint_path(
+    tmp_path: Path,
+) -> None:
     with pytest.raises(ValueError, match="PyTorch SAM 3.1 multiplex"):
         _load_multiplex_checkpoint(
             _TinyMultiplexCheckpointModel(),
@@ -486,15 +507,17 @@ def test_load_multiplex_checkpoint_rejects_pytorch_checkpoint_path(tmp_path):
         )
 
 
-def test_load_multiplex_tracker_checkpoint_loads_direct_tracker_model(tmp_path):
+def test_load_multiplex_tracker_checkpoint_loads_direct_tracker_model(
+    tmp_path: Path,
+) -> None:
     model = _TinyMultiplexTrackerCheckpointModel()
     checkpoint_path = tmp_path / "multiplex-tracker.safetensors"
     output_valid = mx.array(
         [[1.0, 2.0], [3.0, 4.0]],
         dtype=mx.float32,
     )
-    mx.save_safetensors(
-        str(checkpoint_path),
+    save_safetensors(
+        checkpoint_path,
         {"tracker_model.output_valid_embed": output_valid},
     )
 
@@ -502,15 +525,17 @@ def test_load_multiplex_tracker_checkpoint_loads_direct_tracker_model(tmp_path):
 
     assert report.loaded == ("output_valid_embed",)
     np.testing.assert_array_equal(
-        np.asarray(_flat_parameters(model)["output_valid_embed"]),
+        np.asarray(flat_parameters(model)["output_valid_embed"]),
         np.asarray(output_valid),
     )
 
 
-def test_build_tracker_rejects_checkpoint_with_unmapped_backbone(tmp_path):
+def test_build_tracker_rejects_checkpoint_with_unmapped_backbone(
+    tmp_path: Path,
+) -> None:
     checkpoint_path = tmp_path / "tracker.safetensors"
-    mx.save_safetensors(
-        str(checkpoint_path),
+    save_safetensors(
+        checkpoint_path,
         {"tracker_model.no_memory_embedding": mx.zeros((1, 1, 256))},
     )
 

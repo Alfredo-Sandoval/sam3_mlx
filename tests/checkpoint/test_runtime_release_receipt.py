@@ -2,11 +2,15 @@ import copy
 import hashlib
 import importlib.util
 import json
+from pathlib import Path
 import platform
 import sys
+from dataclasses import dataclass
+from typing import cast
 
 import pytest
 
+from sam3_mlx.release_contract import JsonObject
 from tests._paths import REPO_ROOT
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -29,8 +33,8 @@ def test_test_environment_comes_from_selected_interpreter():
     assert observed["mlx_version"]
 
 
-def _valid_receipt(**overrides):
-    receipt = {
+def _valid_receipt(**overrides: object) -> JsonObject:
+    receipt: JsonObject = {
         "schema_version": 1,
         "status": "passed",
         "package_version": "0.1.2",
@@ -79,6 +83,20 @@ def _valid_receipt(**overrides):
     return receipt
 
 
+def _object(value: object, field: str) -> JsonObject:
+    assert isinstance(value, dict), f"{field} must be an object"
+    raw_value = cast(dict[object, object], value)
+    assert all(isinstance(key, str) for key in raw_value), (
+        f"{field} must use string keys"
+    )
+    return cast(JsonObject, raw_value)
+
+
+def _list(value: object, field: str) -> list[object]:
+    assert isinstance(value, list), f"{field} must be a list"
+    return cast(list[object], value)
+
+
 def test_release_receipt_schema_accepts_complete_receipt():
     validate_receipt(
         _valid_receipt(),
@@ -93,7 +111,7 @@ def test_release_receipt_schema_and_commit_binding():
 
     with pytest.raises(ReceiptError, match="checkpoint fields"):
         bad = _valid_receipt()
-        bad["checkpoint"]["official_sha256"] = ""
+        _object(bad["checkpoint"], "checkpoint")["official_sha256"] = ""
         validate_receipt(bad, require_passed=False)
 
     with pytest.raises(ReceiptError, match="git_commit does not match"):
@@ -105,17 +123,17 @@ def test_release_receipt_schema_and_commit_binding():
 
     with pytest.raises(ReceiptError, match="skip_details"):
         bad = _valid_receipt()
-        bad["tests"]["skip_details"] = [{"nodeid": "tests/x.py::t"}]
+        _object(bad["tests"], "tests")["skip_details"] = [{"nodeid": "tests/x.py::t"}]
         validate_receipt(bad, require_passed=False)
 
     with pytest.raises(ReceiptError, match="parity.status"):
         bad = _valid_receipt()
-        bad["parity"]["status"] = "skipped"
+        _object(bad["parity"], "parity")["status"] = "skipped"
         validate_receipt(bad)
 
     with pytest.raises(ReceiptError, match="performance.status"):
         bad = _valid_receipt()
-        bad["performance"]["status"] = "partial"
+        _object(bad["performance"], "performance")["status"] = "partial"
         validate_receipt(bad)
 
     with pytest.raises(ReceiptError, match="not 'passed'"):
@@ -126,25 +144,32 @@ def test_release_receipt_schema_and_commit_binding():
 
     with pytest.raises(ReceiptError, match="inconsistent"):
         bad = _valid_receipt()
-        bad["tests"]["failed"] = True
+        _object(bad["tests"], "tests")["failed"] = True
         validate_receipt(bad, require_passed=False)
 
 
-def test_parent_bound_receipt_requires_receipt_only_attestation(monkeypatch):
+@dataclass
+class _Completed:
+    stdout: str
+
+
+def test_parent_bound_receipt_requires_receipt_only_attestation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(_validate_runtime_release, "_git_commit", lambda: "b" * 40)
 
-    def fake_run(command, *, cwd):
+    def fake_run(command: list[str], *, cwd: Path) -> _Completed:
         del cwd
         if command[:2] == ["git", "rev-list"]:
             stdout = f"{'b' * 40} {'a' * 40}\n"
         else:
             stdout = "parity/receipts/latest.json\nparity/manifests/lineage.json\n"
-        return type("Completed", (), {"stdout": stdout})()
+        return _Completed(stdout)
 
     monkeypatch.setattr(_validate_runtime_release, "_run", fake_run)
     assert _validate_runtime_release._validate_receipt_git_binding("a" * 40) == "a" * 40
 
-    def bad_run(command, *, cwd):
+    def bad_run(command: list[str], *, cwd: Path) -> _Completed:
         completed = fake_run(command, cwd=cwd)
         if command[:2] == ["git", "diff-tree"]:
             completed.stdout += "sam3_mlx/model_builder.py\n"
@@ -156,8 +181,8 @@ def test_parent_bound_receipt_requires_receipt_only_attestation(monkeypatch):
 
 
 def test_promote_measured_receipt_requires_calibration_and_holdout(
-    tmp_path, monkeypatch
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(_validate_runtime_release, "REPO_ROOT", tmp_path)
     source_revision = "b" * 40
     source_sha = "c" * 64
@@ -170,7 +195,7 @@ def test_promote_measured_receipt_requires_calibration_and_holdout(
         "score_abs_max": 0.025,
     }
 
-    report_paths = []
+    report_paths: list[Path] = []
     for profile in ("example", "holdout"):
         path = tmp_path / f"{profile}.json"
         cases = [
@@ -269,23 +294,31 @@ def test_promote_measured_receipt_requires_calibration_and_holdout(
         evidence_root=tmp_path,
     )
 
-    tampered_report = json.loads(report_paths[0].read_text())
-    tampered_report["cases"][0]["name"] = "tampered"
+    tampered_report = _object(
+        json.loads(report_paths[0].read_text()), "tampered report"
+    )
+    tampered_cases = _list(tampered_report["cases"], "tampered report cases")
+    _object(tampered_cases[0], "tampered report case")["name"] = "tampered"
     report_paths[0].write_text(json.dumps(tampered_report))
     with pytest.raises(ReceiptError, match="digest mismatch"):
         validate_receipt(promoted, evidence_root=tmp_path)
 
     promoted_with_new_digest = copy.deepcopy(promoted)
-    promoted_with_new_digest["parity"]["reports"][0]["sha256"] = hashlib.sha256(
+    promoted_parity = _object(promoted_with_new_digest["parity"], "parity")
+    promoted_reports = _list(promoted_parity["reports"], "parity reports")
+    _object(promoted_reports[0], "parity report")["sha256"] = hashlib.sha256(
         report_paths[0].read_bytes()
     ).hexdigest()
     with pytest.raises(ReceiptError, match="does not match referenced evidence"):
         validate_receipt(promoted_with_new_digest, evidence_root=tmp_path)
 
-    dishonest_report = json.loads(report_paths[0].read_text())
-    dishonest_report["cases"][0]["mask_iou_min"] = 0.0
+    dishonest_report = _object(
+        json.loads(report_paths[0].read_text()), "dishonest report"
+    )
+    dishonest_cases = _list(dishonest_report["cases"], "dishonest report cases")
+    _object(dishonest_cases[0], "dishonest report case")["mask_iou_min"] = 0.0
     report_paths[0].write_text(json.dumps(dishonest_report))
-    promoted_with_new_digest["parity"]["reports"][0]["sha256"] = hashlib.sha256(
+    _object(promoted_reports[0], "parity report")["sha256"] = hashlib.sha256(
         report_paths[0].read_bytes()
     ).hexdigest()
     with pytest.raises(ReceiptError, match="not reproducible"):

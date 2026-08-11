@@ -1,26 +1,29 @@
 import hashlib
 import json
+from pathlib import Path
 
 import mlx.core as mx
 import numpy as np
+from numpy.typing import NDArray
 import pytest
 
 from sam3_mlx.convert import (
     DEFAULT_MLX_CHECKPOINT,
-    _convert_checkpoint_weights,
-    _validate_cached_conversion,
-    _validate_source_revision,
-    _write_conversion_manifest,
+    _convert_checkpoint_weights,  # pyright: ignore[reportPrivateUsage]
+    _validate_cached_conversion,  # pyright: ignore[reportPrivateUsage]
+    _validate_source_revision,  # pyright: ignore[reportPrivateUsage]
+    _write_conversion_manifest,  # pyright: ignore[reportPrivateUsage]
     load_from_hub,
     validate_hub_checkpoint_provenance,
 )
+from tests._mlx_runtime import save_safetensors
 
 
 class _TorchLikeTensor:
-    def __init__(self, value):
+    def __init__(self, value: object) -> None:
         self._value = np.asarray(value, dtype=np.float32)
 
-    def numpy(self):
+    def numpy(self) -> NDArray[np.float32]:
         return self._value
 
 
@@ -42,7 +45,9 @@ def test_conversion_normalizes_conv_layout_once():
     assert ignored == ("tracker.unused.weight",)
 
 
-def test_conversion_manifest_records_pinned_source_and_content_hashes(tmp_path):
+def test_conversion_manifest_records_pinned_source_and_content_hashes(
+    tmp_path: Path,
+) -> None:
     source_checkpoint = tmp_path / "sam3.pt"
     source_checkpoint.write_bytes(b"official-checkpoint")
     output_checkpoint = tmp_path / "model.safetensors"
@@ -50,7 +55,7 @@ def test_conversion_manifest_records_pinned_source_and_content_hashes(tmp_path):
         "head.weight": mx.ones((2, 3), dtype=mx.float32),
         "head.bias": mx.zeros((2,), dtype=mx.float16),
     }
-    mx.save_safetensors(str(output_checkpoint), weights)
+    save_safetensors(output_checkpoint, weights)
 
     manifest_path = _write_conversion_manifest(
         tmp_path,
@@ -81,7 +86,7 @@ def test_conversion_manifest_records_pinned_source_and_content_hashes(tmp_path):
     assert manifest["converter_version"]
 
 
-def test_cached_conversion_rejects_revision_or_content_drift(tmp_path):
+def test_cached_conversion_rejects_revision_or_content_drift(tmp_path: Path) -> None:
     weights_file = tmp_path / "model.safetensors"
     weights_file.write_bytes(b"converted")
     manifest_file = tmp_path / "conversion-manifest.json"
@@ -121,7 +126,7 @@ def test_cached_conversion_rejects_revision_or_content_drift(tmp_path):
 
 
 @pytest.mark.parametrize("revision", ["main", "a" * 39, "g" * 40])
-def test_conversion_requires_full_immutable_commit_revision(revision):
+def test_conversion_requires_full_immutable_commit_revision(revision: str) -> None:
     with pytest.raises(ValueError, match="40-character hexadecimal commit SHA"):
         _validate_source_revision(revision)
 
@@ -135,7 +140,9 @@ def test_default_mlx_checkpoint_pin_is_immutable():
     assert DEFAULT_MLX_CHECKPOINT.architecture == "sam3-image"
 
 
-def test_validate_hub_checkpoint_provenance_rejects_hash_and_manifest_drift(tmp_path):
+def test_validate_hub_checkpoint_provenance_rejects_hash_and_manifest_drift(
+    tmp_path: Path,
+) -> None:
     weights = tmp_path / "model.safetensors"
     weights.write_bytes(b"pinned-weights")
     expected_sha = hashlib.sha256(b"pinned-weights").hexdigest()
@@ -215,13 +222,15 @@ def test_validate_hub_checkpoint_provenance_rejects_hash_and_manifest_drift(tmp_
         )
 
 
-def test_default_hf_checkpoint_is_pinned_and_manifest_verified(tmp_path, monkeypatch):
+def test_default_hf_checkpoint_is_pinned_and_manifest_verified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     weights = tmp_path / "model.safetensors"
     weights.write_bytes(b"default-pinned")
     expected_sha = hashlib.sha256(b"default-pinned").hexdigest()
-    captured = {}
+    captured: dict[str, object] = {}
 
-    def fake_snapshot_download(**kwargs):
+    def fake_snapshot_download(**kwargs: object) -> str:
         captured.update(kwargs)
         return str(tmp_path)
 
@@ -256,7 +265,9 @@ def test_default_hf_checkpoint_is_pinned_and_manifest_verified(tmp_path, monkeyp
     )
     assert path == weights
     assert captured["revision"] == "c" * 40
-    assert len(captured["revision"]) == 40
+    captured_revision = captured["revision"]
+    assert isinstance(captured_revision, str)
+    assert len(captured_revision) == 40
 
     with pytest.raises(ValueError, match="requires an immutable"):
         load_from_hub(hf_repo="mlx-community/sam3-image")

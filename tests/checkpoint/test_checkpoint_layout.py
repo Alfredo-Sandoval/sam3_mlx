@@ -1,21 +1,22 @@
 import numpy as np
 import mlx.core as mx
-import mlx.nn as nn
+from mlx import nn
 import pytest
 
 from sam3_mlx.convert import normalize_sam3_image_weight_layout
+from sam3_mlx.model.data_misc import reshape_array
 from sam3_mlx.model_builder import (
     build_tracker,
-    _normalize_inst_interactive_weights,
-    _normalize_sam3_image_weights,
-    _normalize_sam31_multiplex_tracker_weights,
-    _normalize_sam31_multiplex_weights,
-    _normalize_tracker_checkpoint_weights,
+    _normalize_inst_interactive_weights,  # pyright: ignore[reportPrivateUsage]
+    _normalize_sam3_image_weights,  # pyright: ignore[reportPrivateUsage]
+    _normalize_sam31_multiplex_tracker_weights,  # pyright: ignore[reportPrivateUsage]
+    _normalize_sam31_multiplex_weights,  # pyright: ignore[reportPrivateUsage]
+    _normalize_tracker_checkpoint_weights,  # pyright: ignore[reportPrivateUsage]
 )
 
 
 class _WeightLeaf(nn.Module):
-    def __init__(self, shape):
+    def __init__(self, shape: tuple[int, ...]) -> None:
         super().__init__()
         self.weight = mx.zeros(shape)
 
@@ -294,9 +295,9 @@ def test_normalize_sam3_image_weights_rejects_tracker_only_official_payload():
 
 def test_normalize_inst_interactive_weights_splits_transformers_point_embeddings():
     payload = {
-        "tracker_model.prompt_encoder.point_embed.weight": mx.arange(12)
-        .reshape(4, 3)
-        .astype(mx.float32)
+        "tracker_model.prompt_encoder.point_embed.weight": reshape_array(
+            mx.arange(12), 4, 3
+        ).astype(mx.float32)
     }
 
     normalized = _normalize_inst_interactive_weights(payload)
@@ -392,9 +393,9 @@ def test_normalize_inst_interactive_weights_maps_transformers_aliases():
 
 def test_normalize_inst_interactive_weights_converts_official_conv2d_layout():
     payload = {
-        "tracker_model.prompt_encoder.mask_embed.conv1.weight": mx.arange(16)
-        .reshape(4, 1, 2, 2)
-        .astype(mx.float32)
+        "tracker_model.prompt_encoder.mask_embed.conv1.weight": reshape_array(
+            mx.arange(16), 4, 1, 2, 2
+        ).astype(mx.float32)
     }
 
     normalized = _normalize_inst_interactive_weights(payload)
@@ -420,9 +421,9 @@ def test_normalize_inst_interactive_weights_converts_official_conv2d_layout():
 
 def test_normalize_inst_interactive_weights_maps_sam2_predictor_prompt_conv_alias():
     payload = {
-        "sam2_predictor.sam_prompt_encoder.mask_downscaling.0.weight": mx.arange(16)
-        .reshape(4, 1, 2, 2)
-        .astype(mx.float32)
+        "sam2_predictor.sam_prompt_encoder.mask_downscaling.0.weight": reshape_array(
+            mx.arange(16), 4, 1, 2, 2
+        ).astype(mx.float32)
     }
 
     normalized = _normalize_inst_interactive_weights(payload)
@@ -448,9 +449,9 @@ def test_normalize_inst_interactive_weights_maps_sam2_predictor_prompt_conv_alia
 
 def test_normalize_inst_interactive_weights_converts_official_convtranspose_layout():
     payload = {
-        "tracker_model.mask_decoder.upscale_conv1.weight": mx.arange(256 * 64 * 2 * 2)
-        .reshape(256, 64, 2, 2)
-        .astype(mx.float32)
+        "tracker_model.mask_decoder.upscale_conv1.weight": reshape_array(
+            mx.arange(256 * 64 * 2 * 2), 256, 64, 2, 2
+        ).astype(mx.float32)
     }
 
     normalized = _normalize_inst_interactive_weights(payload)
@@ -469,11 +470,9 @@ def test_normalize_inst_interactive_weights_converts_official_convtranspose_layo
 
 def test_normalize_inst_interactive_weights_maps_tracker_decoder_upscale_alias():
     payload = {
-        "tracker.sam_mask_decoder.output_upscaling.0.weight": mx.arange(
-            256 * 64 * 2 * 2
-        )
-        .reshape(256, 64, 2, 2)
-        .astype(mx.float32)
+        "tracker.sam_mask_decoder.output_upscaling.0.weight": reshape_array(
+            mx.arange(256 * 64 * 2 * 2), 256, 64, 2, 2
+        ).astype(mx.float32)
     }
 
     normalized = _normalize_inst_interactive_weights(payload)
@@ -502,22 +501,22 @@ def test_normalize_tracker_checkpoint_weights_maps_core_tracker_aliases():
             dtype=mx.float32,
         ),
         "tracker_model.mask_downsample.bias": mx.array([3.0], dtype=mx.float32),
-        "tracker_model.mask_downsample.weight": mx.arange(16)
-        .reshape(1, 1, 4, 4)
-        .astype(mx.float32),
-        "tracker_model.prompt_encoder.point_embed.weight": mx.arange(4 * 256)
-        .reshape(4, 256)
-        .astype(mx.float32),
-        "tracker_model.memory_encoder.projection.weight": mx.arange(64 * 256)
-        .reshape(64, 256, 1, 1)
-        .astype(mx.float32),
+        "tracker_model.mask_downsample.weight": reshape_array(
+            mx.arange(16), 1, 1, 4, 4
+        ).astype(mx.float32),
+        "tracker_model.prompt_encoder.point_embed.weight": reshape_array(
+            mx.arange(4 * 256), 4, 256
+        ).astype(mx.float32),
+        "tracker_model.memory_encoder.projection.weight": reshape_array(
+            mx.arange(64 * 256), 64, 256, 1, 1
+        ).astype(mx.float32),
         "tracker_model.memory_attention.layers.0.self_attn.o_proj.bias": mx.ones(
             (256,),
             dtype=mx.float32,
         ),
-        "tracker_model.mask_decoder.upscale_conv1.weight": mx.arange(256 * 64 * 2 * 2)
-        .reshape(256, 64, 2, 2)
-        .astype(mx.float32),
+        "tracker_model.mask_decoder.upscale_conv1.weight": reshape_array(
+            mx.arange(256 * 64 * 2 * 2), 256, 64, 2, 2
+        ).astype(mx.float32),
     }
 
     normalized = _normalize_tracker_checkpoint_weights(payload, model)
@@ -556,12 +555,12 @@ def test_normalize_sam31_multiplex_weights_maps_detector_and_tracker_aliases():
     text_projection = mx.array([[13.0, 14.0]], dtype=mx.float32)
     text_resizer = mx.array([[15.0], [16.0]], dtype=mx.float32)
     text_resizer_bias = mx.array([17.0, 18.0], dtype=mx.float32)
-    neck = mx.arange(4).reshape(2, 1, 1, 2).astype(mx.float32)
+    neck = reshape_array(mx.arange(4), 2, 1, 1, 2).astype(mx.float32)
     decoder_self_norm = mx.array([31.0, 32.0], dtype=mx.float32)
     decoder_vision_norm = mx.array([33.0, 34.0], dtype=mx.float32)
     geometry_prompt_norm = mx.array([35.0, 36.0], dtype=mx.float32)
     geometry_vision_norm = mx.array([37.0, 38.0], dtype=mx.float32)
-    point_embed = mx.arange(8).reshape(4, 2).astype(mx.float32)
+    point_embed = reshape_array(mx.arange(8), 4, 2).astype(mx.float32)
     conv_s0 = mx.ones((2, 1, 1, 2), dtype=mx.float32)
     proj_out = mx.array([[21.0, 22.0]], dtype=mx.float32)
     payload = {
