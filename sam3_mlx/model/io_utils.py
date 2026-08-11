@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import queue
 from collections import OrderedDict
+from importlib import import_module
 from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
 from threading import Condition, Event, Lock, Thread, get_ident
 from types import TracebackType
-from typing import Any, Sequence
+from typing import Any, NoReturn, Protocol, Sequence, cast
 
 import numpy as np
 from PIL import Image
@@ -22,13 +23,96 @@ from sam3_mlx._unsupported import raise_unsupported
 DEFAULT_LAZY_FRAME_CACHE_SIZE = 8
 
 
-def _raise_io_unsupported(feature: str, *, reason: str, detail: str, alternative=None):
+class _MlxArrayMethods(Protocol):
+    def transpose(self, *axes: int) -> mx.array: ...
+
+    def reshape(self, *shape: int) -> mx.array: ...
+
+
+class _VideoCapture(Protocol):
+    def isOpened(self) -> bool: ...
+
+    def get(self, property_id: int) -> float: ...
+
+    def set(self, property_id: int, value: float | int) -> bool: ...
+
+    def read(self) -> tuple[bool, np.ndarray[Any, Any]]: ...
+
+    def release(self) -> None: ...
+
+
+class _Cv2Module(Protocol):
+    CAP_PROP_FRAME_COUNT: int
+    CAP_PROP_FRAME_HEIGHT: int
+    CAP_PROP_FRAME_WIDTH: int
+    CAP_PROP_POS_FRAMES: int
+    COLOR_BGR2RGB: int
+    INTER_CUBIC: int
+
+    def VideoCapture(self, path: str) -> _VideoCapture: ...
+
+    def cvtColor(
+        self, array: np.ndarray[Any, Any], code: int
+    ) -> np.ndarray[Any, Any]: ...
+
+    def resize(
+        self,
+        array: np.ndarray[Any, Any],
+        size: tuple[int, int],
+        *,
+        interpolation: int,
+    ) -> np.ndarray[Any, Any]: ...
+
+
+class VideoFrameSource(Protocol):
+    """Common contract shared by eager, lazy, and asynchronous frame stores."""
+
+    @property
+    def orig_height(self) -> int: ...
+
+    @property
+    def orig_width(self) -> int: ...
+
+    @property
+    def frames(self) -> tuple[Image.Image, ...]: ...
+
+    @property
+    def frame_paths(self) -> tuple[Path, ...]: ...
+
+    @property
+    def images(self) -> mx.array | None: ...
+
+    def __len__(self) -> int: ...
+
+    def __getitem__(self, index: int) -> Image.Image: ...
+
+
+def _raise_io_unsupported(
+    feature: str,
+    *,
+    reason: str,
+    detail: str,
+    alternative: str | None = None,
+) -> NoReturn:
     raise_unsupported(
         feature,
         reason=reason,
         detail=detail,
         alternative=alternative,
     )
+
+
+def _load_cv2(*, feature: str, alternative: str) -> _Cv2Module:
+    try:
+        module = import_module("cv2")
+    except ModuleNotFoundError:
+        _raise_io_unsupported(
+            feature,
+            reason="optional-dependency",
+            detail="Video-file decoding requires the [video] OpenCV extra.",
+            alternative=alternative,
+        )
+    return cast(_Cv2Module, module)
 
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
@@ -45,18 +129,19 @@ def validate_video_loader_type(video_loader_type: str) -> str:
     return video_loader_type
 
 
-def _uint8_hwc_to_mlx_chw_float32(array: np.ndarray):
+def _uint8_hwc_to_mlx_chw_float32(array: np.ndarray[Any, Any]) -> mx.array:
     """Move RGB uint8 pixels into MLX as normalized CHW float32."""
     if array.dtype != np.uint8 or array.ndim != 3 or array.shape[2] != 3:
         raise ValueError("expected an HWC RGB uint8 image array.")
-    return (mx.array(array, dtype=mx.float32) / 255.0).transpose(2, 0, 1)
+    image = mx.array(array, dtype=mx.float32) / 255.0
+    return cast(_MlxArrayMethods, image).transpose(2, 0, 1)
 
 
 def _uint8_hwc_to_official_normalized_mlx_chw_float32(
-    array: np.ndarray,
+    array: np.ndarray[Any, Any],
     img_mean: tuple[float, float, float],
     img_std: tuple[float, float, float],
-):
+) -> mx.array:
     """Mirror official SAM3's float16 image-storage normalization."""
     if array.dtype != np.uint8 or array.ndim != 3 or array.shape[2] != 3:
         raise ValueError("expected an HWC RGB uint8 image array.")
@@ -74,7 +159,7 @@ class VideoFrames:
     orig_height: int
     orig_width: int
     frame_paths: tuple[Path, ...] = ()
-    images: Any | None = None
+    images: mx.array | None = None
 
     def __len__(self) -> int:
         return len(self.frames)
@@ -161,15 +246,10 @@ class LazyVideoFileFrames:
     ) -> None:
         if cache_size < 1:
             raise ValueError("cache_size must be >= 1")
-        try:
-            import cv2
-        except ModuleNotFoundError:
-            _raise_io_unsupported(
-                "sam3_mlx.model.io_utils.LazyVideoFileFrames",
-                reason="optional-dependency",
-                detail="Video-file decoding requires the [video] OpenCV extra.",
-                alternative="pip install 'sam3_mlx[video]'",
-            )
+        cv2 = _load_cv2(
+            feature="sam3_mlx.model.io_utils.LazyVideoFileFrames",
+            alternative="pip install 'sam3_mlx[video]'",
+        )
         self.path = Path(video_path)
         self.frame_paths = (self.path,)
         self._cv2 = cv2
@@ -231,7 +311,7 @@ class LazyVideoFileFrames:
 
 
 def load_resource_as_video_frames(
-    resource_path: str | Path | Sequence[Image.Image],
+    resource_path: str | os.PathLike[str] | Sequence[Image.Image],
     image_size: int,
     offload_video_to_cpu: bool = False,
     img_mean: tuple[float, float, float] = (0.5, 0.5, 0.5),
@@ -239,7 +319,7 @@ def load_resource_as_video_frames(
     async_loading_frames: bool = False,
     video_loader_type: str = "cv2",
     materialize_mlx_frames: bool = True,
-) -> VideoFrames | AsyncImageFrameLoader:
+) -> VideoFrameSource:
     """Load image-safe resources into host frames plus normalized MLX arrays.
 
     The official Torch path returns normalized tensors. The MLX port keeps RGB
@@ -327,7 +407,7 @@ def load_video_frames(
     async_loading_frames: bool = False,
     video_loader_type: str = "cv2",
     materialize_mlx_frames: bool = True,
-) -> VideoFrames | AsyncImageFrameLoader:
+) -> VideoFrameSource:
     """Route video-like resources following the official SAM3 loader contract."""
     if image_size <= 0:
         raise ValueError("image_size must be positive.")
@@ -466,7 +546,7 @@ def load_video_frames_from_image_folder(
     img_std: tuple[float, float, float] = (0.5, 0.5, 0.5),
     async_loading_frames: bool = False,
     materialize_mlx_frames: bool = True,
-) -> VideoFrames | AsyncImageFrameLoader:
+) -> VideoFrameSource:
     _validate_image_loading_args(image_size, offload_video_to_cpu)
     folder = Path(image_folder)
     if not folder.is_dir():
@@ -524,7 +604,7 @@ def load_video_frames_from_video_file(
     gpu_device: Any | None = None,
     video_loader_type: str = "cv2",
     materialize_mlx_frames: bool = True,
-) -> VideoFrames:
+) -> VideoFrameSource:
     """Load frames from a video file using an explicitly supported backend."""
     if async_loading_frames:
         _raise_io_unsupported(
@@ -543,15 +623,15 @@ def load_video_frames_from_video_file(
             offload_video_to_cpu=offload_video_to_cpu,
             materialize_mlx_frames=materialize_mlx_frames,
         )
-    # video_loader_type == "torchcodec"
-    return AsyncVideoFileLoaderWithTorchCodec(
-        video_path=str(video_path),
-        image_size=image_size,
-        offload_video_to_cpu=offload_video_to_cpu,
-        img_mean=img_mean,
-        img_std=img_std,
-        gpu_acceleration=gpu_acceleration,
-        gpu_device=gpu_device,
+    del gpu_acceleration, gpu_device
+    _raise_io_unsupported(
+        "sam3_mlx.model.io_utils.AsyncVideoFrameLoader",
+        reason="torchcodec",
+        detail=(
+            "video_loader_type='torchcodec' depends on official SAM3's "
+            "TorchCodec/Torch-only path and is not implemented for Apple Silicon MLX."
+        ),
+        alternative="video_loader_type='cv2' or an image folder",
     )
 
 
@@ -562,23 +642,15 @@ def load_video_frames_from_video_file_using_cv2(
     img_std: tuple[float, float, float] = (0.5, 0.5, 0.5),
     offload_video_to_cpu: bool = False,
     materialize_mlx_frames: bool = True,
-) -> VideoFrames:
+) -> VideoFrameSource:
     """Decode a video file with OpenCV and expose normalized MLX image tensors."""
     _validate_image_loading_args(image_size, offload_video_to_cpu)
     if not materialize_mlx_frames:
         return LazyVideoFileFrames(video_path)
-    try:
-        import cv2
-    except ModuleNotFoundError:
-        _raise_io_unsupported(
-            "sam3_mlx.model.io_utils.load_video_frames_from_video_file_using_cv2",
-            reason="optional-dependency",
-            detail=(
-                "Video-file decoding requires optional OpenCV support. "
-                "Install with: pip install 'sam3_mlx[video]'."
-            ),
-            alternative="Use an image folder, or install the [video] extra (OpenCV).",
-        )
+    cv2 = _load_cv2(
+        feature="sam3_mlx.model.io_utils.load_video_frames_from_video_file_using_cv2",
+        alternative="Use an image folder, or install the [video] extra (OpenCV).",
+    )
 
     path = Path(video_path)
     cap = cv2.VideoCapture(str(path))
@@ -586,10 +658,10 @@ def load_video_frames_from_video_file_using_cv2(
         raise ValueError(f"Could not open video: {path}")
 
     frames: list[Image.Image] = []
-    tensors: list[Any] = []
+    tensors: list[mx.array] = []
     orig_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     orig_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    mean_std = _mean_std_arrays(img_mean, img_std) if materialize_mlx_frames else None
+    mean, std = _mean_std_arrays(img_mean, img_std)
     try:
         while True:
             ok, frame_bgr = cap.read()
@@ -597,15 +669,13 @@ def load_video_frames_from_video_file_using_cv2(
                 break
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
             frames.append(Image.fromarray(frame_rgb).copy())
-            if materialize_mlx_frames:
-                frame_resized = cv2.resize(
-                    frame_rgb,
-                    (image_size, image_size),
-                    interpolation=cv2.INTER_CUBIC,
-                )
-                tensor = _uint8_hwc_to_mlx_chw_float32(frame_resized)
-                mean, std = mean_std
-                tensors.append((tensor - mean) / std)
+            frame_resized = cv2.resize(
+                frame_rgb,
+                (image_size, image_size),
+                interpolation=cv2.INTER_CUBIC,
+            )
+            tensor = _uint8_hwc_to_mlx_chw_float32(frame_resized)
+            tensors.append((tensor - mean) / std)
     finally:
         cap.release()
 
@@ -623,7 +693,7 @@ def load_video_frames_from_video_file_using_cv2(
         orig_height=orig_height,
         orig_width=orig_width,
         frame_paths=(path,),
-        images=mx.stack(tensors, axis=0) if materialize_mlx_frames else None,
+        images=mx.stack(tensors, axis=0),
     )
 
 
@@ -648,7 +718,7 @@ class AsyncImageFrameLoader:
         self.img_std = img_std
         self.materialize_mlx_frames = materialize_mlx_frames
         self._frames: list[Image.Image | None] = [None] * len(self.frame_paths)
-        self._image_tensors: list[Any | None] = [None] * len(self.frame_paths)
+        self._image_tensors: list[mx.array | None] = [None] * len(self.frame_paths)
         self._lock = Lock()
         self._closed = False
         self._cancel_event = Event()
@@ -709,7 +779,7 @@ class AsyncImageFrameLoader:
                 self._image_tensors[index] = tensor
             return frame
 
-    def get_image_tensor(self, index: int):
+    def get_image_tensor(self, index: int) -> mx.array:
         """Return one normalized MLX frame for legacy tensor-based callers."""
         if not self.materialize_mlx_frames:
             raise RuntimeError("This loader was created without MLX frame tensors.")
@@ -726,7 +796,7 @@ class AsyncImageFrameLoader:
         return tuple(frame for frame in self._frames if frame is not None)
 
     @property
-    def images(self):
+    def images(self) -> mx.array | None:
         if not self.materialize_mlx_frames:
             return None
         self.wait()
@@ -869,7 +939,7 @@ class AsyncVideoFileLoaderWithTorchCodec:
 
 
 def _load_pil_sequence(
-    images: Sequence[Image.Image],
+    images: Sequence[object],
     image_size: int,
     offload_video_to_cpu: bool,
     img_mean: tuple[float, float, float],
@@ -881,7 +951,8 @@ def _load_pil_sequence(
         raise RuntimeError("no images found in PIL image sequence")
     if not all(isinstance(image, Image.Image) for image in images):
         raise TypeError("resource_path image sequences must contain only PIL images.")
-    frames = tuple(image.convert("RGB").copy() for image in images)
+    pil_images = cast(Sequence[Image.Image], images)
+    frames = tuple(image.convert("RGB").copy() for image in pil_images)
     _validate_uniform_frame_dimensions(frames, source="PIL image sequence")
     image_tensors = (
         mx.stack(
@@ -913,26 +984,12 @@ def _load_rgb_image(path: Path) -> Image.Image:
         return image.convert("RGB").copy()
 
 
-def _load_img_as_tensor(img_path: str | Path, image_size: int) -> tuple[Any, int, int]:
-    """Load and resize an image into an unnormalized MLX CHW float32 tensor."""
-    if image_size <= 0:
-        raise ValueError("image_size must be positive.")
-    frame = _load_rgb_image(Path(img_path))
-    orig_width, orig_height = frame.width, frame.height
-    resized = frame.resize(
-        (image_size, image_size),
-        resample=Image.Resampling.BILINEAR,
-    )
-    tensor = _uint8_hwc_to_mlx_chw_float32(np.asarray(resized))
-    return tensor, orig_height, orig_width
-
-
 def _load_rgb_image_and_tensor(
     path: Path,
     image_size: int,
     img_mean: tuple[float, float, float],
     img_std: tuple[float, float, float],
-) -> tuple[Image.Image, Any]:
+) -> tuple[Image.Image, mx.array]:
     frame = _load_rgb_image(path)
     return frame, _pil_to_mlx_image(
         frame,
@@ -947,7 +1004,7 @@ def _pil_to_mlx_image(
     image_size: int,
     img_mean: tuple[float, float, float] = (0.5, 0.5, 0.5),
     img_std: tuple[float, float, float] = (0.5, 0.5, 0.5),
-):
+) -> mx.array:
     if image_size <= 0:
         raise ValueError("image_size must be positive.")
     rgb_image = image if image.mode == "RGB" else image.convert("RGB")
@@ -965,7 +1022,7 @@ def _pil_to_mlx_image(
 def _mean_std_arrays(
     img_mean: tuple[float, float, float],
     img_std: tuple[float, float, float],
-):
+) -> tuple[mx.array, mx.array]:
     mean_np = np.asarray(img_mean, dtype=np.float32)
     std_np = np.asarray(img_std, dtype=np.float32)
     if mean_np.shape != (3,) or std_np.shape != (3,):
@@ -975,8 +1032,8 @@ def _mean_std_arrays(
     if np.any(std_np == 0):
         raise ValueError("img_std values must be non-zero.")
     return (
-        mx.array(mean_np, dtype=mx.float32).reshape(3, 1, 1),
-        mx.array(std_np, dtype=mx.float32).reshape(3, 1, 1),
+        cast(_MlxArrayMethods, mx.array(mean_np, dtype=mx.float32)).reshape(3, 1, 1),
+        cast(_MlxArrayMethods, mx.array(std_np, dtype=mx.float32)).reshape(3, 1, 1),
     )
 
 

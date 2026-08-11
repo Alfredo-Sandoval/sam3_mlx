@@ -1,15 +1,68 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from typing import Any
+from collections.abc import Callable, Generator, Sequence
+import os
+from typing import Any, NoReturn, Protocol, Self, cast
 
 import numpy as np
+from PIL import Image
 
 from sam3_mlx._unsupported import raise_unsupported
-from sam3_mlx.model.io_utils import load_resource_as_video_frames, masks_to_boxes_xyxy
+from sam3_mlx.model.io_utils import (
+    VideoFrameSource,
+    load_resource_as_video_frames,
+    masks_to_boxes_xyxy,
+)
 
 
 MLX_PORT_BASE_COMMIT = "ac306ca0fb1c757c00d3c3b2f737ef2f99b45bc3"
+
+
+class _EvaluableModel(Protocol):
+    def eval(self) -> object: ...
+
+
+class _ImageProcessor(Protocol):
+    def set_image(self, image: Image.Image) -> dict[str, Any]: ...
+
+    def set_text_prompt(
+        self,
+        prompt: str,
+        state: dict[str, Any],
+        *,
+        run_grounding: bool,
+        text_outputs: dict[str, Any] | None,
+    ) -> dict[str, Any]: ...
+
+    def add_geometric_prompt(
+        self,
+        box: object,
+        label: bool,
+        state: dict[str, Any],
+        *,
+        run_grounding: bool,
+    ) -> dict[str, Any]: ...
+
+    def add_point_prompt(
+        self,
+        point: object,
+        label: bool,
+        state: dict[str, Any],
+        *,
+        run_grounding: bool,
+    ) -> dict[str, Any]: ...
+
+    def run_grounding(self, state: dict[str, Any]) -> dict[str, Any]: ...
+
+
+ProcessorFactory = Callable[..., _ImageProcessor]
+
+
+def _validate_frame_feature_cache_size(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError("frame_feature_cache_size must be a positive integer.")
+    return value
 
 
 class Sam3VideoInference:
@@ -25,15 +78,15 @@ class Sam3VideoInference:
 
     def __init__(
         self,
-        image_model,
+        image_model: object,
         image_size: int = 1008,
         image_mean: tuple[float, float, float] = (0.5, 0.5, 0.5),
         image_std: tuple[float, float, float] = (0.5, 0.5, 0.5),
         compile_model: bool = False,
         confidence_threshold: float = 0.5,
-        processor_factory=None,
+        processor_factory: ProcessorFactory | None = None,
         frame_feature_cache_size: int = 4,
-        **kwargs,
+        **kwargs: object,
     ) -> None:
         if kwargs:
             unexpected = ", ".join(sorted(kwargs))
@@ -51,20 +104,16 @@ class Sam3VideoInference:
         self.compile_model = compile_model
         self.confidence_threshold = confidence_threshold
         self.processor_factory = processor_factory
-        if (
-            isinstance(frame_feature_cache_size, bool)
-            or not isinstance(frame_feature_cache_size, int)
-            or frame_feature_cache_size <= 0
-        ):
-            raise ValueError("frame_feature_cache_size must be a positive integer.")
-        self.frame_feature_cache_size = frame_feature_cache_size
+        self.frame_feature_cache_size = _validate_frame_feature_cache_size(
+            frame_feature_cache_size
+        )
 
-    def eval(self):
+    def eval(self) -> Self:
         if hasattr(self.image_model, "eval"):
-            self.image_model.eval()
+            cast(_EvaluableModel, self.image_model).eval()
         return self
 
-    def to(self, device=None, **kwargs):
+    def to(self, device: object | None = None, **kwargs: object) -> Self:
         del kwargs
         if device not in (None, "mlx"):
             raise_unsupported(
@@ -77,7 +126,7 @@ class Sam3VideoInference:
 
     def init_state(
         self,
-        resource_path,
+        resource_path: str | os.PathLike[str] | Sequence[Image.Image],
         offload_video_to_cpu: bool = False,
         offload_state_to_cpu: bool = False,
         async_loading_frames: bool = False,
@@ -178,10 +227,10 @@ class Sam3VideoInference:
         inference_state: dict[str, Any],
         frame_idx: int,
         text_str: str | None = None,
-        boxes_xywh=None,
-        box_labels=None,
-        points=None,
-        point_labels=None,
+        boxes_xywh: object | None = None,
+        box_labels: object | None = None,
+        points: object | None = None,
+        point_labels: object | None = None,
         obj_id: int | None = None,
         rel_coordinates: bool = True,
         output_prob_thresh: float | None = None,
@@ -248,7 +297,7 @@ class Sam3VideoInference:
         max_frame_num_to_track: int | None = None,
         output_prob_thresh: float | None = None,
         reverse: bool = False,
-    ):
+    ) -> Generator[tuple[int, dict[str, np.ndarray]], None, None]:
         processing_order, _ = self._get_processing_order(
             inference_state,
             start_frame_idx=start_frame_idx,
@@ -282,7 +331,7 @@ class Sam3VideoInference:
         obj_id: int,
         frame_idx: int = 0,
         is_user_action: bool = True,
-    ):
+    ) -> NoReturn:
         del inference_state, obj_id, frame_idx, is_user_action
         raise_unsupported(
             "Sam3VideoInference.remove_object",
@@ -304,32 +353,40 @@ class Sam3VideoInference:
         max_frame_num_to_track: int | None,
         reverse: bool,
     ) -> tuple[range, int]:
-        num_frames = inference_state["num_frames"]
-        previous_stages_out = inference_state["previous_stages_out"]
+        num_frames = cast(int, inference_state["num_frames"])
+        previous_stages_out = cast(
+            list[object | None], inference_state["previous_stages_out"]
+        )
         if all(out is None for out in previous_stages_out) and start_frame_idx is None:
             raise RuntimeError(
                 "No prompts are received on any frames. Please add prompt on at "
                 "least one frame before propagation."
             )
         if start_frame_idx is None:
-            start_frame_idx = min(
+            resolved_start_frame_idx = min(
                 t for t, out in enumerate(previous_stages_out) if out is not None
             )
+        else:
+            resolved_start_frame_idx = start_frame_idx
         self._assert_frame_idx(
-            inference_state, start_frame_idx, name="start_frame_index"
+            inference_state, resolved_start_frame_idx, name="start_frame_index"
         )
         if max_frame_num_to_track is None:
-            max_frame_num_to_track = num_frames
-        if max_frame_num_to_track < 0:
+            resolved_max_frames = num_frames
+        else:
+            resolved_max_frames = max_frame_num_to_track
+        if resolved_max_frames < 0:
             raise ValueError("max_frame_num_to_track must be non-negative.")
         if reverse:
-            end_frame_idx = max(start_frame_idx - max_frame_num_to_track, 0)
-            processing_order = range(start_frame_idx - 1, end_frame_idx - 1, -1)
+            end_frame_idx = max(resolved_start_frame_idx - resolved_max_frames, 0)
+            processing_order = range(
+                resolved_start_frame_idx - 1, end_frame_idx - 1, -1
+            )
         else:
             end_frame_idx = min(
-                start_frame_idx + max_frame_num_to_track, num_frames - 1
+                resolved_start_frame_idx + resolved_max_frames, num_frames - 1
             )
-            processing_order = range(start_frame_idx, end_frame_idx + 1)
+            processing_order = range(resolved_start_frame_idx, end_frame_idx + 1)
         return processing_order, end_frame_idx
 
     def _run_frame_prompt(
@@ -396,11 +453,20 @@ class Sam3VideoInference:
             removed_obj_ids=inference_state["removed_obj_ids"],
         )
 
-    def _get_frame_image_state(self, inference_state, *, frame_idx, processor):
-        cache = inference_state["frame_feature_cache"]
+    def _get_frame_image_state(
+        self,
+        inference_state: dict[str, Any],
+        *,
+        frame_idx: int,
+        processor: _ImageProcessor,
+    ) -> dict[str, Any]:
+        cache = cast(
+            OrderedDict[int, dict[str, Any]], inference_state["frame_feature_cache"]
+        )
         cached_state = cache.pop(frame_idx, None)
         if cached_state is None:
-            frame = inference_state["frames"][frame_idx]
+            frames = cast(VideoFrameSource, inference_state["frames"])
+            frame = frames[frame_idx]
             encoded_state = processor.set_image(frame)
             cached_state = dict(encoded_state)
             if "backbone_out" in cached_state:
@@ -413,12 +479,12 @@ class Sam3VideoInference:
             frame_state["backbone_out"] = dict(frame_state["backbone_out"])
         return frame_state
 
-    def _make_processor(self, output_prob_thresh: float | None):
+    def _make_processor(self, output_prob_thresh: float | None) -> _ImageProcessor:
         factory = self.processor_factory
         if factory is None:
             from sam3_mlx.model.sam3_image_processor import Sam3Processor
 
-            factory = Sam3Processor
+            factory = cast(ProcessorFactory, Sam3Processor)
         return factory(
             self.image_model,
             resolution=self.image_size,
@@ -450,14 +516,14 @@ class Sam3VideoInferenceWithInstanceInteractivity(Sam3VideoInference):
         inference_state: dict[str, Any],
         frame_idx: int,
         text_str: str | None = None,
-        boxes_xywh=None,
-        box_labels=None,
-        points=None,
-        point_labels=None,
+        boxes_xywh: object | None = None,
+        box_labels: object | None = None,
+        points: object | None = None,
+        point_labels: object | None = None,
         obj_id: int | None = None,
         rel_coordinates: bool = True,
         output_prob_thresh: float | None = None,
-    ):
+    ) -> tuple[int, dict[str, np.ndarray]]:
         if points is not None:
             if text_str is not None or boxes_xywh is not None:
                 raise AssertionError(
@@ -501,12 +567,12 @@ class Sam3VideoInferenceWithInstanceInteractivity(Sam3VideoInference):
         inference_state: dict[str, Any],
         frame_idx: int,
         obj_id: int,
-        points,
-        labels,
+        points: object,
+        labels: object,
         rel_coordinates: bool = True,
         use_prev_mem_frame: bool = False,
         output_prob_thresh: float | None = None,
-    ):
+    ) -> tuple[int, dict[str, np.ndarray]]:
         del use_prev_mem_frame
         return super().add_prompt(
             inference_state=inference_state,
@@ -533,8 +599,8 @@ def is_image_type(resource_path: str) -> bool:
 
 
 def _coerce_boxes(
-    boxes_xywh,
-    box_labels,
+    boxes_xywh: object | None,
+    box_labels: object | None,
     rel_coordinates: bool,
     orig_height: int,
     orig_width: int,
@@ -581,8 +647,8 @@ def _coerce_boxes(
 
 
 def _coerce_points(
-    points,
-    point_labels,
+    points: object | None,
+    point_labels: object | None,
     rel_coordinates: bool,
     orig_height: int,
     orig_width: int,
@@ -672,7 +738,7 @@ def _state_to_video_outputs(
     }
 
 
-def _evaluate_if_mlx(*values) -> None:
+def _evaluate_if_mlx(*values: object | None) -> None:
     live_values = [value for value in values if value is not None]
     if not live_values:
         return
@@ -685,7 +751,9 @@ def _evaluate_if_mlx(*values) -> None:
         eval_fn(*live_values)
 
 
-def _coerce_masks(value, orig_height: int, orig_width: int) -> np.ndarray:
+def _coerce_masks(
+    value: object | None, orig_height: int, orig_width: int
+) -> np.ndarray:
     if value is None:
         return np.zeros((0, orig_height, orig_width), dtype=bool)
     masks = np.asarray(value)
@@ -698,7 +766,7 @@ def _coerce_masks(value, orig_height: int, orig_width: int) -> np.ndarray:
     return masks.astype(bool, copy=False)
 
 
-def _coerce_scores(value, count: int) -> np.ndarray:
+def _coerce_scores(value: object | None, count: int) -> np.ndarray:
     if value is None:
         return np.zeros((count,), dtype=np.float32)
     scores = np.asarray(value, dtype=np.float32).reshape(-1)
@@ -719,15 +787,6 @@ def _filter_outputs_by_removed_obj_ids(
         "out_probs": outputs["out_probs"][keep],
         "out_boxes_xywh": outputs["out_boxes_xywh"][keep],
         "out_binary_masks": outputs["out_binary_masks"][keep],
-    }
-
-
-def _empty_video_outputs(orig_height: int, orig_width: int) -> dict[str, np.ndarray]:
-    return {
-        "out_obj_ids": np.zeros((0,), dtype=np.int64),
-        "out_probs": np.zeros((0,), dtype=np.float32),
-        "out_boxes_xywh": np.zeros((0, 4), dtype=np.float32),
-        "out_binary_masks": np.zeros((0, orig_height, orig_width), dtype=bool),
     }
 
 

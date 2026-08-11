@@ -2,19 +2,46 @@ from __future__ import annotations
 
 import gc
 import inspect
+import os
 from threading import Event, RLock
 import time
 import uuid
-from typing import Any
+from collections.abc import Generator, Sequence
+from typing import Any, Protocol, cast
+
+from PIL import Image
 
 from sam3_mlx._unsupported import raise_unsupported
+
+
+class _SessionModel(Protocol):
+    def init_state(self, **kwargs: Any) -> dict[str, Any]: ...
+
+    def add_prompt(self, **kwargs: Any) -> tuple[int, Any]: ...
+
+    def remove_object(
+        self, *args: Any, **kwargs: Any
+    ) -> object | tuple[object, object] | None: ...
+
+    def cancel_propagation(self, inference_state: dict[str, Any]) -> None: ...
+
+    def propagate_in_video(
+        self, **kwargs: Any
+    ) -> Generator[tuple[int, Any], None, None]: ...
+
+    def reset_state(self, inference_state: dict[str, Any]) -> None: ...
 
 
 class Sam3BasePredictor:
     """Torch-free request dispatcher matching the official SAM3 video API."""
 
+    async_loading_frames: bool
+    default_output_prob_thresh: float
+    session_expiration_sec: float | None
+    video_loader_type: str
+
     def __init__(self) -> None:
-        self.model = None
+        self.model: object | None = None
         self._all_inference_states: dict[str, dict[str, Any]] = {}
         self._sessions_lock = RLock()
         self._reserved_session_ids: set[str] = set()
@@ -80,7 +107,9 @@ class Sam3BasePredictor:
             )
         raise RuntimeError(f"invalid request type: {request_type}")
 
-    def handle_stream_request(self, request: dict[str, Any]):
+    def handle_stream_request(
+        self, request: dict[str, Any]
+    ) -> Generator[dict[str, Any], None, None]:
         request_type = request["type"]
         if request_type == "propagate_in_video":
             yield from self.propagate_in_video(
@@ -98,13 +127,12 @@ class Sam3BasePredictor:
 
     def start_session(
         self,
-        resource_path,
+        resource_path: str | os.PathLike[str] | Sequence[Image.Image],
         session_id: str | None = None,
         offload_video_to_cpu: bool = False,
         offload_state_to_cpu: bool = False,
     ) -> dict[str, str]:
-        if self.model is None:
-            raise RuntimeError("Sam3BasePredictor.model must be initialized.")
+        model = self._require_model()
         if session_id is None:
             session_id = str(uuid.uuid4())
         with self._sessions_lock:
@@ -130,7 +158,7 @@ class Sam3BasePredictor:
         if hasattr(self, "video_loader_type"):
             init_kwargs["video_loader_type"] = self.video_loader_type
         try:
-            inference_state = self.model.init_state(**init_kwargs)
+            inference_state = model.init_state(**init_kwargs)
         except BaseException:
             with self._sessions_lock:
                 self._reserved_session_ids.discard(session_id)
@@ -139,8 +167,7 @@ class Sam3BasePredictor:
 
         now = time.monotonic()
         cancel_event = Event()
-        if isinstance(inference_state, dict):
-            inference_state["_cancel_event"] = cancel_event
+        inference_state["_cancel_event"] = cancel_event
         session = {
             "state": inference_state,
             "session_id": session_id,
@@ -191,17 +218,18 @@ class Sam3BasePredictor:
         session_id: str,
         frame_idx: int,
         text: str | None = None,
-        points=None,
-        point_labels=None,
+        points: object | None = None,
+        point_labels: object | None = None,
         clear_old_points: bool = True,
-        bounding_boxes=None,
-        bounding_box_labels=None,
+        bounding_boxes: object | None = None,
+        bounding_box_labels: object | None = None,
         clear_old_boxes: bool = True,
         output_prob_thresh: float = 0.5,
         obj_id: int | None = None,
         rel_coordinates: bool = True,
     ) -> dict[str, Any]:
         session = self._get_session(session_id)
+        model = self._require_model()
         with session["lock"]:
             self._ensure_session_open(session)
             self._extend_expiration_time(session)
@@ -222,7 +250,7 @@ class Sam3BasePredictor:
             if obj_id is not None:
                 prompt_kwargs["obj_id"] = obj_id
 
-            signature = inspect.signature(self.model.add_prompt)
+            signature = inspect.signature(model.add_prompt)
             valid_params = set(signature.parameters)
             if not clear_old_points and "clear_old_points" not in valid_params:
                 raise_unsupported(
@@ -246,10 +274,12 @@ class Sam3BasePredictor:
                     alternative="Omit obj_id.",
                 )
             filtered_kwargs = {
-                key: value for key, value in prompt_kwargs.items() if key in valid_params
+                key: value
+                for key, value in prompt_kwargs.items()
+                if key in valid_params
             }
 
-            frame_idx, outputs = self.model.add_prompt(**filtered_kwargs)
+            frame_idx, outputs = model.add_prompt(**filtered_kwargs)
         return {"frame_index": frame_idx, "outputs": outputs}
 
     def remove_object(
@@ -260,11 +290,12 @@ class Sam3BasePredictor:
         is_user_action: bool = True,
     ) -> dict[str, Any]:
         session = self._get_session(session_id)
+        model = self._require_model()
         with session["lock"]:
             self._ensure_session_open(session)
             self._extend_expiration_time(session)
             self._reject_or_invalidate_if_propagating(session, action="remove_object")
-            result = self.model.remove_object(
+            result = model.remove_object(
                 session["state"],
                 obj_id=obj_id,
                 frame_idx=frame_idx,
@@ -287,19 +318,20 @@ class Sam3BasePredictor:
                     ),
                 }
             elif isinstance(result, tuple):
-                _, outputs = result
+                outputs = cast(tuple[object, object], result)[1]
             else:
                 outputs = result
         return {"frame_index": frame_idx, "outputs": outputs}
 
     def cancel_propagation(self, session_id: str) -> dict[str, bool]:
         session = self._get_session(session_id)
+        model = self._require_model()
         with session["lock"]:
             self._ensure_session_open(session)
             self._extend_expiration_time(session)
             session["cancel_event"].set()
             if hasattr(self.model, "cancel_propagation"):
-                self.model.cancel_propagation(session["state"])
+                model.cancel_propagation(session["state"])
         return {"is_success": True}
 
     def propagate_in_video(
@@ -309,9 +341,10 @@ class Sam3BasePredictor:
         start_frame_idx: int | None = None,
         max_frame_num_to_track: int | None = None,
         output_prob_thresh: float = 0.5,
-        **kwargs,
-    ):
+        **kwargs: Any,
+    ) -> Generator[dict[str, Any], None, None]:
         session = self._get_session(session_id)
+        model = self._require_model()
         with session["lock"]:
             self._ensure_session_open(session)
             self._extend_expiration_time(session)
@@ -324,8 +357,8 @@ class Sam3BasePredictor:
                 raise ValueError(
                     f"invalid propagation direction: {propagation_direction}"
                 )
-            signature = inspect.signature(self.model.propagate_in_video)
-            propagate_kwargs = {
+            signature = inspect.signature(model.propagate_in_video)
+            propagate_kwargs: dict[str, Any] = {
                 "inference_state": session["state"],
                 "start_frame_idx": start_frame_idx,
                 "max_frame_num_to_track": max_frame_num_to_track,
@@ -337,14 +370,14 @@ class Sam3BasePredictor:
                     propagate_kwargs[key] = value
             session["propagation_active"] = True
             start_version = session["state_version"]
-        directions = []
+        directions: list[bool] = []
         if propagation_direction in {"both", "forward"}:
             directions.append(False)
         if propagation_direction in {"both", "backward"}:
             directions.append(True)
         try:
             for reverse in directions:
-                generator = self.model.propagate_in_video(
+                generator = model.propagate_in_video(
                     **propagate_kwargs,
                     reverse=reverse,
                 )
@@ -373,11 +406,12 @@ class Sam3BasePredictor:
 
     def reset_session(self, session_id: str) -> dict[str, bool]:
         session = self._get_session(session_id)
+        model = self._require_model()
         with session["lock"]:
             self._ensure_session_open(session)
             self._extend_expiration_time(session)
             self._reject_or_invalidate_if_propagating(session, action="reset_session")
-            self.model.reset_state(session["state"])
+            model.reset_state(session["state"])
         return {"is_success": True}
 
     @staticmethod
@@ -437,6 +471,11 @@ class Sam3BasePredictor:
             )
         return session
 
+    def _require_model(self) -> _SessionModel:
+        if self.model is None:
+            raise RuntimeError("Sam3BasePredictor.model must be initialized.")
+        return cast(_SessionModel, self.model)
+
     @staticmethod
     def _ensure_session_open(session: dict[str, Any]) -> None:
         if session["closing"] or session["closed"]:
@@ -461,14 +500,15 @@ class Sam3BasePredictor:
             session["propagation_active"] = False
             state = session.get("state")
             if isinstance(state, dict):
-                frames = state.get("frames")
+                state_dict = cast(dict[str, Any], state)
+                frames = state_dict.get("frames")
                 close = getattr(frames, "close", None)
                 if callable(close):
                     try:
                         close()
                     except BaseException as exc:
                         close_error = exc
-                state.clear()
+                state_dict.clear()
             session["closed"] = True
         if close_error is not None:
             raise RuntimeError(
@@ -485,7 +525,8 @@ class Sam3BasePredictor:
                     continue
                 state = session.get("state")
                 if isinstance(state, dict) and "num_frames" in state:
-                    snapshot.append((session_id, int(state["num_frames"])))
+                    state_dict = cast(dict[str, Any], state)
+                    snapshot.append((session_id, int(state_dict["num_frames"])))
         return snapshot
 
     def shutdown(self) -> None:
