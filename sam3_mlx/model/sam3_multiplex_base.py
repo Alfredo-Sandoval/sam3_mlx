@@ -5,7 +5,17 @@ from collections.abc import Mapping, Sequence
 from enum import Enum
 import math
 import os
-from typing import Any, NoReturn, Protocol, TypeAlias, TypeGuard, TypeVar, cast
+from typing import (
+    Any,
+    NoReturn,
+    NotRequired,
+    Protocol,
+    TypeAlias,
+    TypeGuard,
+    TypedDict,
+    TypeVar,
+    cast,
+)
 
 import mlx.core as mx
 from mlx import nn
@@ -30,7 +40,15 @@ from sam3_mlx.model.multiplex_utils import raise_unsupported_multiplex_runtime
 SAM3_COLLECTIVE_OP_TIMEOUT_SEC = 180
 NumpyArray: TypeAlias = NDArray[np.generic]
 IntArray: TypeAlias = NDArray[np.int64]
+BoolArray: TypeAlias = NDArray[np.bool_]
+FeatureCache: TypeAlias = dict[str | int, object]
 MetadataValue = TypeVar("MetadataValue")
+
+
+class DetectionOutput(TypedDict):
+    mask: mx.array
+    scores: mx.array
+    bbox: NotRequired[mx.array]
 
 
 class _MultiplexControllerView(Protocol):
@@ -40,6 +58,18 @@ class _MultiplexControllerView(Protocol):
 
 class _BucketStateView(Protocol):
     num_buckets: int
+
+
+class _GroundingCall(Protocol):
+    def __call__(
+        self, **kwargs: object
+    ) -> tuple[Mapping[str, TrackerArray], object]: ...
+
+
+class _TextForwardCall(Protocol):
+    def __call__(
+        self, text_batch: object, *, device: str
+    ) -> Mapping[str, TrackerArray]: ...
 
 
 def _require_multiplex_controller(tracker: object) -> _MultiplexControllerView:
@@ -60,8 +90,64 @@ def _is_bucket_state(value: object) -> TypeGuard[_BucketStateView]:
     return isinstance(getattr(value, "num_buckets", None), int)
 
 
+def _require_grounding_call(detector: object, method_name: str) -> _GroundingCall:
+    method: object = getattr(detector, method_name, None)
+    if not callable(method):
+        raise_unsupported_multiplex_runtime(
+            f"Sam3MultiplexBase detector.{method_name}"
+        )
+    return cast(_GroundingCall, method)
+
+
+def _require_text_forward(detector: object) -> _TextForwardCall:
+    backbone: object = getattr(detector, "backbone", None)
+    method: object = getattr(backbone, "forward_text", None)
+    if not callable(method):
+        raise_unsupported_multiplex_runtime(
+            "Sam3MultiplexBase detector.backbone.forward_text"
+        )
+    return cast(_TextForwardCall, method)
+
+
 def _is_mlx_array(value: object) -> TypeGuard[mx.array]:
     return value.__class__.__module__.startswith("mlx.")
+
+
+def _is_tracker_array(value: object) -> TypeGuard[TrackerArray]:
+    return _is_mlx_array(value) or isinstance(value, np.ndarray)
+
+
+def _require_text_outputs(value: object) -> dict[str, TrackerArray]:
+    if not isinstance(value, Mapping):
+        raise TypeError("detector text outputs must be a mapping")
+    outputs: dict[str, TrackerArray] = {}
+    for key, item in cast(Mapping[object, object], value).items():
+        if not isinstance(key, str) or not _is_tracker_array(item):
+            raise TypeError("detector text outputs must map strings to arrays")
+        outputs[key] = item
+    return outputs
+
+
+def _text_outputs_for_batch(
+    detector: object,
+    feature_cache: FeatureCache,
+    text_batch: object,
+    *,
+    device: str,
+) -> dict[str, TrackerArray]:
+    if not isinstance(text_batch, Sequence):
+        raise TypeError("detector text batches must be sequences")
+    text_batch_values = cast(Sequence[object], text_batch)
+    text_batch_key = tuple(text_batch_values)
+    text_cache: object = feature_cache.get("text")
+    if isinstance(text_cache, Mapping) and text_batch_key in text_cache:
+        cached = cast(Mapping[object, object], text_cache)[text_batch_key]
+        return _require_text_outputs(cached)
+    text_outputs = _require_text_outputs(
+        _require_text_forward(detector)(text_batch_values, device=device)
+    )
+    feature_cache["text"] = {text_batch_key: text_outputs}
+    return text_outputs
 
 
 def _array_to_numpy(
@@ -1224,9 +1310,11 @@ class Sam3MultiplexBase(Sam3VideoBase):
             if _is_mlx_array(gpu_metadata["removed_mask"])
             else mx.array(gpu_metadata["removed_mask"])
         ).astype(mx.bool_)
-        keep_indices_np = np.nonzero(
-            ~_array_to_numpy(removed_mask, dtype=bool).reshape(-1)
-        )[0].astype(np.int64)
+        removed_mask_np = cast(
+            BoolArray,
+            _array_to_numpy(removed_mask, dtype=bool),
+        ).reshape(-1)
+        keep_indices_np = np.nonzero(~removed_mask_np)[0].astype(np.int64)
         keep_indices = mx.array(keep_indices_np, dtype=mx.int64)
         compacted: dict[str, Any] = {"N_obj": int(keep_indices_np.size)}
         for key in (
@@ -1448,7 +1536,8 @@ class Sam3MultiplexBase(Sam3VideoBase):
                         [],
                     ).append(frame_idx_int)
 
-        for (first_obj_id, obj_id), frame_indices in overlap_pair_to_frame_inds.items():
+        for object_pair, frame_indices in overlap_pair_to_frame_inds.items():
+            obj_id = object_pair[1]
             obj_id_int = int(obj_id)
             if obj_id_int in removed_obj_ids or obj_id_int in obj_ids_newly_removed:
                 continue
@@ -1466,7 +1555,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
         frame_idx: int,
         num_frames: int,
         reverse: bool,
-        det_out: dict[str, Any],
+        det_out: DetectionOutput,
         tracker_low_res_masks_global: Any,
         tracker_obj_scores_global: Any,
         tracker_metadata_prev: dict[str, Any],
@@ -1629,9 +1718,14 @@ class Sam3MultiplexBase(Sam3VideoBase):
 
     def _normalize_image_only_detection_output(
         self,
-        sam3_image_out: dict[str, Any],
-    ) -> tuple[Any, Any, Any | None]:
-        pred_logits = sam3_image_out["pred_logits"]
+        sam3_image_out: Mapping[str, TrackerArray],
+    ) -> tuple[mx.array, mx.array, mx.array | None]:
+        pred_logits_value = sam3_image_out["pred_logits"]
+        pred_logits = (
+            pred_logits_value
+            if _is_mlx_array(pred_logits_value)
+            else mx.array(pred_logits_value)
+        )
         if pred_logits.ndim == 3 and pred_logits.shape[0] == 1:
             pred_logits = pred_logits[0]
         if pred_logits.ndim == 2 and pred_logits.shape[-1] == 1:
@@ -1643,7 +1737,12 @@ class Sam3MultiplexBase(Sam3VideoBase):
             )
         pred_scores = mx.sigmoid(pred_logits)
 
-        pred_masks = sam3_image_out["pred_masks"]
+        pred_masks_value = sam3_image_out["pred_masks"]
+        pred_masks = (
+            pred_masks_value
+            if _is_mlx_array(pred_masks_value)
+            else mx.array(pred_masks_value)
+        )
         if (
             pred_masks.ndim == 5
             and pred_masks.shape[0] == 1
@@ -1688,9 +1787,9 @@ class Sam3MultiplexBase(Sam3VideoBase):
 
     def _normalize_video_detection_outputs(
         self,
-        det_out: dict[str, Any],
-        det_keep: Any,
-    ) -> tuple[dict[str, Any], Any]:
+        det_out: DetectionOutput,
+        det_keep: TrackerArray,
+    ) -> tuple[DetectionOutput, mx.array]:
         det_masks = det_out["mask"]
         det_masks = det_masks if _is_mlx_array(det_masks) else mx.array(det_masks)
         if det_masks.ndim == 4 and det_masks.shape[0] == 1:
@@ -1739,16 +1838,16 @@ class Sam3MultiplexBase(Sam3VideoBase):
             if bbox_mx.ndim == 3 and bbox_mx.shape[0] == 1:
                 bbox_mx = bbox_mx[0]
             normalized["bbox"] = bbox_mx
-        return normalized, det_keep_mx.astype(mx.bool_)
+        return cast(DetectionOutput, normalized), det_keep_mx.astype(mx.bool_)
 
     def _image_only_detection_keep_indices(
         self,
-        pred_scores: Any,
-        pred_masks: Any,
-        pred_boxes: Any | None = None,
+        pred_scores: mx.array,
+        pred_masks: mx.array,
+        pred_boxes: mx.array | None = None,
         *,
         apply_boundary_suppression: bool = False,
-    ) -> tuple[np.ndarray, int]:
+    ) -> tuple[IntArray, int]:
         del pred_masks
         keep = pred_scores >= self.image_only_det_thresh
         detector_keep = pred_scores > self.score_threshold_detection
@@ -1763,11 +1862,12 @@ class Sam3MultiplexBase(Sam3VideoBase):
         # Match the official no-tracklet image-only startup path: image prompt
         # outputs are thresholded, not reduced by the video object limit, and
         # assigned object IDs after the detector keep-mask true-first partition.
-        keep_np = to_numpy(keep, dtype=bool, copy=False).reshape(-1)
-        detector_keep_np = to_numpy(
-            detector_keep,
-            dtype=bool,
-            copy=False,
+        keep_np = cast(
+            BoolArray, to_numpy(keep, dtype=bool, copy=False)
+        ).reshape(-1)
+        detector_keep_np = cast(
+            BoolArray,
+            to_numpy(detector_keep, dtype=bool, copy=False),
         ).reshape(-1)
         sorted_indices = _torch_bool_argsort_desc_np(detector_keep_np)
         keep_indices = sorted_indices[keep_np[sorted_indices]].astype(np.int64)
@@ -1777,14 +1877,20 @@ class Sam3MultiplexBase(Sam3VideoBase):
         self,
         *,
         frame_idx: int,
-        pred_scores: Any,
-        pred_masks: Any,
+        pred_scores: mx.array,
+        pred_masks: mx.array,
         tracker_metadata_prev: dict[str, Any],
         orig_vid_height: int,
         orig_vid_width: int,
-        pred_boxes: Any | None = None,
+        pred_boxes: mx.array | None = None,
         apply_boundary_suppression: bool = False,
-    ) -> tuple[dict[int, Any], dict[int, float], dict[str, Any], dict[str, int], Any]:
+    ) -> tuple[
+        dict[int, mx.array],
+        dict[int, float],
+        dict[str, Any],
+        dict[str, int],
+        mx.array,
+    ]:
         keep_indices, num_dropped = self._image_only_detection_keep_indices(
             pred_scores,
             pred_masks,
@@ -1813,7 +1919,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
                 else 0
             )
 
-        obj_id_to_mask: dict[int, Any] = {}
+        obj_id_to_mask: dict[int, mx.array] = {}
         obj_id_to_score: dict[int, float] = {}
         if keep_indices.size > 0:
             selected = mx.array(keep_indices, dtype=mx.int64)
@@ -1886,7 +1992,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
         input_batch: Any,
         geometric_prompt: Any,
         tracker_metadata_prev: dict[str, Any],
-        feature_cache: dict[str, Any],
+        feature_cache: FeatureCache,
         orig_vid_height: int,
         orig_vid_width: int,
     ) -> tuple[
@@ -1912,18 +2018,12 @@ class Sam3MultiplexBase(Sam3VideoBase):
             pred_masks = det_out["mask"]
             pred_boxes = det_out.get("bbox")
         else:
-            text_batch_key = tuple(input_batch.find_text_batch)
-            if (
-                "text" not in feature_cache
-                or text_batch_key not in feature_cache["text"]
-            ):
-                text_outputs = self.detector.backbone.forward_text(
-                    input_batch.find_text_batch,
-                    device=self.device,
-                )
-                feature_cache["text"] = {text_batch_key: text_outputs}
-            else:
-                text_outputs = feature_cache["text"][text_batch_key]
+            text_outputs = _text_outputs_for_batch(
+                self.detector,
+                feature_cache,
+                input_batch.find_text_batch,
+                device=self.device,
+            )
 
             backbone_out = {
                 "img_batch_all_stages": input_batch.img_batch,
@@ -1938,19 +2038,25 @@ class Sam3MultiplexBase(Sam3VideoBase):
                 self.detector,
                 "forward_video_grounding_batched_multigpu",
             ):
-                sam3_image_out, _ = (
-                    self.detector.forward_video_grounding_batched_multigpu(
-                        backbone_out=backbone_out,
-                        find_inputs=input_batch.find_inputs,
-                        geometric_prompt=geometric_prompt,
-                        frame_idx=frame_idx,
-                        num_frames=len(input_batch.find_inputs),
-                        grounding_cache=feature_cache.setdefault("grounding_cache", {}),
-                        batch_size=self.batched_grounding_batch_size,
-                    )
+                batched_grounding = _require_grounding_call(
+                    self.detector,
+                    "forward_video_grounding_batched_multigpu",
+                )
+                sam3_image_out, _ = batched_grounding(
+                    backbone_out=backbone_out,
+                    find_inputs=input_batch.find_inputs,
+                    geometric_prompt=geometric_prompt,
+                    frame_idx=frame_idx,
+                    num_frames=len(input_batch.find_inputs),
+                    grounding_cache=feature_cache.setdefault("grounding_cache", {}),
+                    batch_size=self.batched_grounding_batch_size,
                 )
             else:
-                sam3_image_out, _ = self.detector.forward_video_grounding(
+                grounding = _require_grounding_call(
+                    self.detector,
+                    "forward_video_grounding",
+                )
+                sam3_image_out, _ = grounding(
                     backbone_out=backbone_out,
                     find_input=input_batch.find_inputs[frame_idx],
                     find_target=find_target,
@@ -1990,7 +2096,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
         frame_idx: int,
         num_frames: int,
         obj_id_to_mask: dict[int, Any],
-        feature_cache: dict[str, Any],
+        feature_cache: FeatureCache,
         orig_vid_height: int,
         orig_vid_width: int,
     ) -> list[Any]:
@@ -2027,7 +2133,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
         new_obj_ids: Any,
         pred_masks: Any,
         keep_indices: np.ndarray,
-        feature_cache: dict[str, Any],
+        feature_cache: FeatureCache,
         orig_vid_height: int,
         orig_vid_width: int,
     ) -> list[Any]:
@@ -2086,7 +2192,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
         input_batch: Any,
         geometric_prompt: Any,
         tracker_metadata_prev: dict[str, Any],
-        feature_cache: dict[str, Any],
+        feature_cache: FeatureCache,
         orig_vid_height: int,
         orig_vid_width: int,
     ) -> tuple[
@@ -2417,7 +2523,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
     def _recondition_masklets(
         self,
         frame_idx: int,
-        det_out: dict[str, Any],
+        det_out: DetectionOutput,
         trk_id_to_max_iou_high_conf_det: dict[int, int],
         tracker_states_local: list[Any],
         tracker_metadata: dict[str, Any],
@@ -2587,7 +2693,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
     def _should_recondition_from_bbox_iou(
         self,
         *,
-        det_out: dict[str, Any],
+        det_out: DetectionOutput,
         trk_id_to_max_iou_high_conf_det: dict[int, int],
         tracker_metadata_prev: dict[str, Any],
         tracker_low_res_masks_global: Any,
@@ -2681,7 +2787,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
         frame_idx: int,
         num_frames: int,
         reverse: bool,
-        det_out: dict[str, Any],
+        det_out: DetectionOutput,
         det_keep: Any,
         tracker_low_res_masks_global: Any,
         tracker_obj_scores_global: Any,
@@ -2981,7 +3087,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
         tracker_states_local: list[Any],
         orig_vid_height: int,
         orig_vid_width: int,
-        feature_cache: dict[str, Any],
+        feature_cache: FeatureCache,
     ) -> list[Any]:
         new_obj_ids_np = _array_to_numpy(new_obj_ids, dtype=np.int64).reshape(-1)
         if new_obj_ids_np.size == 0:
@@ -3672,12 +3778,12 @@ class Sam3MultiplexBase(Sam3VideoBase):
         frame_idx: int,
         num_frames: int,
         reverse: bool,
-        det_out: dict[str, Any],
+        det_out: DetectionOutput,
         tracker_states_local: list[Any],
         tracker_update_plan: dict[str, Any],
         orig_vid_height: int,
         orig_vid_width: int,
-        feature_cache: dict[str, Any],
+        feature_cache: FeatureCache,
         tracker_metadata_new: dict[str, Any] | None = None,
     ) -> list[Any]:
         new_det_fa_inds = np.asarray(
@@ -3829,7 +3935,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
         geometric_prompt: Any,
         tracker_states_local: list[Any],
         tracker_metadata_prev: dict[str, Any],
-        feature_cache: dict[str, Any],
+        feature_cache: FeatureCache,
         orig_vid_height: int,
         orig_vid_width: int,
         is_image_only: bool = False,
@@ -3964,8 +4070,8 @@ class Sam3MultiplexBase(Sam3VideoBase):
         *,
         frame_idx: int,
         input_batch: Any,
-        sam3_image_out: dict[str, Any],
-        feature_cache: dict[str, Any],
+        sam3_image_out: Mapping[str, TrackerArray],
+        feature_cache: FeatureCache,
     ) -> None:
         def _check_cache_keys(
             keys: tuple[str, ...],
@@ -4063,22 +4169,24 @@ class Sam3MultiplexBase(Sam3VideoBase):
         num_frames: int,
         input_batch: Any,
         geometric_prompt: Any,
-        feature_cache: dict[str, Any],
+        feature_cache: FeatureCache,
         reverse: bool,
         use_batched_grounding: bool = False,
         batched_grounding_batch_size: int = 16,
-    ) -> tuple[dict[str, Any], Any]:
-        text_batch_key = tuple(input_batch.find_text_batch)
-        if "text" not in feature_cache or text_batch_key not in feature_cache["text"]:
-            text_outputs = self.detector.backbone.forward_text(
-                input_batch.find_text_batch,
-                device=self.device,
-            )
-            feature_cache["text"] = {text_batch_key: text_outputs}
-        else:
-            text_outputs = feature_cache["text"][text_batch_key]
+    ) -> tuple[DetectionOutput, mx.array]:
+        text_outputs = _text_outputs_for_batch(
+            self.detector,
+            feature_cache,
+            input_batch.find_text_batch,
+            device=self.device,
+        )
 
-        tracking_bounds = feature_cache.get("tracking_bounds", {})
+        tracking_bounds_value = feature_cache.get("tracking_bounds")
+        tracking_bounds: Mapping[object, object]
+        if isinstance(tracking_bounds_value, Mapping):
+            tracking_bounds = cast(Mapping[object, object], tracking_bounds_value)
+        else:
+            tracking_bounds = {}
         max_frame_num_to_track = tracking_bounds.get("max_frame_num_to_track")
         start_frame_idx = tracking_bounds.get("propagate_in_video_start_frame_idx")
         backbone_out = {
@@ -4087,7 +4195,11 @@ class Sam3MultiplexBase(Sam3VideoBase):
         }
 
         if use_batched_grounding:
-            sam3_image_out, _ = self.detector.forward_video_grounding_batched_multigpu(
+            batched_grounding = _require_grounding_call(
+                self.detector,
+                "forward_video_grounding_batched_multigpu",
+            )
+            sam3_image_out, _ = batched_grounding(
                 backbone_out=backbone_out,
                 find_inputs=input_batch.find_inputs,
                 geometric_prompt=geometric_prompt,
@@ -4106,7 +4218,11 @@ class Sam3MultiplexBase(Sam3VideoBase):
                 batch_size=batched_grounding_batch_size,
             )
         else:
-            sam3_image_out, _ = self.detector.forward_video_grounding_multigpu(
+            grounding = _require_grounding_call(
+                self.detector,
+                "forward_video_grounding_multigpu",
+            )
+            sam3_image_out, _ = grounding(
                 backbone_out=backbone_out,
                 find_inputs=input_batch.find_inputs,
                 geometric_prompt=geometric_prompt,
@@ -4124,7 +4240,12 @@ class Sam3MultiplexBase(Sam3VideoBase):
                 feature_cache=feature_cache,
             )
 
-        pred_logits = sam3_image_out["pred_logits"]
+        pred_logits_value = sam3_image_out["pred_logits"]
+        pred_logits = (
+            pred_logits_value
+            if _is_mlx_array(pred_logits_value)
+            else mx.array(pred_logits_value)
+        )
         pred_probs = mx.sigmoid(pred_logits.squeeze(-1))
         pos_pred_mask = pred_probs > self.score_threshold_detection
         if self.suppress_det_close_to_boundary:
@@ -4132,11 +4253,23 @@ class Sam3MultiplexBase(Sam3VideoBase):
                 sam3_image_out["pred_boxes_xyxy"]
             )
             pos_pred_mask = pos_pred_mask & keep
-        det_out = {
-            "bbox": sam3_image_out["pred_boxes_xyxy"],
-            "mask": sam3_image_out["pred_masks"],
-            "scores": pred_probs,
-        }
+        pred_boxes_value = sam3_image_out["pred_boxes_xyxy"]
+        pred_masks_value = sam3_image_out["pred_masks"]
+        pred_boxes = (
+            pred_boxes_value
+            if _is_mlx_array(pred_boxes_value)
+            else mx.array(pred_boxes_value)
+        )
+        pred_masks = (
+            pred_masks_value
+            if _is_mlx_array(pred_masks_value)
+            else mx.array(pred_masks_value)
+        )
+        det_out = DetectionOutput(
+            bbox=pred_boxes,
+            mask=pred_masks,
+            scores=pred_probs,
+        )
         self._cache_tracker_backbone_features(
             frame_idx=frame_idx,
             input_batch=input_batch,
@@ -4270,7 +4403,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
         geometric_prompt: Any,
         tracker_states_local: list[Any],
         tracker_metadata_prev: dict[str, Any],
-        feature_cache: dict[str, Any],
+        feature_cache: FeatureCache,
         orig_vid_height: int,
         orig_vid_width: int,
         is_image_only: bool = False,
