@@ -1,53 +1,144 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
-# pyre-unsafe
+from __future__ import annotations
+
+from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sequence
+from importlib import import_module
+from numbers import Real
+from typing import Protocol, TypeGuard, TypedDict, cast
 import warnings
-from typing import Dict, List
 
 import numpy as np
+import numpy.typing as npt
 
 
-# Check if Numba is available
-HAS_NUMBA = False
-try:
-    import numba as nb
-
-    HAS_NUMBA = True
-except ImportError:
-    warnings.warn(
-        "Numba not found. Using slower pure Python implementations.", UserWarning
-    )
+type FloatArray = npt.NDArray[np.floating]
+type BoolArray = npt.NDArray[np.bool_]
+type Track = MutableMapping[str, object]
+type TrackGroups = list[list[Track]]
+type TrackIouFunction = Callable[[FloatArray, BoolArray, FloatArray], FloatArray]
+type FrameIouFunction = Callable[[FloatArray, FloatArray], FloatArray]
+type FrameNmsFunction = Callable[[FloatArray, FloatArray, float], list[int]]
 
 
-# -------------------- Helper Functions --------------------
-def is_zero_box(bbox: list) -> bool:
-    """Check if bounding box is invalid"""
+class _TrackDetection(TypedDict):
+    track_idx: int
+    bboxes: FloatArray
+    score: float
+
+
+class _FrameDetection(TypedDict):
+    track_idx: int
+    bbox: FloatArray
+    score: float
+
+
+class _JitDecorator(Protocol):
+    def __call__[**P, R](self, function: Callable[P, R], /) -> Callable[P, R]: ...
+
+
+class _NumbaModule(Protocol):
+    def jit(self, *, nopython: bool, parallel: bool = False) -> _JitDecorator: ...
+
+    def prange(self, stop: int, /) -> Iterable[int]: ...
+
+
+def _load_numba() -> _NumbaModule | None:
+    try:
+        return cast(_NumbaModule, import_module("numba"))
+    except ImportError:
+        warnings.warn(
+            "Numba not found. Using slower pure Python implementations.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return None
+
+
+_numba = _load_numba()
+HAS_NUMBA = _numba is not None
+_parallel_range: Callable[[int], Iterable[int]] = (
+    _numba.prange if _numba is not None else range
+)
+
+
+def _is_sequence(value: object) -> TypeGuard[Sequence[object]]:
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes))
+
+
+def _bbox_values(bbox: object) -> tuple[float, float, float, float] | None:
     if bbox is None:
-        return True
-    return all(x <= 0 for x in bbox[:4]) or len(bbox) < 4
+        return None
+    if not _is_sequence(bbox) or len(bbox) != 4:
+        raise ValueError("bbox must contain exactly four numeric values.")
+    values = tuple(bbox)
+    if not all(isinstance(value, Real) for value in values):
+        raise TypeError("bbox values must be real numbers.")
+    x, y, width, height = cast(tuple[Real, Real, Real, Real], values)
+    return float(x), float(y), float(width), float(height)
 
 
-def convert_bbox_format(bbox: list) -> List[float]:
-    """Convert bbox from (x,y,w,h) to (x1,y1,x2,y2)"""
-    x, y, w, h = bbox
-    return [x, y, x + w, y + h]
+def _track_groups(video_groups: object) -> TrackGroups:
+    if not isinstance(video_groups, Mapping):
+        raise TypeError("video_groups must be a mapping of videos to track lists.")
+    groups: TrackGroups = []
+    for tracks_value in cast(Mapping[object, object], video_groups).values():
+        if not isinstance(tracks_value, list):
+            raise TypeError("each video group must contain a list of tracks.")
+        tracks: list[Track] = []
+        for track_value in cast(list[object], tracks_value):
+            if not isinstance(track_value, MutableMapping):
+                raise TypeError("each track must be a mutable mapping.")
+            tracks.append(cast(Track, track_value))
+        groups.append(tracks)
+    return groups
 
 
-# -------------------- Track-level NMS --------------------
-def process_track_level_nms(video_groups: Dict, nms_threshold: float) -> Dict:
-    """Apply track-level NMS to all videos"""
-    for tracks in video_groups.values():
-        track_detections = []
+def _track_bboxes(track: Track) -> list[object]:
+    bboxes = track.get("bboxes")
+    if not isinstance(bboxes, list):
+        raise TypeError("track 'bboxes' must be a list.")
+    return cast(list[object], bboxes)
 
-        # Process tracks
+
+def _track_score(track: Track) -> float:
+    score = track.get("score")
+    if not isinstance(score, Real):
+        raise TypeError("track 'score' must be a real number.")
+    return float(score)
+
+
+def is_zero_box(bbox: object) -> bool:
+    """Return whether a box is absent or has only non-positive coordinates."""
+
+    values = _bbox_values(bbox)
+    return values is None or all(value <= 0 for value in values)
+
+
+def convert_bbox_format(bbox: object) -> list[float]:
+    """Convert a bbox from ``(x, y, w, h)`` to ``(x1, y1, x2, y2)``."""
+
+    values = _bbox_values(bbox)
+    if values is None:
+        raise ValueError("bbox cannot be None.")
+    x, y, width, height = values
+    return [x, y, x + width, y + height]
+
+
+def process_track_level_nms[T](video_groups: T, nms_threshold: float) -> T:
+    """Apply track-level NMS to all videos, mutating and returning the input."""
+
+    for tracks in _track_groups(video_groups):
+        track_detections: list[_TrackDetection] = []
         for track_idx, track in enumerate(tracks):
-            if not track["bboxes"]:
+            track_bboxes = _track_bboxes(track)
+            if not track_bboxes:
                 continue
 
-            converted_bboxes = []
-            valid_frames = []
-            for bbox in track["bboxes"]:
-                if bbox and not is_zero_box(bbox):
+            converted_bboxes: list[list[float]] = []
+            valid_frames: list[bool] = []
+            for bbox in track_bboxes:
+                if bbox is not None and not is_zero_box(bbox):
                     converted_bboxes.append(convert_bbox_format(bbox))
                     valid_frames.append(True)
                 else:
@@ -58,252 +149,223 @@ def process_track_level_nms(video_groups: Dict, nms_threshold: float) -> Dict:
                 track_detections.append(
                     {
                         "track_idx": track_idx,
-                        "bboxes": np.array(converted_bboxes, dtype=np.float32),
-                        "score": track["score"],
+                        "bboxes": np.asarray(converted_bboxes, dtype=np.float32),
+                        "score": _track_score(track),
                     }
                 )
 
-        # Apply NMS
         if track_detections:
-            scores = np.array([d["score"] for d in track_detections], dtype=np.float32)
-            keep = apply_track_nms(track_detections, scores, nms_threshold)
-
-            # Suppress non-kept tracks
-            for idx, track in enumerate(track_detections):
-                if idx not in keep:
-                    tracks[track["track_idx"]]["bboxes"] = [None] * len(track["bboxes"])
+            scores = np.asarray(
+                [detection["score"] for detection in track_detections],
+                dtype=np.float32,
+            )
+            keep = set(apply_track_nms(track_detections, scores, nms_threshold))
+            for detection_idx, detection in enumerate(track_detections):
+                if detection_idx not in keep:
+                    track = tracks[detection["track_idx"]]
+                    track["bboxes"] = [None] * len(_track_bboxes(track))
 
     return video_groups
 
 
-# -------------------- Frame-level NMS --------------------
-def process_frame_level_nms(video_groups: Dict, nms_threshold: float) -> Dict:
-    """Apply frame-level NMS to all videos"""
-    for tracks in video_groups.values():
+def process_frame_level_nms[T](video_groups: T, nms_threshold: float) -> T:
+    """Apply frame-level NMS to all videos, mutating and returning the input."""
+
+    for tracks in _track_groups(video_groups):
         if not tracks:
             continue
 
-        num_frames = len(tracks[0]["bboxes"])
-
+        num_frames = len(_track_bboxes(tracks[0]))
         for frame_idx in range(num_frames):
-            frame_detections = []
-
-            # Collect valid detections
+            frame_detections: list[_FrameDetection] = []
             for track_idx, track in enumerate(tracks):
-                bbox = track["bboxes"][frame_idx]
-                if bbox and not is_zero_box(bbox):
+                track_bboxes = _track_bboxes(track)
+                if len(track_bboxes) != num_frames:
+                    raise ValueError("tracks in a video must have equal frame counts.")
+                bbox = track_bboxes[frame_idx]
+                if bbox is not None and not is_zero_box(bbox):
                     frame_detections.append(
                         {
                             "track_idx": track_idx,
-                            "bbox": np.array(
+                            "bbox": np.asarray(
                                 convert_bbox_format(bbox), dtype=np.float32
                             ),
-                            "score": track["score"],
+                            "score": _track_score(track),
                         }
                     )
 
-            # Apply NMS
             if frame_detections:
-                bboxes = np.stack([d["bbox"] for d in frame_detections])
-                scores = np.array(
-                    [d["score"] for d in frame_detections], dtype=np.float32
+                bboxes = np.stack([detection["bbox"] for detection in frame_detections])
+                scores = np.asarray(
+                    [detection["score"] for detection in frame_detections],
+                    dtype=np.float32,
                 )
-                keep = apply_frame_nms(bboxes, scores, nms_threshold)
-
-                # Suppress non-kept detections
-                for i, d in enumerate(frame_detections):
-                    if i not in keep:
-                        tracks[d["track_idx"]]["bboxes"][frame_idx] = None
+                keep = set(apply_frame_nms(bboxes, scores, nms_threshold))
+                for detection_idx, detection in enumerate(frame_detections):
+                    if detection_idx not in keep:
+                        track_bboxes = _track_bboxes(tracks[detection["track_idx"]])
+                        track_bboxes[frame_idx] = None
 
     return video_groups
 
 
-# Track-level NMS helpers ------------------------------------------------------
-def compute_track_iou_matrix(
-    bboxes_stacked: np.ndarray, valid_masks: np.ndarray, areas: np.ndarray
-) -> np.ndarray:
-    """IoU matrix computation for track-level NMS with fallback to pure Python"""
+def _compute_track_iou_matrix(
+    bboxes_stacked: FloatArray, valid_masks: BoolArray, areas: FloatArray
+) -> FloatArray:
     num_tracks = bboxes_stacked.shape[0]
     iou_matrix = np.zeros((num_tracks, num_tracks), dtype=np.float32)
-    if HAS_NUMBA:
-        iou_matrix = _compute_track_iou_matrix_numba(bboxes_stacked, valid_masks, areas)
-    else:
-        # Pure Python implementation
-        for i in range(num_tracks):
-            for j in range(i + 1, num_tracks):
-                valid_ij = valid_masks[i] & valid_masks[j]
-                if not valid_ij.any():
-                    continue
-                bboxes_i = bboxes_stacked[i, valid_ij]
-                bboxes_j = bboxes_stacked[j, valid_ij]
-                area_i = areas[i, valid_ij]
-                area_j = areas[j, valid_ij]
-                inter_total = 0.0
-                union_total = 0.0
-                for k in range(bboxes_i.shape[0]):
-                    x1 = max(bboxes_i[k, 0], bboxes_j[k, 0])
-                    y1 = max(bboxes_i[k, 1], bboxes_j[k, 1])
-                    x2 = min(bboxes_i[k, 2], bboxes_j[k, 2])
-                    y2 = min(bboxes_i[k, 3], bboxes_j[k, 3])
-                    inter = max(0, x2 - x1) * max(0, y2 - y1)
-                    union = area_i[k] + area_j[k] - inter
-                    inter_total += inter
-                    union_total += union
-                if union_total > 0:
-                    iou_matrix[i, j] = inter_total / union_total
-                    iou_matrix[j, i] = iou_matrix[i, j]
+    for i in _parallel_range(num_tracks):
+        for j in range(i + 1, num_tracks):
+            valid_ij = valid_masks[i] & valid_masks[j]
+            if not valid_ij.any():
+                continue
+            bboxes_i = bboxes_stacked[i, valid_ij]
+            bboxes_j = bboxes_stacked[j, valid_ij]
+            area_i = areas[i, valid_ij]
+            area_j = areas[j, valid_ij]
+            inter_total = 0.0
+            union_total = 0.0
+            for k in range(bboxes_i.shape[0]):
+                x1 = max(bboxes_i[k, 0], bboxes_j[k, 0])
+                y1 = max(bboxes_i[k, 1], bboxes_j[k, 1])
+                x2 = min(bboxes_i[k, 2], bboxes_j[k, 2])
+                y2 = min(bboxes_i[k, 3], bboxes_j[k, 3])
+                intersection = max(0, x2 - x1) * max(0, y2 - y1)
+                union = area_i[k] + area_j[k] - intersection
+                inter_total += float(intersection)
+                union_total += float(union)
+            if union_total > 0:
+                iou_matrix[i, j] = inter_total / union_total
+                iou_matrix[j, i] = iou_matrix[i, j]
     return iou_matrix
 
 
-if HAS_NUMBA:
+_compute_track_iou_matrix_numba: TrackIouFunction | None = None
+if _numba is not None:
+    _compute_track_iou_matrix_numba = _numba.jit(nopython=True, parallel=True)(
+        _compute_track_iou_matrix
+    )
 
-    @nb.jit(nopython=True, parallel=True)
-    def _compute_track_iou_matrix_numba(bboxes_stacked, valid_masks, areas):
-        """Numba-optimized IoU matrix computation for track-level NMS"""
-        num_tracks = bboxes_stacked.shape[0]
-        iou_matrix = np.zeros((num_tracks, num_tracks), dtype=np.float32)
-        for i in nb.prange(num_tracks):
-            for j in range(i + 1, num_tracks):
-                valid_ij = valid_masks[i] & valid_masks[j]
-                if not valid_ij.any():
-                    continue
-                bboxes_i = bboxes_stacked[i, valid_ij]
-                bboxes_j = bboxes_stacked[j, valid_ij]
-                area_i = areas[i, valid_ij]
-                area_j = areas[j, valid_ij]
-                inter_total = 0.0
-                union_total = 0.0
-                for k in range(bboxes_i.shape[0]):
-                    x1 = max(bboxes_i[k, 0], bboxes_j[k, 0])
-                    y1 = max(bboxes_i[k, 1], bboxes_j[k, 1])
-                    x2 = min(bboxes_i[k, 2], bboxes_j[k, 2])
-                    y2 = min(bboxes_i[k, 3], bboxes_j[k, 3])
-                    inter = max(0, x2 - x1) * max(0, y2 - y1)
-                    union = area_i[k] + area_j[k] - inter
-                    inter_total += inter
-                    union_total += union
-                if union_total > 0:
-                    iou_matrix[i, j] = inter_total / union_total
-                    iou_matrix[j, i] = iou_matrix[i, j]
-        return iou_matrix
+
+def compute_track_iou_matrix(
+    bboxes_stacked: FloatArray, valid_masks: BoolArray, areas: FloatArray
+) -> FloatArray:
+    """Compute pairwise track IoU using Numba when available."""
+
+    if _compute_track_iou_matrix_numba is not None:
+        return _compute_track_iou_matrix_numba(bboxes_stacked, valid_masks, areas)
+    return _compute_track_iou_matrix(bboxes_stacked, valid_masks, areas)
 
 
 def apply_track_nms(
-    track_detections: List[dict], scores: np.ndarray, nms_threshold: float
-) -> List[int]:
-    """Vectorized track-level NMS implementation"""
+    track_detections: Sequence[_TrackDetection],
+    scores: FloatArray,
+    nms_threshold: float,
+) -> list[int]:
+    """Apply NMS using IoU aggregated over each track's valid frames."""
+
     if not track_detections:
         return []
-    bboxes_stacked = np.stack([d["bboxes"] for d in track_detections], axis=0)
-    valid_masks = ~np.isnan(bboxes_stacked).any(axis=2)
+    bboxes_stacked = np.stack(
+        [detection["bboxes"] for detection in track_detections], axis=0
+    )
+    valid_masks = cast(BoolArray, ~np.isnan(bboxes_stacked).any(axis=2))
     areas = (bboxes_stacked[:, :, 2] - bboxes_stacked[:, :, 0]) * (
         bboxes_stacked[:, :, 3] - bboxes_stacked[:, :, 1]
     )
     areas[~valid_masks] = 0
     iou_matrix = compute_track_iou_matrix(bboxes_stacked, valid_masks, areas)
-    keep = []
+    keep: list[int] = []
     order = np.argsort(-scores)
     suppress = np.zeros(len(track_detections), dtype=bool)
     for i in range(len(order)):
-        if not suppress[order[i]]:
-            keep.append(order[i])
-            suppress[order[i:]] = suppress[order[i:]] | (
-                iou_matrix[order[i], order[i:]] >= nms_threshold
-            )
+        current = int(order[i])
+        if not suppress[current]:
+            keep.append(current)
+            remaining = order[i:]
+            suppress[remaining] |= iou_matrix[current, remaining] >= nms_threshold
     return keep
 
 
-# Frame-level NMS helpers ------------------------------------------------------
-def compute_frame_ious(bbox: np.ndarray, bboxes: np.ndarray) -> np.ndarray:
-    """IoU computation for frame-level NMS with fallback to pure Python"""
-    if HAS_NUMBA:
+def _compute_frame_ious(bbox: FloatArray, bboxes: FloatArray) -> FloatArray:
+    ious = np.zeros(len(bboxes), dtype=np.float32)
+    for i in _parallel_range(len(bboxes)):
+        x1 = max(bbox[0], bboxes[i, 0])
+        y1 = max(bbox[1], bboxes[i, 1])
+        x2 = min(bbox[2], bboxes[i, 2])
+        y2 = min(bbox[3], bboxes[i, 3])
+        intersection = max(0, x2 - x1) * max(0, y2 - y1)
+        area1 = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+        area2 = (bboxes[i, 2] - bboxes[i, 0]) * (bboxes[i, 3] - bboxes[i, 1])
+        union = area1 + area2 - intersection
+        ious[i] = intersection / union if union > 0 else 0.0
+    return ious
+
+
+_compute_frame_ious_numba: FrameIouFunction | None = None
+if _numba is not None:
+    _compute_frame_ious_numba = _numba.jit(nopython=True, parallel=True)(
+        _compute_frame_ious
+    )
+
+
+def compute_frame_ious(bbox: FloatArray, bboxes: FloatArray) -> FloatArray:
+    """Compute frame box IoUs using Numba when available."""
+
+    if _compute_frame_ious_numba is not None:
         return _compute_frame_ious_numba(bbox, bboxes)
-    else:
-        # Pure Python implementation
-        ious = np.zeros(len(bboxes), dtype=np.float32)
-        for i in range(len(bboxes)):
-            x1 = max(bbox[0], bboxes[i, 0])
-            y1 = max(bbox[1], bboxes[i, 1])
-            x2 = min(bbox[2], bboxes[i, 2])
-            y2 = min(bbox[3], bboxes[i, 3])
-
-            inter = max(0, x2 - x1) * max(0, y2 - y1)
-            area1 = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
-            area2 = (bboxes[i, 2] - bboxes[i, 0]) * (bboxes[i, 3] - bboxes[i, 1])
-            union = area1 + area2 - inter
-
-            ious[i] = inter / union if union > 0 else 0.0
-        return ious
+    return _compute_frame_ious(bbox, bboxes)
 
 
-if HAS_NUMBA:
+def _apply_frame_nms(
+    bboxes: FloatArray, scores: FloatArray, nms_threshold: float
+) -> list[int]:
+    order = np.argsort(-scores)
+    keep: list[int] = []
+    suppress = np.zeros(len(bboxes), dtype=bool)
+    for i in range(len(order)):
+        current = int(order[i])
+        if not suppress[current]:
+            keep.append(current)
+            remaining = order[i + 1 :]
+            if len(remaining) > 0:
+                ious = _compute_frame_ious(bboxes[current], bboxes[remaining])
+                suppress[remaining] |= ious >= nms_threshold
+    return keep
 
-    @nb.jit(nopython=True, parallel=True)
-    def _compute_frame_ious_numba(bbox, bboxes):
-        """Numba-optimized IoU computation"""
-        ious = np.zeros(len(bboxes), dtype=np.float32)
-        for i in nb.prange(len(bboxes)):
-            x1 = max(bbox[0], bboxes[i, 0])
-            y1 = max(bbox[1], bboxes[i, 1])
-            x2 = min(bbox[2], bboxes[i, 2])
-            y2 = min(bbox[3], bboxes[i, 3])
 
-            inter = max(0, x2 - x1) * max(0, y2 - y1)
-            area1 = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
-            area2 = (bboxes[i, 2] - bboxes[i, 0]) * (bboxes[i, 3] - bboxes[i, 1])
-            union = area1 + area2 - inter
+def _compile_frame_nms(
+    numba: _NumbaModule, compute_ious: FrameIouFunction
+) -> FrameNmsFunction:
+    def accelerated_frame_nms(
+        bboxes: FloatArray, scores: FloatArray, nms_threshold: float
+    ) -> list[int]:
+        order = np.argsort(-scores)
+        keep: list[int] = []
+        suppress = np.zeros(len(bboxes), dtype=np.bool_)
+        for i in range(len(order)):
+            current = int(order[i])
+            if not suppress[current]:
+                keep.append(current)
+                remaining = order[i + 1 :]
+                if len(remaining) > 0:
+                    ious = compute_ious(bboxes[current], bboxes[remaining])
+                    suppress[remaining] |= ious >= nms_threshold
+        return keep
 
-            ious[i] = inter / union if union > 0 else 0.0
-        return ious
+    return numba.jit(nopython=True)(accelerated_frame_nms)
+
+
+_apply_frame_nms_numba: FrameNmsFunction | None = None
+if _numba is not None and _compute_frame_ious_numba is not None:
+    _apply_frame_nms_numba = _compile_frame_nms(_numba, _compute_frame_ious_numba)
 
 
 def apply_frame_nms(
-    bboxes: np.ndarray, scores: np.ndarray, nms_threshold: float
-) -> List[int]:
-    """Frame-level NMS implementation with fallback to pure Python"""
-    if HAS_NUMBA:
+    bboxes: FloatArray, scores: FloatArray, nms_threshold: float
+) -> list[int]:
+    """Apply frame-level NMS using Numba when available."""
+
+    if _apply_frame_nms_numba is not None:
         return _apply_frame_nms_numba(bboxes, scores, nms_threshold)
-    else:
-        # Pure Python implementation
-        order = np.argsort(-scores)
-        keep = []
-        suppress = np.zeros(len(bboxes), dtype=bool)
-
-        for i in range(len(order)):
-            if not suppress[order[i]]:
-                keep.append(order[i])
-                current_bbox = bboxes[order[i]]
-
-                remaining_bboxes = bboxes[order[i + 1 :]]
-                if len(remaining_bboxes) > 0:  # Check if there are any remaining boxes
-                    ious = compute_frame_ious(current_bbox, remaining_bboxes)
-                    suppress[order[i + 1 :]] = suppress[order[i + 1 :]] | (
-                        ious >= nms_threshold
-                    )
-
-        return keep
-
-
-if HAS_NUMBA:
-
-    @nb.jit(nopython=True)
-    def _apply_frame_nms_numba(bboxes, scores, nms_threshold):
-        """Numba-optimized NMS implementation"""
-        order = np.argsort(-scores)
-        keep = []
-        suppress = np.zeros(len(bboxes), dtype=nb.boolean)
-
-        for i in range(len(order)):
-            if not suppress[order[i]]:
-                keep.append(order[i])
-                current_bbox = bboxes[order[i]]
-
-                if i + 1 < len(order):  # Check bounds
-                    ious = _compute_frame_ious_numba(
-                        current_bbox, bboxes[order[i + 1 :]]
-                    )
-                    suppress[order[i + 1 :]] = suppress[order[i + 1 :]] | (
-                        ious >= nms_threshold
-                    )
-
-        return keep
+    return _apply_frame_nms(bboxes, scores, nms_threshold)

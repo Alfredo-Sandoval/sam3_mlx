@@ -68,7 +68,7 @@ def _decode_compressed_rle_counts(counts: str | bytes) -> list[int]:
     return decoded
 
 
-def _normalize_rle_counts(counts: object) -> list[int]:
+def normalize_rle_counts(counts: object) -> list[int]:
     if isinstance(counts, (str, bytes)):
         return _decode_compressed_rle_counts(counts)
     if not isinstance(counts, Iterable):
@@ -209,7 +209,7 @@ def rle_decode(rle: object) -> BoolArray:
     if height < 0 or width < 0:
         raise ValueError("COCO RLE size values must be non-negative.")
 
-    counts = _normalize_rle_counts(counts_value)
+    counts = normalize_rle_counts(counts_value)
     total = height * width
     flat = np.zeros((total,), dtype=bool)
     offset = 0
