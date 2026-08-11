@@ -11,15 +11,41 @@ import functools
 import logging
 import sys
 import uuid
-from typing import Any, Dict, Optional, Union
+from collections.abc import Mapping
+from pathlib import Path
+from typing import IO, Never, Protocol, cast
 
 import numpy as np
+from numpy.typing import NDArray
 
 from sam3_mlx._unsupported import UPSTREAM_COMMIT, raise_unsupported
 from sam3_mlx.train.utils.train_utils import get_machine_local_and_dist_rank, makedir
 
 
-Scalar = Union[np.ndarray, int, float]
+type Scalar = NDArray[np.generic] | int | float
+
+
+class _SummaryWriter(Protocol):
+    def flush(self) -> None: ...
+
+    def close(self) -> None: ...
+
+    def add_scalar(
+        self, name: str, data: Scalar, *, global_step: int, new_style: bool
+    ) -> None: ...
+
+    def add_hparams(
+        self, hparams: Mapping[str, Scalar], meters: Mapping[str, Scalar]
+    ) -> None: ...
+
+
+class _SummaryWriterFactory(Protocol):
+    def __call__(self, *args: object, **kwargs: object) -> _SummaryWriter: ...
+
+
+class _GetValue(Protocol):
+    def get(self, key: str, default: object = None) -> object: ...
+
 
 _UNSUPPORTED_LOGGER_MESSAGE = (
     "TensorBoard logging from official SAM3 training is not implemented in the "
@@ -28,7 +54,7 @@ _UNSUPPORTED_LOGGER_MESSAGE = (
 )
 
 
-def _raise_logger_unsupported(feature: str) -> None:
+def _raise_logger_unsupported(feature: str) -> Never:
     raise_unsupported(
         feature,
         reason="training-loop",
@@ -36,7 +62,8 @@ def _raise_logger_unsupported(feature: str) -> None:
     )
 
 
-def make_tensorboard_logger(log_dir: str, **writer_kwargs: Any):
+def make_tensorboard_logger(log_dir: str, **writer_kwargs: object) -> Never:
+    del log_dir, writer_kwargs
     _raise_logger_unsupported("make_tensorboard_logger")
 
 
@@ -46,14 +73,14 @@ class TensorBoardWriterWrapper:
     def __init__(
         self,
         path: str,
-        *args: Any,
-        filename_suffix: str = None,
-        summary_writer_method: Any = None,
-        **kwargs: Any,
+        *args: object,
+        filename_suffix: str | None = None,
+        summary_writer_method: _SummaryWriterFactory | None = None,
+        **kwargs: object,
     ) -> None:
         if summary_writer_method is None:
             _raise_logger_unsupported("TensorBoardWriterWrapper")
-        self._writer = None
+        self._writer: _SummaryWriter | None = None
         _, self._rank = get_machine_local_and_dist_rank()
         self._path: str = path
         if self._rank == 0:
@@ -66,7 +93,7 @@ class TensorBoardWriterWrapper:
         atexit.register(self.close)
 
     @property
-    def writer(self):
+    def writer(self) -> _SummaryWriter | None:
         return self._writer
 
     @property
@@ -88,7 +115,7 @@ class TensorBoardWriterWrapper:
 class TensorBoardLogger(TensorBoardWriterWrapper):
     """A simple logger for SummaryWriter-like objects."""
 
-    def log_dict(self, payload: Dict[str, Scalar], step: int) -> None:
+    def log_dict(self, payload: Mapping[str, Scalar], step: int) -> None:
         if not self._writer:
             return
         for key, value in payload.items():
@@ -100,7 +127,7 @@ class TensorBoardLogger(TensorBoardWriterWrapper):
         self._writer.add_scalar(name, data, global_step=step, new_style=True)
 
     def log_hparams(
-        self, hparams: Dict[str, Scalar], meters: Dict[str, Scalar]
+        self, hparams: Mapping[str, Scalar], meters: Mapping[str, Scalar]
     ) -> None:
         if not self._writer:
             return
@@ -110,19 +137,23 @@ class TensorBoardLogger(TensorBoardWriterWrapper):
 class Logger:
     """Official-shaped logger aggregator with TensorBoard disabled by default."""
 
-    def __init__(self, logging_conf):
-        tb_config = getattr(logging_conf, "tensorboard_writer", None)
-        if isinstance(logging_conf, dict):
-            tb_config = logging_conf.get("tensorboard_writer")
+    def __init__(self, logging_conf: object):
+        tb_config: object = getattr(logging_conf, "tensorboard_writer", None)
+        if isinstance(logging_conf, Mapping):
+            tb_config = cast(Mapping[str, object], logging_conf).get(
+                "tensorboard_writer"
+            )
         if tb_config:
             should_log = (
-                tb_config.get("should_log", True) if hasattr(tb_config, "get") else True
+                cast(_GetValue, tb_config).get("should_log", True)
+                if hasattr(tb_config, "get")
+                else True
             )
             if should_log:
                 _raise_logger_unsupported("Logger.tensorboard_writer")
-        self.tb_logger: Optional[TensorBoardLogger] = None
+        self.tb_logger: TensorBoardLogger | None = None
 
-    def log_dict(self, payload: Dict[str, Scalar], step: int) -> None:
+    def log_dict(self, payload: Mapping[str, Scalar], step: int) -> None:
         if self.tb_logger:
             self.tb_logger.log_dict(payload, step)
 
@@ -131,14 +162,14 @@ class Logger:
             self.tb_logger.log(name, data, step)
 
     def log_hparams(
-        self, hparams: Dict[str, Scalar], meters: Dict[str, Scalar]
+        self, hparams: Mapping[str, Scalar], meters: Mapping[str, Scalar]
     ) -> None:
         if self.tb_logger:
             self.tb_logger.log_hparams(hparams, meters)
 
 
 @functools.lru_cache(maxsize=None)
-def _cached_log_stream(filename):
+def _cached_log_stream(filename: str | Path) -> IO[str]:
     log_buffer_kb = 10 * 1024
     io = open(filename, mode="a", buffering=log_buffer_kb)
     atexit.register(io.close)
@@ -146,19 +177,19 @@ def _cached_log_stream(filename):
 
 
 def setup_logging(
-    name,
-    output_dir=None,
-    rank=0,
-    log_level_primary="INFO",
-    log_level_secondary="ERROR",
-):
+    name: str,
+    output_dir: str | Path | None = None,
+    rank: int = 0,
+    log_level_primary: int | str = "INFO",
+    log_level_secondary: int | str = "ERROR",
+) -> None:
     """Set up stdout and optional file logging."""
 
     log_filename = None
     if output_dir:
         makedir(output_dir)
         if rank == 0:
-            log_filename = f"{output_dir}/log.txt"
+            log_filename = str(Path(output_dir) / "log.txt")
 
     logger = logging.getLogger(name)
     logger.setLevel(log_level_primary)
@@ -187,7 +218,7 @@ def setup_logging(
     logging.root = logger
 
 
-def shutdown_logging():
+def shutdown_logging() -> None:
     """Close logging streams."""
 
     logging.info("Shutting down loggers...")

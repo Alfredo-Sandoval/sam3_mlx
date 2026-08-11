@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from types import SimpleNamespace
+from typing import cast
 
 import numpy as np
 import pytest
 
 from sam3_mlx.train.utils import checkpoint_utils, distributed, train_utils
+from sam3_mlx.train.data.torch_dataset import TorchDataset
+from sam3_mlx.train.trainer import OptimAMPConf, OptimConf
+from sam3_mlx.train.utils.logger import Logger
 
 
 class _Parameter:
@@ -69,6 +73,21 @@ class _FakeOmegaConf:
 class _ComputedMeter:
     def compute(self) -> dict[str, float]:
         return {"score": 0.75}
+
+
+class _EpochDataset:
+    def __init__(self) -> None:
+        self.epoch = -1
+        self.set_epochs: list[int] = []
+
+    def __len__(self) -> int:
+        return 5
+
+    def __getitem__(self, index: int) -> object:
+        return index
+
+    def set_epoch(self, epoch: int) -> None:
+        self.set_epochs.append(epoch)
 
 
 def test_checkpoint_pattern_filters_preserve_values_and_empty_exclusion_identity():
@@ -217,3 +236,45 @@ def test_duration_and_progress_meter_formatting(caplog: pytest.LogCaptureFixture
     with caplog.at_level("INFO"):
         progress.display(2)
     assert "validation/score: 0.7500" in caplog.text
+
+
+def test_python_batch_loader_is_epoch_deterministic_and_rejects_boolean_epoch():
+    dataset = _EpochDataset()
+    wrapper = TorchDataset(
+        dataset,
+        batch_size=2,
+        num_workers=0,
+        shuffle=True,
+        pin_memory=False,
+        drop_last=False,
+    )
+
+    first = list(wrapper.get_loader(7))
+    second = list(wrapper.get_loader(7))
+
+    assert first == second
+    assert (
+        sum(
+            len(cast(list[object], batch)) for batch in first if isinstance(batch, list)
+        )
+        == 5
+    )
+    assert dataset.epoch == 7
+    assert dataset.set_epochs == [7, 7]
+    with pytest.raises(TypeError, match="epoch"):
+        wrapper.get_loader(True)
+
+
+def test_trainer_amp_config_normalizes_mapping_and_validates_values():
+    config = OptimConf(amp={"enabled": True, "amp_dtype": "bfloat16"})
+
+    assert config.amp == OptimAMPConf(enabled=True, amp_dtype="bfloat16")
+    with pytest.raises(TypeError, match="Unexpected amp keys"):
+        OptimConf(amp={"unknown": True})
+    with pytest.raises(TypeError, match="enabled must be bool"):
+        OptimConf(amp={"enabled": 1})
+
+
+def test_logger_tensorboard_config_remains_fail_fast():
+    with pytest.raises(NotImplementedError, match="Logger.tensorboard_writer"):
+        Logger({"tensorboard_writer": {"should_log": True}})

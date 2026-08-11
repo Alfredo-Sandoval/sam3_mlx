@@ -7,21 +7,40 @@
 from __future__ import annotations
 
 import random
-from typing import Callable, Iterable, Optional
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from typing import Protocol, cast
 
 from sam3_mlx._unsupported import raise_unsupported
 
 MLX_TORCH_DATASET_BASE_COMMIT = "13ec0366cb85f7a025a9a36af94fa9eb9599b9d9"
 
 
+class _MapDataset(Protocol):
+    def __len__(self) -> int: ...
+
+    def __getitem__(self, index: int) -> object: ...
+
+
+class _EpochAttribute(Protocol):
+    epoch: int
+
+
+class _SetEpoch(Protocol):
+    def set_epoch(self, epoch: int) -> None: ...
+
+
+class _SetCurrentEpoch(Protocol):
+    def set_curr_epoch(self, epoch: int) -> None: ...
+
+
 class _PythonBatchLoader:
     def __init__(
         self,
-        dataset,
-        indices,
+        dataset: _MapDataset,
+        indices: Sequence[int],
         batch_size: int,
         drop_last: bool,
-        collate_fn: Optional[Callable],
+        collate_fn: Callable[[list[object]], object] | None,
     ) -> None:
         self.dataset = dataset
         self.indices = indices
@@ -29,8 +48,8 @@ class _PythonBatchLoader:
         self.drop_last = drop_last
         self.collate_fn = collate_fn
 
-    def __iter__(self):
-        batch = []
+    def __iter__(self) -> Iterator[object]:
+        batch: list[object] = []
         for index in self.indices:
             batch.append(self.dataset[index])
             if len(batch) == self.batch_size:
@@ -39,7 +58,7 @@ class _PythonBatchLoader:
         if batch and not self.drop_last:
             yield self.collate_fn(batch) if self.collate_fn is not None else batch
 
-    def __len__(self):
+    def __len__(self) -> int:
         full_batches, remainder = divmod(len(self.indices), self.batch_size)
         return full_batches if self.drop_last or remainder == 0 else full_batches + 1
 
@@ -49,15 +68,15 @@ class TorchDataset:
 
     def __init__(
         self,
-        dataset,
+        dataset: object,
         batch_size: int,
         num_workers: int,
         shuffle: bool,
         pin_memory: bool,
         drop_last: bool,
-        collate_fn: Optional[Callable] = None,
-        worker_init_fn: Optional[Callable] = None,
-        enable_distributed_sampler=False,
+        collate_fn: Callable[[list[object]], object] | None = None,
+        worker_init_fn: Callable[[int], None] | None = None,
+        enable_distributed_sampler: bool = False,
     ) -> None:
         if batch_size < 1:
             raise ValueError("batch_size must be >= 1")
@@ -91,7 +110,7 @@ class TorchDataset:
                 reason="training-loop",
                 detail="The MLX wrapper only supports map-style Python datasets.",
             )
-        self.dataset = dataset
+        self.dataset = cast(_MapDataset, dataset)
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.shuffle = shuffle
@@ -100,13 +119,15 @@ class TorchDataset:
         self.collate_fn = collate_fn
         self.worker_init_fn = worker_init_fn
 
-    def get_loader(self, epoch) -> Iterable:
+    def get_loader(self, epoch: int) -> Iterable[object]:
+        if isinstance(epoch, bool):
+            raise TypeError("epoch must be an integer, not bool.")
         if hasattr(self.dataset, "epoch"):
-            self.dataset.epoch = epoch
+            cast(_EpochAttribute, self.dataset).epoch = epoch
         if hasattr(self.dataset, "set_epoch"):
-            self.dataset.set_epoch(epoch)
+            cast(_SetEpoch, self.dataset).set_epoch(epoch)
         if hasattr(self.dataset, "set_curr_epoch"):
-            self.dataset.set_curr_epoch(epoch)
+            cast(_SetCurrentEpoch, self.dataset).set_curr_epoch(epoch)
 
         indices = list(range(len(self.dataset)))
         if self.shuffle:

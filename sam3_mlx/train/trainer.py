@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional
+from collections.abc import Mapping
+from typing import Never, TypeVar
 
 from sam3_mlx._unsupported import UPSTREAM_COMMIT, raise_unsupported
 
@@ -30,7 +31,7 @@ _UNSUPPORTED_TRAINER_MESSAGE = (
 )
 
 
-def _raise_trainer_unsupported(feature: str) -> None:
+def _raise_trainer_unsupported(feature: str) -> Never:
     raise_unsupported(
         feature,
         reason="training-loop",
@@ -38,7 +39,10 @@ def _raise_trainer_unsupported(feature: str) -> None:
     )
 
 
-def unwrap_ddp_if_wrapped(model):
+_Model = TypeVar("_Model")
+
+
+def unwrap_ddp_if_wrapped(model: _Model) -> _Model:
     return model
 
 
@@ -50,26 +54,31 @@ class OptimAMPConf:
 
 @dataclass
 class OptimConf:
-    optimizer: Any = None
-    options: Optional[Dict[str, Any]] = None
-    param_group_modifiers: Optional[List] = None
-    amp: Optional[Dict[str, Any]] = None
-    gradient_clip: Any = None
-    gradient_logger: Any = None
+    optimizer: object = None
+    options: Mapping[str, object] | None = None
+    param_group_modifiers: list[object] | None = None
+    amp: OptimAMPConf | Mapping[str, object] | None = None
+    gradient_clip: object = None
+    gradient_logger: object = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not isinstance(self.amp, OptimAMPConf):
             if self.amp is None:
                 self.amp = {}
-            if not isinstance(self.amp, Mapping):
-                raise AssertionError("amp must be a mapping or OptimAMPConf")
-            self.amp = OptimAMPConf(**self.amp)
+            extra_keys = set(self.amp) - {"enabled", "amp_dtype"}
+            if extra_keys:
+                raise TypeError(f"Unexpected amp keys: {sorted(extra_keys)}")
+            enabled = self.amp.get("enabled", False)
+            amp_dtype = self.amp.get("amp_dtype", "float16")
+            if not isinstance(enabled, bool) or not isinstance(amp_dtype, str):
+                raise TypeError("amp enabled must be bool and amp_dtype must be str")
+            self.amp = OptimAMPConf(enabled=enabled, amp_dtype=amp_dtype)
 
 
 @dataclass
 class DistributedConf:
-    backend: Optional[str] = None
-    comms_dtype: Optional[str] = None
+    backend: str | None = None
+    comms_dtype: str | None = None
     find_unused_parameters: bool = False
     timeout_mins: int = 30
     gradient_as_bucket_view: bool = False
@@ -81,22 +90,22 @@ class AcceleratorConf:
     cudnn_deterministic: bool = False
     cudnn_benchmark: bool = True
     allow_tf32: bool = False
-    matmul_allow_tf32: Optional[bool] = None
-    cudnn_allow_tf32: Optional[bool] = None
+    matmul_allow_tf32: bool | None = None
+    cudnn_allow_tf32: bool | None = None
 
 
 @dataclass
 class CheckpointConf:
     save_dir: str
     save_freq: int
-    save_list: List[int] = field(default_factory=list)
-    model_weight_initializer: Any = None
-    save_best_meters: List[str] = None
-    skip_saving_parameters: List[str] = field(default_factory=list)
-    initialize_after_preemption: Optional[bool] = None
-    resume_from: Optional[str] = None
+    save_list: list[int] = field(default_factory=lambda: [])
+    model_weight_initializer: object = None
+    save_best_meters: list[str] | None = None
+    skip_saving_parameters: list[str] = field(default_factory=lambda: [])
+    initialize_after_preemption: bool | None = None
+    resume_from: str | None = None
 
-    def infer_missing(self):
+    def infer_missing(self) -> "CheckpointConf":
         if self.initialize_after_preemption is None:
             with_skip_saving = len(self.skip_saving_parameters) > 0
             self.initialize_after_preemption = with_skip_saving
@@ -107,14 +116,14 @@ class CheckpointConf:
 class LoggingConf:
     log_dir: str
     log_freq: int
-    tensorboard_writer: Any
+    tensorboard_writer: object
     log_level_primary: str = "INFO"
     log_level_secondary: str = "ERROR"
     log_scalar_frequency: int = 100
     log_visual_frequency: int = 100
-    scalar_keys_to_log: Optional[Dict[str, Any]] = None
+    scalar_keys_to_log: Mapping[str, object] | None = None
     log_batch_stats: bool = False
-    wandb_writer: Optional[Any] = None
+    wandb_writer: object = None
 
 
 class Trainer:
@@ -125,27 +134,27 @@ class Trainer:
     def __init__(
         self,
         *,
-        data: Dict[str, Any],
-        model: Dict[str, Any],
-        logging: Dict[str, Any],
-        checkpoint: Dict[str, Any],
+        data: Mapping[str, object],
+        model: Mapping[str, object],
+        logging: Mapping[str, object],
+        checkpoint: Mapping[str, object],
         max_epochs: int,
         mode: str = "train",
         accelerator: str = "mlx",
         seed_value: int = 123,
         val_epoch_freq: int = 1,
-        distributed: Dict[str, bool] = None,
-        accelerator_config: Dict[str, bool] = None,
-        env_variables: Optional[Dict[str, Any]] = None,
-        optim: Optional[Dict[str, Any]] = None,
-        optim_overrides: Optional[List[Dict[str, Any]]] = None,
-        meters: Optional[Dict[str, Any]] = None,
-        loss: Optional[Dict[str, Any]] = None,
+        distributed: Mapping[str, bool] | None = None,
+        accelerator_config: Mapping[str, bool] | None = None,
+        env_variables: Mapping[str, object] | None = None,
+        optim: Mapping[str, object] | None = None,
+        optim_overrides: list[Mapping[str, object]] | None = None,
+        meters: Mapping[str, object] | None = None,
+        loss: Mapping[str, object] | None = None,
         skip_first_val: bool = False,
         skip_saving_ckpts: bool = False,
         empty_gpu_mem_cache_after_eval: bool = True,
         gradient_accumulation_steps: int = 1,
-    ):
+    ) -> None:
         self._setup_env_variables(env_variables)
         self.data_conf = data
         self.model_conf = model
@@ -168,30 +177,36 @@ class Trainer:
         self.gradient_accumulation_steps = gradient_accumulation_steps
         _raise_trainer_unsupported("Trainer.__init__")
 
-    def _setup_env_variables(self, env_variables_conf) -> None:
+    def _setup_env_variables(
+        self, env_variables_conf: Mapping[str, object] | None
+    ) -> None:
         if env_variables_conf is not None:
             for variable_name, value in env_variables_conf.items():
                 os.environ[variable_name] = str(value)
 
-    def run(self):
+    def run(self) -> Never:
         _raise_trainer_unsupported("Trainer.run")
 
-    def run_train(self):
+    def run_train(self) -> Never:
         _raise_trainer_unsupported("Trainer.run_train")
 
-    def run_val(self):
+    def run_val(self) -> Never:
         _raise_trainer_unsupported("Trainer.run_val")
 
-    def train_epoch(self, train_loader):
+    def train_epoch(self, train_loader: object) -> Never:
+        del train_loader
         _raise_trainer_unsupported("Trainer.train_epoch")
 
-    def val_epoch(self, val_loader, phase):
+    def val_epoch(self, val_loader: object, phase: str) -> Never:
+        del val_loader, phase
         _raise_trainer_unsupported("Trainer.val_epoch")
 
 
-def print_model_summary(model, log_dir: str = ""):
+def print_model_summary(model: object, log_dir: str = "") -> Never:
+    del model, log_dir
     _raise_trainer_unsupported("print_model_summary")
 
 
 def get_human_readable_count(number: int) -> str:
+    del number
     _raise_trainer_unsupported("get_human_readable_count")
