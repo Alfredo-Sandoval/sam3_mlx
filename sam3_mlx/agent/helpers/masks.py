@@ -4,21 +4,47 @@ from __future__ import annotations
 
 import copy
 import itertools
-from typing import Any, Iterator, List, Union
+from collections.abc import Iterator, Sequence
+from typing import cast
 
 import numpy as np
+from numpy.typing import NDArray
 from PIL import Image, ImageDraw
 
 from sam3_mlx.agent.helpers.boxes import Boxes
 
 
-def polygon_area(x, y):
-    return 0.5 * np.abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)))
+type Array = NDArray[np.generic]
+type BoolArray = NDArray[np.bool_]
+type FloatArray = NDArray[np.float64]
+type Polygon = NDArray[np.generic]
+type PolygonInstances = list[list[Polygon]]
+type MaskIndex = int | slice | Sequence[int] | NDArray[np.integer] | BoolArray
+
+
+def _array(value: object) -> Array:
+    return cast(Array, np.asarray(value))
+
+
+def _boxes_array(boxes: object) -> Array:
+    return cast(Array, boxes.tensor) if isinstance(boxes, Boxes) else _array(boxes)
+
+
+def _rounded_box(box: object) -> tuple[int, int, int, int]:
+    numeric = np.asarray(box, dtype=np.float64)
+    values = np.round(numeric).astype(np.int64).reshape(-1)
+    if values.size != 4:
+        raise ValueError("Boxes must contain exactly four coordinates.")
+    return int(values[0]), int(values[1]), int(values[2]), int(values[3])
+
+
+def polygon_area(x: Array, y: Array) -> float:
+    return float(0.5 * np.abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1))))
 
 
 def polygons_to_bitmask(
-    polygons: List[np.ndarray], height: int, width: int
-) -> np.ndarray:
+    polygons: Sequence[Polygon], height: int, width: int
+) -> BoolArray:
     """Rasterize polygon coordinates into a bool mask."""
     if len(polygons) == 0:
         return np.zeros((height, width), dtype=bool)
@@ -28,12 +54,12 @@ def polygons_to_bitmask(
         coords = np.asarray(polygon, dtype=float).reshape(-1, 2)
         if len(coords) >= 3:
             draw.polygon([tuple(point) for point in coords], outline=1, fill=1)
-    return np.asarray(image, dtype=bool)
+    return cast(BoolArray, np.asarray(image, dtype=bool))
 
 
 def rasterize_polygons_within_box(
-    polygons: List[np.ndarray], box: np.ndarray, mask_size: int
-) -> np.ndarray:
+    polygons: list[Polygon], box: Array, mask_size: int
+) -> BoolArray:
     """Rasterize polygons cropped/rescaled into a square mask."""
     w, h = box[2] - box[0], box[3] - box[1]
     polygons = copy.deepcopy(polygons)
@@ -48,21 +74,22 @@ def rasterize_polygons_within_box(
 class BitMasks:
     """Store segmentation masks as a bool ``N,H,W`` NumPy array."""
 
-    def __init__(self, tensor: Union[np.ndarray, list]):
-        tensor = np.asarray(tensor, dtype=bool)
+    def __init__(self, tensor: object):
+        tensor = cast(BoolArray, np.asarray(tensor, dtype=bool))
         if tensor.ndim != 3:
             raise AssertionError(tensor.shape)
         self.image_size = tensor.shape[1:]
         self.tensor = tensor
 
-    def to(self, *args: Any, **kwargs: Any) -> "BitMasks":
+    def to(self, *args: object, **kwargs: object) -> "BitMasks":
+        del args, kwargs
         return BitMasks(self.tensor.copy())
 
     @property
-    def device(self):
+    def device(self) -> str:
         return "cpu"
 
-    def __getitem__(self, item) -> "BitMasks":
+    def __getitem__(self, item: MaskIndex) -> "BitMasks":
         if isinstance(item, int):
             return BitMasks(self.tensor[item][None, :, :])
         selected = self.tensor[item]
@@ -72,7 +99,7 @@ class BitMasks:
             )
         return BitMasks(selected)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[BoolArray]:
         yield from self.tensor
 
     def __repr__(self) -> str:
@@ -81,12 +108,14 @@ class BitMasks:
     def __len__(self) -> int:
         return int(self.tensor.shape[0])
 
-    def nonempty(self) -> np.ndarray:
-        return self.tensor.reshape(self.tensor.shape[0], -1).any(axis=1)
+    def nonempty(self) -> BoolArray:
+        return cast(
+            BoolArray, self.tensor.reshape(self.tensor.shape[0], -1).any(axis=1)
+        )
 
     @staticmethod
     def from_polygon_masks(
-        polygon_masks: Union["PolygonMasks", List[List[np.ndarray]]],
+        polygon_masks: "PolygonMasks" | PolygonInstances,
         height: int,
         width: int,
     ) -> "BitMasks":
@@ -100,16 +129,18 @@ class BitMasks:
         return BitMasks(np.empty((0, height, width), dtype=bool))
 
     @staticmethod
-    def from_roi_masks(roi_masks: "ROIMasks", height: int, width: int) -> "BitMasks":
-        return roi_masks.to_bitmasks(height, width)
+    def from_roi_masks(
+        roi_masks: "ROIMasks", boxes: object, height: int, width: int
+    ) -> "BitMasks":
+        return roi_masks.to_bitmasks(boxes, height, width)
 
-    def crop_and_resize(self, boxes, mask_size: int) -> np.ndarray:
-        boxes_arr = boxes.tensor if isinstance(boxes, Boxes) else np.asarray(boxes)
+    def crop_and_resize(self, boxes: object, mask_size: int) -> BoolArray:
+        boxes_arr = _boxes_array(boxes)
         if len(boxes_arr) != len(self):
             raise AssertionError(f"{len(boxes_arr)} != {len(self)}")
-        crops = []
+        crops: list[BoolArray] = []
         for mask, box in zip(self.tensor, boxes_arr):
-            x0, y0, x1, y1 = np.round(box).astype(int)
+            x0, y0, x1, y1 = _rounded_box(box)
             x0, y0 = max(x0, 0), max(y0, 0)
             x1, y1 = max(x1, x0 + 1), max(y1, y0 + 1)
             crop = mask[y0:y1, x0:x1].astype(np.uint8) * 255
@@ -130,31 +161,37 @@ class BitMasks:
         return Boxes(boxes)
 
     @staticmethod
-    def cat(bitmasks_list: List["BitMasks"]) -> "BitMasks":
+    def cat(bitmasks_list: Sequence[object]) -> "BitMasks":
         if not bitmasks_list:
             raise AssertionError("bitmasks_list must be non-empty")
         if not all(isinstance(bitmask, BitMasks) for bitmask in bitmasks_list):
             raise AssertionError("All entries must be BitMasks")
-        return BitMasks(np.concatenate([bm.tensor for bm in bitmasks_list], axis=0))
+        typed_masks = cast(Sequence[BitMasks], bitmasks_list)
+        return BitMasks(np.concatenate([bm.tensor for bm in typed_masks], axis=0))
 
 
 class PolygonMasks:
     """Store segmentation masks as polygon coordinate arrays."""
 
-    def __init__(self, polygons: List[List[Union[np.ndarray, list]]]):
+    def __init__(self, polygons: object):
         if not isinstance(polygons, list):
             raise ValueError(
                 "Cannot create PolygonMasks: expected a list of polygons per image. "
                 f"Got {type(polygons)!r}."
             )
 
-        def process_polygons(polygons_per_instance):
+        polygon_instances = cast(list[object], polygons)
+
+        def process_polygons(polygons_per_instance: object) -> list[Polygon]:
             if not isinstance(polygons_per_instance, list):
                 raise ValueError(
                     "Cannot create polygons: expected a list of polygons per instance. "
                     f"Got {type(polygons_per_instance)!r}."
                 )
-            processed = [np.asarray(p, dtype=np.float64) for p in polygons_per_instance]
+            processed = [
+                cast(Polygon, np.asarray(p, dtype=np.float64))
+                for p in cast(list[object], polygons_per_instance)
+            ]
             for polygon in processed:
                 if len(polygon) % 2 != 0 or len(polygon) < 6:
                     raise ValueError(
@@ -162,16 +199,17 @@ class PolygonMasks:
                     )
             return processed
 
-        self.polygons: List[List[np.ndarray]] = [
+        self.polygons: PolygonInstances = [
             process_polygons(polygons_per_instance)
-            for polygons_per_instance in polygons
+            for polygons_per_instance in polygon_instances
         ]
 
-    def to(self, *args: Any, **kwargs: Any) -> "PolygonMasks":
+    def to(self, *args: object, **kwargs: object) -> "PolygonMasks":
+        del args, kwargs
         return self
 
     @property
-    def device(self):
+    def device(self) -> str:
         return "cpu"
 
     def get_bounding_boxes(self) -> Boxes:
@@ -190,10 +228,13 @@ class PolygonMasks:
             ]
         return Boxes(boxes)
 
-    def nonempty(self) -> np.ndarray:
-        return np.asarray([len(polygon) > 0 for polygon in self.polygons], dtype=bool)
+    def nonempty(self) -> BoolArray:
+        return cast(
+            BoolArray,
+            np.asarray([len(polygon) > 0 for polygon in self.polygons], dtype=bool),
+        )
 
-    def __getitem__(self, item) -> "PolygonMasks":
+    def __getitem__(self, item: MaskIndex) -> "PolygonMasks":
         if isinstance(item, int):
             selected_polygons = [self.polygons[item]]
         elif isinstance(item, slice):
@@ -201,7 +242,7 @@ class PolygonMasks:
         elif isinstance(item, list):
             selected_polygons = [self.polygons[i] for i in item]
         else:
-            item_arr = np.asarray(item)
+            item_arr = _array(item)
             if item_arr.dtype == bool:
                 selected_polygons = [
                     polygon for keep, polygon in zip(item_arr, self.polygons) if keep
@@ -210,7 +251,7 @@ class PolygonMasks:
                 selected_polygons = [self.polygons[int(i)] for i in item_arr.tolist()]
         return PolygonMasks(selected_polygons)
 
-    def __iter__(self) -> Iterator[List[np.ndarray]]:
+    def __iter__(self) -> Iterator[list[Polygon]]:
         return iter(self.polygons)
 
     def __repr__(self) -> str:
@@ -219,20 +260,20 @@ class PolygonMasks:
     def __len__(self) -> int:
         return len(self.polygons)
 
-    def crop_and_resize(self, boxes, mask_size: int) -> np.ndarray:
-        boxes_arr = boxes.tensor if isinstance(boxes, Boxes) else np.asarray(boxes)
+    def crop_and_resize(self, boxes: object, mask_size: int) -> BoolArray:
+        boxes_arr = _boxes_array(boxes)
         if len(boxes_arr) != len(self):
             raise AssertionError(f"{len(boxes_arr)} != {len(self)}")
         results = [
-            rasterize_polygons_within_box(poly, np.asarray(box), mask_size)
+            rasterize_polygons_within_box(poly, _array(box), mask_size)
             for poly, box in zip(self.polygons, boxes_arr)
         ]
         if not results:
             return np.empty((0, mask_size, mask_size), dtype=bool)
         return np.stack(results, axis=0)
 
-    def area(self):
-        areas = []
+    def area(self) -> FloatArray:
+        areas: list[float] = []
         for polygons_per_instance in self.polygons:
             area_per_instance = 0.0
             for polygon in polygons_per_instance:
@@ -241,38 +282,39 @@ class PolygonMasks:
         return np.asarray(areas, dtype=np.float64)
 
     @staticmethod
-    def cat(polymasks_list: List["PolygonMasks"]) -> "PolygonMasks":
+    def cat(polymasks_list: Sequence[object]) -> "PolygonMasks":
         if not polymasks_list:
             raise AssertionError("polymasks_list must be non-empty")
         if not all(isinstance(polymask, PolygonMasks) for polymask in polymasks_list):
             raise AssertionError("All entries must be PolygonMasks")
+        typed_masks = cast(Sequence[PolygonMasks], polymasks_list)
         return PolygonMasks(
-            list(itertools.chain.from_iterable(pm.polygons for pm in polymasks_list))
+            list(itertools.chain.from_iterable(pm.polygons for pm in typed_masks))
         )
 
 
 class ROIMasks:
     """Represent masks by smaller masks defined in ROI boxes."""
 
-    def __init__(self, tensor):
-        tensor = np.asarray(tensor)
+    def __init__(self, tensor: object):
+        tensor = _array(tensor)
         if tensor.ndim != 3:
             raise ValueError("ROIMasks must take masks with 3 dimensions.")
         self.tensor = tensor
 
-    def to(self, device) -> "ROIMasks":
+    def to(self, device: object) -> "ROIMasks":
         if str(device) not in ("cpu", "None"):
             raise ValueError("NumPy ROIMasks only support CPU storage")
         return ROIMasks(self.tensor.copy())
 
     @property
-    def device(self):
+    def device(self) -> str:
         return "cpu"
 
-    def __len__(self):
+    def __len__(self) -> int:
         return int(self.tensor.shape[0])
 
-    def __getitem__(self, item) -> "ROIMasks":
+    def __getitem__(self, item: MaskIndex) -> "ROIMasks":
         selected = self.tensor[item]
         if selected.ndim != 3:
             raise ValueError(
@@ -283,11 +325,19 @@ class ROIMasks:
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(num_instances={len(self.tensor)})"
 
-    def to_bitmasks(self, boxes, height, width, threshold=0.5):
-        boxes_arr = boxes.tensor if isinstance(boxes, Boxes) else np.asarray(boxes)
-        masks = np.zeros((len(self), int(height), int(width)), dtype=bool)
+    def to_bitmasks(
+        self,
+        boxes: object,
+        height: int,
+        width: int,
+        threshold: float = 0.5,
+    ) -> BitMasks:
+        boxes_arr = _boxes_array(boxes)
+        masks = cast(
+            BoolArray, np.zeros((len(self), int(height), int(width)), dtype=bool)
+        )
         for idx, (roi_mask, box) in enumerate(zip(self.tensor, boxes_arr)):
-            x0, y0, x1, y1 = np.round(box).astype(int)
+            x0, y0, x1, y1 = _rounded_box(box)
             x0, y0 = max(x0, 0), max(y0, 0)
             x1, y1 = min(max(x1, x0 + 1), int(width)), min(max(y1, y0 + 1), int(height))
             resized = Image.fromarray(

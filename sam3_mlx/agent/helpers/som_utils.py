@@ -2,14 +2,39 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import List, Tuple
+from importlib import import_module
+from typing import Protocol, Self, cast
 
 import numpy as np
+from numpy.typing import NDArray
 
 
-def rgb_to_hex(rgb_color):
-    return "#" + "".join([hex(int(c))[2:].zfill(2) for c in rgb_color])
+type ColorTuple = tuple[int, int, int]
+type FloatArray = NDArray[np.float64]
+
+
+class _Axes(Protocol):
+    def add_patch(self, patch: object) -> object: ...
+
+    def text(self, x: float, y: float, text: str, **kwargs: object) -> object: ...
+
+    def imshow(self, image: object, **kwargs: object) -> object: ...
+
+
+class _Rectangle(Protocol):
+    def __call__(
+        self,
+        xy: tuple[float, float],
+        width: float,
+        height: float,
+        **kwargs: object,
+    ) -> object: ...
+
+
+def rgb_to_hex(rgb_color: Sequence[int]) -> str:
+    return "#" + "".join(hex(int(channel))[2:].zfill(2) for channel in rgb_color)
 
 
 DEFAULT_COLOR_HEX_TO_NAME = {
@@ -37,7 +62,7 @@ DEFAULT_COLOR_HEX_TO_NAME = {
 DEFAULT_COLOR_PALETTE = list(DEFAULT_COLOR_HEX_TO_NAME.keys())
 
 
-def _validate_color_hex(color_hex: str):
+def _validate_color_hex(color_hex: str) -> None:
     color_hex = color_hex.lstrip("#")
     if not all(c in "0123456789abcdefABCDEF" for c in color_hex):
         raise ValueError("Invalid characters in color hash")
@@ -52,7 +77,7 @@ class Color:
     b: int
 
     @classmethod
-    def from_hex(cls, color_hex: str):
+    def from_hex(cls, color_hex: str) -> Self:
         _validate_color_hex(color_hex)
         color_hex = color_hex.lstrip("#")
         if len(color_hex) == 3:
@@ -61,46 +86,46 @@ class Color:
         return cls(r, g, b)
 
     @classmethod
-    def to_hex(cls, color):
+    def to_hex(cls, color: "Color") -> str:
         return rgb_to_hex((color.r, color.g, color.b))
 
-    def as_rgb(self) -> Tuple[int, int, int]:
+    def as_rgb(self) -> ColorTuple:
         return self.r, self.g, self.b
 
-    def as_bgr(self) -> Tuple[int, int, int]:
+    def as_bgr(self) -> ColorTuple:
         return self.b, self.g, self.r
 
     @classmethod
-    def white(cls):
-        return Color.from_hex("#ffffff")
+    def white(cls) -> Self:
+        return cls.from_hex("#ffffff")
 
     @classmethod
-    def black(cls):
-        return Color.from_hex("#000000")
+    def black(cls) -> Self:
+        return cls.from_hex("#000000")
 
     @classmethod
-    def red(cls):
-        return Color.from_hex("#ff0000")
+    def red(cls) -> Self:
+        return cls.from_hex("#ff0000")
 
     @classmethod
-    def green(cls):
-        return Color.from_hex("#00ff00")
+    def green(cls) -> Self:
+        return cls.from_hex("#00ff00")
 
     @classmethod
-    def blue(cls):
-        return Color.from_hex("#0000ff")
+    def blue(cls) -> Self:
+        return cls.from_hex("#0000ff")
 
 
 @dataclass
 class ColorPalette:
-    colors: List[Color]
+    colors: list[Color]
 
     @classmethod
-    def default(cls):
-        return ColorPalette.from_hex(DEFAULT_COLOR_PALETTE)
+    def default(cls) -> Self:
+        return cls.from_hex(DEFAULT_COLOR_PALETTE)
 
     @classmethod
-    def from_hex(cls, color_hex_list: List[str]):
+    def from_hex(cls, color_hex_list: Sequence[str]) -> Self:
         return cls([Color.from_hex(color_hex) for color_hex in color_hex_list])
 
     def by_idx(self, idx: int) -> Color:
@@ -108,7 +133,7 @@ class ColorPalette:
             raise ValueError("idx argument should not be negative")
         return self.colors[idx % len(self.colors)]
 
-    def find_farthest_color(self, img_array):
+    def find_farthest_color(self, img_array: object) -> tuple[Color, float]:
         pixels = np.asarray(img_array, dtype=np.float32).reshape(-1, 3)
         if pixels.size == 0:
             return self.by_idx(0), 0.0
@@ -121,12 +146,21 @@ class ColorPalette:
         return self.colors[idx], float(distances[idx])
 
 
-def draw_box(ax, box_coord, alpha=0.8, edge_color="g", line_style="-", linewidth=2.0):
-    import matplotlib.patches as patches
+def draw_box(
+    ax: _Axes,
+    box_coord: tuple[float, float, float, float],
+    alpha: float = 0.8,
+    edge_color: str = "g",
+    line_style: str = "-",
+    linewidth: float = 2.0,
+) -> None:
+    rectangle = cast(
+        _Rectangle, getattr(import_module("matplotlib.patches"), "Rectangle")
+    )
 
     x, y, w, h = box_coord
     ax.add_patch(
-        patches.Rectangle(
+        rectangle(
             (x, y),
             w,
             h,
@@ -140,15 +174,15 @@ def draw_box(ax, box_coord, alpha=0.8, edge_color="g", line_style="-", linewidth
 
 
 def draw_text(
-    ax,
-    text,
-    position,
+    ax: _Axes,
+    text: str,
+    position: tuple[float, float],
     *,
-    font_size=10,
-    color="g",
-    horizontal_alignment="left",
-    rotation=0,
-):
+    font_size: float = 10,
+    color: str = "g",
+    horizontal_alignment: str = "left",
+    rotation: float = 0,
+) -> None:
     ax.text(
         position[0],
         position[1],
@@ -164,7 +198,14 @@ def draw_text(
     )
 
 
-def draw_mask(ax, mask, color=None, show_holes=True, alpha=0.5):
+def draw_mask(
+    ax: _Axes,
+    mask: object,
+    color: object = None,
+    show_holes: bool = True,
+    alpha: float = 0.5,
+) -> None:
+    del show_holes
     mask = np.asarray(mask, dtype=bool)
     if color is None:
         color = np.array([0.0, 1.0, 0.0])
@@ -177,6 +218,8 @@ def draw_mask(ax, mask, color=None, show_holes=True, alpha=0.5):
     ax.imshow(rgba)
 
 
-def _change_color_brightness(color, brightness_factor):
+def _change_color_brightness(  # pyright: ignore[reportUnusedFunction]
+    color: object, brightness_factor: float
+) -> FloatArray:
     color = np.asarray(color, dtype=float)
     return np.clip(color * brightness_factor, 0, 1)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Never
+
 from sam3_mlx._unsupported import (
     Sam3MlxUnsupportedError,
     unsupported as _unsupported,
@@ -23,5 +25,5 @@ def unsupported(feature: str) -> Sam3MlxUnsupportedError:
     )
 
 
-def raise_unsupported(feature: str):
+def raise_unsupported(feature: str) -> Never:
     raise unsupported(feature)
