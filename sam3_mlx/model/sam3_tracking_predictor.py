@@ -290,11 +290,21 @@ def _remap_integer_keys(
 
 def _validate_cached_features(
     cached_features: object | None,
+    *,
+    num_frames: int,
 ) -> dict[int, CachedFeature]:
     if cached_features is None:
         return {}
     if not isinstance(cached_features, dict):
         raise TypeError("cached_features must be a dict keyed by frame index.")
+    cached_mapping = cast(dict[object, object], cached_features)
+    for frame_idx in cached_mapping:
+        if isinstance(frame_idx, bool) or not isinstance(frame_idx, int):
+            raise TypeError("cached_features frame indices must be integers")
+        if not 0 <= frame_idx < num_frames:
+            raise ValueError(
+                f"cached_features frame index {frame_idx} is outside [0, {num_frames})"
+            )
     return cast(dict[int, CachedFeature], cached_features)
 
 
@@ -490,7 +500,10 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         video_height = _positive_integer(video_height, name="video_height")
         video_width = _positive_integer(video_width, name="video_width")
         num_frames = _positive_integer(num_frames, name="num_frames")
-        typed_cached_features = _validate_cached_features(cached_features)
+        typed_cached_features = _validate_cached_features(
+            cached_features,
+            num_frames=num_frames,
+        )
 
         inference_state = InferenceState(
             offload_video_to_cpu=False,

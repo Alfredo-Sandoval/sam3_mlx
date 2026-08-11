@@ -255,6 +255,55 @@ def test_track_step_point_prompt_contract_without_memory_encoder(base):
     assert out["maskmem_pos_enc"] is None
 
 
+def test_track_step_preserves_transient_output_while_trimming_archived_frame(base):
+    backbone, high_res, point_inputs = _inputs()
+    current_vision_feats = [
+        high_res[0].reshape(1, 32, -1).transpose(2, 0, 1),
+        high_res[1].reshape(1, 64, -1).transpose(2, 0, 1),
+        backbone.reshape(1, 256, -1).transpose(2, 0, 1),
+    ]
+    old_output = {
+        "pred_masks": mx.ones((1, 1, 4 * S, 4 * S)),
+        "pred_masks_high_res": mx.ones((1, 1, IMAGE, IMAGE)),
+        "obj_ptr": mx.ones((1, 256)),
+        "object_score_logits": mx.ones((1, 1)),
+        "maskmem_features": mx.ones((1, 64, S, S)),
+        "maskmem_pos_enc": [mx.zeros((1, 64, S, S))],
+    }
+    output_dict = {
+        "cond_frame_outputs": {},
+        "non_cond_frame_outputs": {0: old_output},
+    }
+    old_trim_setting = base.trim_past_non_cond_mem_for_eval
+    base.trim_past_non_cond_mem_for_eval = True
+    try:
+        current = base.track_step(
+            frame_idx=base.num_maskmem,
+            is_init_cond_frame=True,
+            current_vision_feats=current_vision_feats,
+            current_vision_pos_embeds=[
+                mx.zeros_like(value) for value in current_vision_feats
+            ],
+            feat_sizes=[(4 * S, 4 * S), (2 * S, 2 * S), (S, S)],
+            image=None,
+            point_inputs=point_inputs,
+            mask_inputs=None,
+            output_dict=output_dict,
+            num_frames=base.num_maskmem + 1,
+            run_mem_encoder=False,
+        )
+    finally:
+        base.trim_past_non_cond_mem_for_eval = old_trim_setting
+
+    assert "pred_masks_high_res" in current
+    assert current["maskmem_features"] is None
+    assert set(output_dict["non_cond_frame_outputs"][0]) == {
+        "pred_masks",
+        "obj_ptr",
+        "object_score_logits",
+    }
+
+
 def test_frame_filter_keeps_thresholded_history_and_must_include_neighbor(base):
     old_use_memory_selection = base.use_memory_selection
     old_mf_threshold = base.mf_threshold

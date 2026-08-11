@@ -201,7 +201,10 @@ def _require_feature_cache(value: object) -> FeatureCache:
             "feature_cache must be a dictionary with string or integer keys"
         )
     mapping = cast(dict[object, object], value)
-    if not all(isinstance(key, (str, int)) for key in mapping):
+    if not all(
+        isinstance(key, str) or (not isinstance(key, bool) and isinstance(key, int))
+        for key in mapping
+    ):
         raise TypeError(
             "feature_cache must be a dictionary with string or integer keys"
         )
@@ -2080,7 +2083,7 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         )
         return frame_idx, self._postprocess_output(inference_state, out)
 
-    def forward(
+    def forward(  # pyright: ignore[reportIncompatibleMethodOverride]
         self,
         input: object | None = None,
         is_inference: bool = False,

@@ -694,6 +694,31 @@ def test_cached_feature_lookup_prepares_backbone_features_and_rejects_misses():
         predictor._get_image_feature(state, frame_idx=99, batch_size=1)
 
 
+@pytest.mark.parametrize(
+    ("frame_idx", "exception", "message"),
+    [
+        (True, TypeError, "frame indices must be integers"),
+        ("0", TypeError, "frame indices must be integers"),
+        (-1, ValueError, "outside"),
+        (1, ValueError, "outside"),
+    ],
+)
+def test_cached_feature_keys_validate_frame_index_contract(
+    frame_idx: object,
+    exception: type[Exception],
+    message: str,
+):
+    predictor = Sam3TrackerPredictor(**PREDICTOR_KWARGS)
+
+    with pytest.raises(exception, match=message):
+        predictor.init_state(
+            video_height=6,
+            video_width=10,
+            num_frames=1,
+            cached_features={frame_idx: object()},
+        )
+
+
 def test_cache_miss_uses_tracker_backbone_and_stores_prepared_features():
     backbone = _FakeTrackerBackbone()
     predictor = Sam3TrackerPredictor(backbone=backbone, **PREDICTOR_KWARGS)

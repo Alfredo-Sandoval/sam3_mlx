@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType, SimpleNamespace
 from typing import Hashable, cast
 
 import pytest
@@ -12,6 +13,7 @@ from sam3_mlx.train.optim.optimizer import (
     ValueScaler,
     layer_decay_param_modifier,
     map_scheduler_cfgs_to_param_groups,
+    name_constraints_to_parameters,
     set_default_parameters,
     unix_param_pattern_to_parameter_names,
     validate_param_group_params,
@@ -26,6 +28,18 @@ class _WhereScheduler:
 class _StepScheduler:
     def __call__(self, *, step: int, where: float) -> float:
         return step + where
+
+
+class _NestedStepScheduler:
+    def __init__(self) -> None:
+        self.scheduler = _StepScheduler()
+
+    def __call__(self, **kwargs: int | float) -> float:
+        step = kwargs["step"]
+        where = kwargs["where"]
+        if isinstance(step, bool) or not isinstance(step, int):
+            raise TypeError("step must be an integer")
+        return self.scheduler(step=step, where=float(where))
 
 
 class _FakeOptimizer:
@@ -63,6 +77,13 @@ class _LayerModel:
         return 0 if parameter_name == "block.weight" else 1
 
 
+@dataclass
+class _AttributeSchedulerConfig:
+    option: str
+    scheduler: object
+    parameter_names: set[str] | None
+
+
 def test_optimizer_wrapper_updates_options_and_delegates_calls():
     raw_optimizer = _FakeOptimizer()
     optimizer = Optimizer(
@@ -75,6 +96,26 @@ def test_optimizer_wrapper_updates_options_and_delegates_calls():
     assert raw_optimizer.param_groups == [{"lr": 1.5}, {"weight_decay": 3.5}]
     assert optimizer.zero_grad("set_to_none", enabled=True) == "cleared"
     assert raw_optimizer.zero_grad_args == (("set_to_none",), {"enabled": True})
+
+
+def test_optimizer_wrapper_uses_nested_scheduler_signature():
+    raw_optimizer = _FakeOptimizer()
+    Optimizer(
+        raw_optimizer,
+        [{"lr": _NestedStepScheduler()}, {"weight_decay": _WhereScheduler()}],
+    )
+
+    assert raw_optimizer.param_groups == [{"lr": 0.0}, {"weight_decay": 1.0}]
+
+
+@pytest.mark.parametrize("scheduler_count", [1, 3])
+def test_optimizer_wrapper_rejects_scheduler_param_group_count_mismatch(
+    scheduler_count: int,
+):
+    schedulers = [{"lr": _WhereScheduler()} for _ in range(scheduler_count)]
+
+    with pytest.raises(ValueError, match="scheduler count must match.*2 groups"):
+        Optimizer(_FakeOptimizer(), schedulers)
 
 
 def test_scheduler_configs_map_to_disjoint_parameter_groups():
@@ -121,6 +162,105 @@ def test_scheduler_configs_map_to_disjoint_parameter_groups():
     )
 
 
+def test_scheduler_configs_support_attribute_objects():
+    attribute_config = _AttributeSchedulerConfig("lr", _WhereScheduler(), None)
+    scheduler_configs: list[object] = [attribute_config]
+
+    set_default_parameters(scheduler_configs, {"weight"})
+    schedulers, groups = map_scheduler_cfgs_to_param_groups(
+        [scheduler_configs], {"weight": "parameter"}
+    )
+
+    assert attribute_config.parameter_names == {"weight"}
+    assert list(schedulers[0]) == ["lr"]
+    assert groups == [{"params": ["parameter"]}]
+
+
+def test_default_scheduler_rejects_read_only_mapping():
+    scheduler_configs: list[object] = [
+        MappingProxyType(
+            {
+                "option": "lr",
+                "scheduler": _WhereScheduler(),
+                "parameter_names": None,
+            }
+        )
+    ]
+
+    with pytest.raises(TypeError, match="scheduler config mapping must be mutable"):
+        set_default_parameters(scheduler_configs, {"weight"})
+
+
+def test_default_scheduler_rejects_getter_without_mutation():
+    class _ReadOnlyConfig:
+        __slots__ = ()
+
+        def get(self, key: str, default: object = None) -> object:
+            del key
+            return default
+
+    with pytest.raises(TypeError, match="must support item or attribute assignment"):
+        set_default_parameters([_ReadOnlyConfig()], {"weight"})
+
+
+def test_default_scheduler_rejects_malformed_parameter_names():
+    with pytest.raises(TypeError, match="parameter_names must be a set of strings"):
+        set_default_parameters([{"parameter_names": ["weight"]}], {"weight"})
+
+
+def test_default_scheduler_rejects_multiple_defaults():
+    scheduler_configs: list[object] = [
+        {"parameter_names": None},
+        SimpleNamespace(parameter_names=None),
+    ]
+
+    with pytest.raises(AssertionError, match="Only one scheduler"):
+        set_default_parameters(scheduler_configs, {"weight"})
+
+
+def test_default_scheduler_appends_unmatched_constraint_group():
+    scheduler_configs: list[object] = [{"parameter_names": {"encoder.weight"}}]
+
+    set_default_parameters(scheduler_configs, {"encoder.weight", "decoder.weight"})
+
+    assert scheduler_configs[-1] == {"parameter_names": {"decoder.weight"}}
+
+
+def test_scheduler_mapping_accepts_constraint_without_scheduler_option():
+    schedulers, groups = map_scheduler_cfgs_to_param_groups(
+        [[{"parameter_names": {"weight"}}]], {"weight": "parameter"}
+    )
+
+    assert schedulers == [{}]
+    assert groups == [{"params": ["parameter"]}]
+
+
+def test_scheduler_mapping_rejects_noncallable_scheduler():
+    with pytest.raises(TypeError, match="scheduler must be callable"):
+        map_scheduler_cfgs_to_param_groups(
+            [[{"option": "lr", "scheduler": 1, "parameter_names": {"weight"}}]],
+            {"weight": object()},
+        )
+
+
+def test_empty_parameter_constraint_collection_fails_deliberately():
+    with pytest.raises(TypeError, match="at least one constraint set"):
+        name_constraints_to_parameters([], {"weight": object()})
+
+
+def test_param_group_validation_rejects_overlap_and_incomplete_coverage():
+    first = object()
+    second = object()
+    model = _FakeModel([("first", first), ("second", second)])
+
+    with pytest.raises(AssertionError, match="should be disjoint"):
+        validate_param_group_params(
+            [{"params": [first]}, {"params": [first, second]}], model
+        )
+    with pytest.raises(AssertionError, match="must include all parameters"):
+        validate_param_group_params([{"params": [first]}], model)
+
+
 def test_pattern_and_layer_decay_helpers_preserve_selection_contracts():
     assert unix_param_pattern_to_parameter_names(
         ["encoder.*"], {"encoder.weight", "decoder.weight"}
@@ -152,6 +292,45 @@ def test_pattern_and_layer_decay_helpers_preserve_selection_contracts():
     assert scaled_values == [0.25, 0.5]
 
 
+@pytest.mark.parametrize(
+    ("layer_count", "layer_id", "exception", "message"),
+    [
+        (True, 0, TypeError, "layer count must be an integer"),
+        (-1, 0, ValueError, "layer count must be non-negative"),
+        (1, True, TypeError, "layer id must be an integer"),
+        (1, 3, ValueError, "layer id must be between"),
+    ],
+)
+def test_layer_decay_rejects_invalid_integer_boundaries(
+    layer_count: object,
+    layer_id: object,
+    exception: type[Exception],
+    message: str,
+):
+    class _MalformedLayerModel:
+        def get_num_layers(self) -> object:
+            return layer_count
+
+        def get_layer_id(self, parameter_name: str) -> object:
+            del parameter_name
+            return layer_id
+
+    with pytest.raises(exception, match=message):
+        layer_decay_param_modifier(
+            [
+                [
+                    {
+                        "option": "lr",
+                        "scheduler": _WhereScheduler(),
+                        "parameter_names": {"weight"},
+                    }
+                ]
+            ],
+            _MalformedLayerModel(),
+            0.5,
+        )
+
+
 def test_gradient_clipper_rejects_boolean_max_norm():
     with pytest.raises(AssertionError, match="number or None"):
         GradientClipper(True)
@@ -159,7 +338,7 @@ def test_gradient_clipper_rejects_boolean_max_norm():
 
 def test_optimizer_wrapper_rejects_unknown_option():
     with pytest.raises(AssertionError, match="not found"):
-        Optimizer(_FakeOptimizer(), [{"momentum": _WhereScheduler()}])
+        Optimizer(_FakeOptimizer(), [{"momentum": _WhereScheduler()}, {}])
 
 
 def test_gradient_clipper_keeps_training_boundary_unsupported():

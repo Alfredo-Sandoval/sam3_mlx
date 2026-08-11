@@ -216,7 +216,7 @@ def _as_pil_rgb_image(
     if isinstance(image, Image.Image):
         return image if image.mode == "RGB" else image.convert("RGB")
     if isinstance(image, np.ndarray):
-        array = np.asarray(cast(Any, image))
+        array = np.asarray(cast(npt.NDArray[Any], image))
         if array.ndim not in (2, 3):
             raise ValueError("Image NumPy arrays must have shape HxW or HxWxC.")
         if array.ndim == 3 and array.shape[-1] not in (1, 3, 4):

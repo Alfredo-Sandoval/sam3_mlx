@@ -1796,6 +1796,21 @@ def test_prepare_prompt_inputs_builds_mask_prompts_and_frame_metadata():
     )
 
 
+@pytest.mark.parametrize("find_targets", [[None, None], [None, SimpleNamespace()]])
+def test_prepare_prompt_inputs_rejects_missing_optional_targets_at_prompt_transition(
+    find_targets,
+):
+    model = _ForwardTrackingHarness()
+    input_data = _forward_input()
+    input_data.find_targets = find_targets
+
+    with pytest.raises(
+        ValueError,
+        match="mask-prompt preparation requires populated find_targets entries",
+    ):
+        model.prepare_prompt_inputs({}, input_data)
+
+
 def test_prepare_prompt_inputs_dynamic_eval_builds_transition_metadata_and_masks():
     model = _ForwardTrackingHarness()
     model.is_dynamic_vos_evaluation = True
@@ -2089,6 +2104,35 @@ def test_forward_tracking_dynamic_eval_pads_missing_frames_and_restores_object_o
         _to_numpy(outputs[2]["pred_masks"]),
         _to_numpy(_constant_rows([0.0, 3.0, 0.0], (1, 2, 2))),
     )
+
+
+@pytest.mark.parametrize("find_metadatas", [[], [None]])
+def test_forward_tracking_dynamic_eval_requires_populated_metadata(find_metadatas):
+    model = _ForwardTrackingHarness()
+    model.is_dynamic_vos_evaluation = True
+    backbone_out = {
+        "num_frames": 1,
+        "init_cond_frames": [0],
+        "frames_not_in_init_cond": [],
+        "frames_to_add_correction_pt": [],
+        "gt_masks_per_frame": {
+            0: mx.ones((1, 1, 2, 2), dtype=mx.float32),
+        },
+        "mask_inputs_per_frame": {0: mx.ones((1, 1, 2, 2), dtype=mx.float32)},
+        "point_inputs_per_frame": {},
+        "transition_points": [],
+        "object_appearance_order": [0],
+    }
+    input_data = _forward_input()
+    input_data.img_batch = input_data.img_batch[:1]
+    input_data.find_inputs = input_data.find_inputs[:1]
+    input_data.find_metadatas = find_metadatas
+
+    with pytest.raises(
+        ValueError,
+        match=r"dynamic VOS evaluation requires populated find_metadatas\[0\]",
+    ):
+        model.forward_tracking(backbone_out, input_data, return_dict=False)
 
 
 def test_forward_tracking_computes_per_frame_backbone_when_features_are_missing():

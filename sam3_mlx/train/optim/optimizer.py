@@ -160,7 +160,14 @@ def _cfg_set(scheduler_cfg: object, key: str, value: object) -> None:
     if callable(setter):
         cast(_ConfigSetter, setter)(key, value)
         return
-    setattr(scheduler_cfg, key, value)
+    if isinstance(scheduler_cfg, Mapping):
+        raise TypeError("scheduler config mapping must be mutable")
+    try:
+        setattr(scheduler_cfg, key, value)
+    except (AttributeError, TypeError) as error:
+        raise TypeError(
+            "scheduler config must support item or attribute assignment"
+        ) from error
 
 
 def _parameter_names(scheduler_cfg: object) -> set[str] | None:
@@ -198,6 +205,12 @@ def _optional_string_list(value: object, name: str) -> list[str] | None:
     return cast(list[str], items)
 
 
+def _integer_value(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    return value
+
+
 def _required_parameter_names(scheduler_cfg: object) -> set[str]:
     parameter_names = _parameter_names(scheduler_cfg)
     if parameter_names is None:
@@ -232,6 +245,12 @@ class Optimizer:
         if self.schedulers is None:
             return
         defaults = _optimizer_defaults(self.optimizer)
+        param_groups = _optimizer_param_groups(self.optimizer)
+        if len(self.schedulers) != len(param_groups):
+            raise ValueError(
+                "scheduler count must match optimizer param-group count: "
+                f"got {len(self.schedulers)} schedulers for {len(param_groups)} groups"
+            )
         for set_of_schedulers in self.schedulers:
             for option, _ in set_of_schedulers.items():
                 if option not in defaults:
@@ -530,7 +549,12 @@ def layer_decay_param_modifier(
     scoped_model = rgetattr(model, apply_to)
     if not _is_layer_decay_model(scoped_model):
         raise TypeError("layer-decay target must expose layer indexing methods")
-    num_layers = scoped_model.get_num_layers() + 1
+    model_layer_count = _integer_value(
+        scoped_model.get_num_layers(), "layer-decay model layer count"
+    )
+    if model_layer_count < 0:
+        raise ValueError("layer-decay model layer count must be non-negative")
+    num_layers = model_layer_count + 1
     layer_decays = [
         layer_decay_value ** (num_layers - i) for i in range(num_layers + 1)
     ]
@@ -554,7 +578,13 @@ def layer_decay_param_modifier(
                 layer_id = num_layers
                 this_scale = layer_decays[layer_id]
                 if param_name.startswith(prefix):
-                    layer_id = scoped_model.get_layer_id(param_name)
+                    layer_id = _integer_value(
+                        scoped_model.get_layer_id(param_name), "layer-decay layer id"
+                    )
+                    if not 0 <= layer_id <= num_layers:
+                        raise ValueError(
+                            f"layer-decay layer id must be between 0 and {num_layers}"
+                        )
                     this_scale = layer_decays[layer_id]
                     for override in overrides:
                         if fnmatch.fnmatchcase(param_name, override["pattern"]):

@@ -364,9 +364,11 @@ def text_outputs_for_batch(
     *,
     device: str,
 ) -> dict[str, TrackerArray]:
-    if not isinstance(text_batch, Sequence):
-        raise TypeError("detector text batches must be sequences")
+    if isinstance(text_batch, (str, bytes)) or not isinstance(text_batch, Sequence):
+        raise TypeError("detector text batches must be sequences of strings")
     text_batch_values = cast(Sequence[object], text_batch)
+    if not all(isinstance(item, str) for item in text_batch_values):
+        raise TypeError("detector text batches must be sequences of strings")
     text_batch_key = tuple(text_batch_values)
     text_cache: object = feature_cache.get("text")
     if isinstance(text_cache, Mapping) and text_batch_key in text_cache:
@@ -1171,7 +1173,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
         )
         return num_packed_buckets + num_unpacked_buckets
 
-    def update_masklet_confirmation_status(
+    def update_masklet_confirmation_status(  # pyright: ignore[reportIncompatibleMethodOverride]
         self,
         rank0_metadata: dict[str, Any],
         obj_ids_all_gpu_prev: np.ndarray,
@@ -1647,7 +1649,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
         gpu_metadata["N_obj"] = new_num
         return gpu_metadata
 
-    def _process_hotstart(
+    def _process_hotstart(  # pyright: ignore[reportIncompatibleMethodOverride]
         self,
         frame_idx: int,
         num_frames: int,
@@ -2415,7 +2417,11 @@ class Sam3MultiplexBase(Sam3VideoBase):
         total_valid_entries: object = getattr(
             multiplex_state, "total_valid_entries", -1
         )
-        if not isinstance(total_valid_entries, int) or total_valid_entries != 0:
+        if (
+            isinstance(total_valid_entries, bool)
+            or not isinstance(total_valid_entries, int)
+            or total_valid_entries != 0
+        ):
             return
         output_value = state.setdefault("output_dict", {})
         if not isinstance(output_value, dict):

@@ -7,7 +7,7 @@ Torch tensor operations translated to explicit MLX arrays.
 from __future__ import annotations
 
 from dataclasses import fields
-from typing import Any, TypeVar, cast
+from typing import Any, Protocol, TypeVar, cast
 
 import mlx.core as mx
 import numpy as np
@@ -40,10 +40,15 @@ __all__ = [
 ]
 
 
+class _ArrayFactory(Protocol):
+    def __call__(self, value: object, *, dtype: mx.Dtype | None = None) -> mx.array: ...
+
+
 def _as_array(value: object, dtype: mx.Dtype | None = None) -> mx.array:
     if isinstance(value, mx.array):
         return value.astype(dtype) if dtype is not None else value
-    return mx.array(cast(Any, value), dtype=dtype)
+    array_factory = cast(_ArrayFactory, mx.array)
+    return array_factory(value, dtype=dtype)
 
 
 def _numel(value: mx.array) -> int:

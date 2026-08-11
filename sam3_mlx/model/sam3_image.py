@@ -911,6 +911,10 @@ class Sam3Image(nn.Module):
         geometric_prompt: Prompt,
     ) -> Output:
         self._validate_interactive_steps_val()
+        if (
+            self.training or self.num_interactive_steps_val > 0
+        ) and find_target is None:
+            raise ValueError("matching requires a populated find_target")
         typed_backbone_out = cast(_BackboneOutput, backbone_out)
         typed_find_input = cast(_FindInput, find_input)
         # profile geometry encoder

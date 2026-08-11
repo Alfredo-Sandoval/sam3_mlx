@@ -4,7 +4,7 @@ import mlx.core as mx
 from mlx import nn
 from typing import Callable, cast
 
-from sam3_mlx._unsupported import Sam3MlxUnsupportedError
+from sam3_mlx._unsupported import UPSTREAM_COMMIT, Sam3MlxUnsupportedError
 from sam3_mlx.model.sam3_video_base import (
     Sam3VideoBase,
     _associate_det_trk_compilable,
@@ -108,6 +108,25 @@ def test_sam3_video_base_forward_still_fails_with_canonical_boundary():
     assert exc_info.value.reason == "video-multiplex"
     assert exc_info.value.alternative is not None
     assert exc_info.value.alternative.endswith("Sam3VideoInference")
+
+
+@pytest.mark.parametrize(
+    "method_name",
+    ["forward", "_process_hotstart", "update_masklet_confirmation_status"],
+)
+def test_sam3_video_base_unsupported_shims_accept_arbitrary_call_shapes(
+    method_name: str,
+):
+    method = getattr(_base(), method_name)
+
+    with pytest.raises(Sam3MlxUnsupportedError) as exc_info:
+        method("unexpected", extra=object())
+
+    error = exc_info.value
+    assert error.feature.endswith(method_name)
+    assert error.reason == "video-multiplex"
+    assert error.detail
+    assert error.upstream_commit == UPSTREAM_COMMIT
 
 
 def test_associate_det_trk_rejects_o2o_matching_with_canonical_boundary():

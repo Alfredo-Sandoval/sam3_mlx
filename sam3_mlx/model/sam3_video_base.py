@@ -559,10 +559,8 @@ class Sam3VideoBase(nn.Module):
             detail="Torch distributed object broadcast is not ported to MLX.",
         )
 
-    def forward(
-        self, input: object | None = None, is_inference: bool = False
-    ) -> object:
-        del input, is_inference
+    def forward(self, *args: object, **kwargs: object) -> NoReturn:
+        del args, kwargs
         _raise_video_base_unsupported(
             "sam3_mlx.model.sam3_video_base.Sam3VideoBase.forward",
             detail=(
@@ -637,49 +635,17 @@ class Sam3VideoBase(nn.Module):
             & (y_c < 1.0 - margin)
         )
 
-    def _process_hotstart(
-        self,
-        frame_idx: int,
-        num_frames: int,
-        reverse: bool,
-        det_to_matched_trk_obj_ids: dict[int, object],
-        new_det_obj_ids: object,
-        empty_trk_obj_ids: object,
-        unmatched_trk_obj_ids: object,
-        rank0_metadata: dict[str, object],
-        tracker_metadata: dict[str, object],
-    ) -> tuple[set[int], dict[str, object]]:
-        del (
-            frame_idx,
-            num_frames,
-            reverse,
-            det_to_matched_trk_obj_ids,
-            new_det_obj_ids,
-            empty_trk_obj_ids,
-            unmatched_trk_obj_ids,
-            rank0_metadata,
-            tracker_metadata,
-        )
+    def _process_hotstart(self, *args: object, **kwargs: object) -> NoReturn:
+        del args, kwargs
         _raise_video_base_unsupported(
             "sam3_mlx.model.sam3_video_base.Sam3VideoBase._process_hotstart",
             detail="Hotstart tracking heuristics require the unported tracker state.",
         )
 
     def update_masklet_confirmation_status(
-        self,
-        rank0_metadata: dict[str, object],
-        obj_ids_all_gpu_prev: NumpyArray,
-        obj_ids_all_gpu_updated: NumpyArray,
-        det_to_matched_trk_obj_ids: dict[int, object],
-        new_det_obj_ids: NumpyArray,
-    ) -> dict[str, object]:
-        del (
-            rank0_metadata,
-            obj_ids_all_gpu_prev,
-            obj_ids_all_gpu_updated,
-            det_to_matched_trk_obj_ids,
-            new_det_obj_ids,
-        )
+        self, *args: object, **kwargs: object
+    ) -> NoReturn:
+        del args, kwargs
         _raise_video_base_unsupported(
             "sam3_mlx.model.sam3_video_base.Sam3VideoBase.update_masklet_confirmation_status",
             detail="Masklet confirmation requires the unported tracker state.",

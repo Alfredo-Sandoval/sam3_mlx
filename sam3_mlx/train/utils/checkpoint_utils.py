@@ -239,7 +239,9 @@ def get_state_dict(
             pre_train_dict, (str, bytes)
         ):
             sequence = cast(Sequence[object], pre_train_dict)
-            key_exists = isinstance(key, int) and key < len(sequence)
+            if isinstance(key, bool):
+                raise TypeError("checkpoint sequence keys must not be booleans")
+            key_exists = isinstance(key, int) and -len(sequence) <= key < len(sequence)
             available = f"sequence length {len(sequence)}"
         else:
             key_exists = False

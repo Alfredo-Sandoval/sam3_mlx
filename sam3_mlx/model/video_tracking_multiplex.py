@@ -732,6 +732,15 @@ class VideoTrackingMultiplex(nn.Module):
         if find_targets is None:
             raise ValueError("forward requires input.find_targets for mask prompts")
 
+        missing_target_indices = [
+            stage_id for stage_id, target in enumerate(find_targets) if target is None
+        ]
+        if missing_target_indices:
+            raise ValueError(
+                "mask-prompt preparation requires populated find_targets entries; "
+                f"missing indices: {missing_target_indices}"
+            )
+
         gt_masks_per_frame = {
             stage_id: self._target_segments_as_masks(targets)
             for stage_id, targets in enumerate(find_targets)
@@ -2662,6 +2671,7 @@ class VideoTrackingMultiplex(nn.Module):
 
     def add_new_masks(
         self,
+        *,
         inference_state: dict[str, Any],
         frame_idx: int,
         obj_ids: Any,
@@ -2940,7 +2950,12 @@ class VideoTrackingMultiplex(nn.Module):
 
         if dynamic_vos_eval:
             object_appearance_order = backbone_out["object_appearance_order"]
-            num_objects = len(input.find_metadatas[0].coco_image_id)
+            find_metadatas = getattr(input, "find_metadatas", None)
+            if not find_metadatas or find_metadatas[0] is None:
+                raise ValueError(
+                    "dynamic VOS evaluation requires populated find_metadatas[0]"
+                )
+            num_objects = len(find_metadatas[0].coco_image_id)
             inverse_object_appearance_order: list[int | None] = [
                 None for _ in object_appearance_order
             ]

@@ -907,16 +907,16 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
         _eval_tree(current_out, video_res_masks)
         return frame_idx, list(inference_state["obj_ids"]), None, video_res_masks
 
-    def add_new_masks(
+    def add_new_masks(  # pyright: ignore[reportIncompatibleMethodOverride]
         self,
         inference_state: dict[str, Any],
         frame_idx: int,
         obj_ids: Any,
         masks: Any,
         add_mask_to_memory: bool = False,
-        are_masks_from_pts: bool = False,
-        *,
         reconditioning: bool = False,
+        *,
+        are_masks_from_pts: bool = False,
     ) -> tuple[int, list[Any], None, Any]:
         del add_mask_to_memory, are_masks_from_pts
         obj_ids = _coerce_obj_id_list(obj_ids)
@@ -1460,19 +1460,18 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
 
 
 class Sam3VideoTrackingMultiplexDemo(VideoTrackingMultiplexDemo):
-    def init_state(
+    def init_state(  # pyright: ignore[reportIncompatibleMethodOverride]
         self,
-        video_path: Any = None,
-        offload_video_to_cpu: bool = False,
-        offload_state_to_cpu: bool = False,
-        async_loading_frames: bool = False,
-        use_torchcodec: bool = False,
-        use_cv2: bool = False,
-        *,
         video_height: int | None = None,
         video_width: int | None = None,
         num_frames: int | None = None,
         cached_features: Any = None,
+        offload_video_to_cpu: bool = False,
+        offload_state_to_cpu: bool = False,
+        video_path: Any = None,
+        async_loading_frames: bool = False,
+        use_torchcodec: bool = False,
+        use_cv2: bool = False,
     ) -> Any:
         if video_path is not None:
             return _load_multiplex_demo_state_from_resource(

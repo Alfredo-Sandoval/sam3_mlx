@@ -18,6 +18,7 @@ MLX_COMMUNITY_REPO = "mlx-community/sam3-image"
 PYTORCH_REPO = "facebook/sam3"
 CONVERSION_MANIFEST = "conversion-manifest.json"
 _COMMIT_REVISION_PATTERN = re.compile(r"[0-9a-fA-F]{40}")
+_SHA256_PATTERN = re.compile(r"[0-9a-fA-F]{64}")
 
 
 type JsonValue = (
@@ -120,6 +121,20 @@ def _json_object(text: str, source: str) -> dict[str, JsonValue]:
     if not isinstance(value, dict):
         raise ValueError(f"{source} must contain a JSON object.")
     return value
+
+
+def _nonempty_string(value: object, name: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise TypeError(f"{name} must be a non-empty string")
+    return value
+
+
+def _validate_sha256(value: object, name: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string")
+    if not _SHA256_PATTERN.fullmatch(value):
+        raise ValueError(f"{name} must be a 64-character hexadecimal SHA-256")
+    return value.lower()
 
 
 @dataclass(frozen=True)
@@ -284,13 +299,20 @@ def validate_hub_checkpoint_provenance(
     conversion-manifest.json is present, architecture and output_sha256 must
     match the pin as well.
     """
+    expected_repo = _nonempty_string(expected_repo, "expected_repo")
+    expected_architecture = _nonempty_string(
+        expected_architecture, "expected_architecture"
+    )
+    expected_revision = _validate_source_revision(expected_revision)
+    expected_output_sha256 = _validate_sha256(
+        expected_output_sha256, "expected_output_sha256"
+    )
+
     checkpoint_dir = Path(checkpoint_dir)
     weights_file = checkpoint_dir / "model.safetensors"
     if not weights_file.exists():
         raise FileNotFoundError(f"model.safetensors not found in {checkpoint_dir}.")
 
-    expected_revision = _validate_source_revision(expected_revision)
-    expected_output_sha256 = expected_output_sha256.lower()
     actual_sha = _sha256(weights_file)
     if actual_sha != expected_output_sha256:
         raise ValueError(
@@ -572,7 +594,9 @@ def _validate_cached_conversion(
         )
 
 
-def _validate_source_revision(source_revision: str) -> str:
+def _validate_source_revision(source_revision: object) -> str:
+    if not isinstance(source_revision, str):
+        raise TypeError("source_revision must be a string")
     if not _COMMIT_REVISION_PATTERN.fullmatch(source_revision):
         raise ValueError(
             "source_revision must be a full 40-character hexadecimal commit SHA."

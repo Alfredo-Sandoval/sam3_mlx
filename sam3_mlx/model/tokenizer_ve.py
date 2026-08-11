@@ -87,15 +87,15 @@ def _clean_whitespace(x: str) -> str:
     return whitespace_clean(basic_clean(x))
 
 
-def get_clean_fn(clean_type: str) -> Callable[[str], str]:
-    if clean_type == "canonicalize":
+def get_clean_fn(type: str) -> Callable[[str], str]:
+    if type == "canonicalize":
         return _clean_canonicalize
-    elif clean_type == "lower":
+    elif type == "lower":
         return _clean_lower
-    elif clean_type == "whitespace":
+    elif type == "whitespace":
         return _clean_whitespace
     else:
-        raise AssertionError(f"Invalid clean function ({clean_type}).")
+        raise AssertionError(f"Invalid clean function ({type}).")
 
 
 def canonicalize_text(

@@ -12,9 +12,9 @@ implicit backend fallback can happen.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
 from collections.abc import Mapping
-from typing import Never, TypeVar
+from dataclasses import dataclass, field
+from typing import Never, TypeVar, cast
 
 from sam3_mlx._unsupported import UPSTREAM_COMMIT, raise_unsupported
 
@@ -52,6 +52,30 @@ class OptimAMPConf:
     amp_dtype: str = "float16"
 
 
+def _normalize_amp(amp: object) -> OptimAMPConf:
+    if isinstance(amp, OptimAMPConf):
+        return amp
+    if amp is None:
+        return OptimAMPConf()
+    if not isinstance(amp, Mapping):
+        raise TypeError("amp must be a mapping or OptimAMPConf")
+
+    amp_mapping = cast(Mapping[object, object], amp)
+    keys = list(amp_mapping)
+    if not all(isinstance(key, str) for key in keys):
+        raise TypeError("amp keys must be strings")
+    extra_keys = set(cast(list[str], keys)) - {"enabled", "amp_dtype"}
+    if extra_keys:
+        raise TypeError(f"Unexpected amp keys: {sorted(extra_keys)}")
+    enabled = amp_mapping.get("enabled", False)
+    amp_dtype = amp_mapping.get("amp_dtype", "float16")
+    if not isinstance(enabled, bool):
+        raise TypeError("amp enabled must be bool")
+    if not isinstance(amp_dtype, str):
+        raise TypeError("amp amp_dtype must be str")
+    return OptimAMPConf(enabled=enabled, amp_dtype=amp_dtype)
+
+
 @dataclass
 class OptimConf:
     optimizer: object = None
@@ -62,17 +86,7 @@ class OptimConf:
     gradient_logger: object = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.amp, OptimAMPConf):
-            if self.amp is None:
-                self.amp = {}
-            extra_keys = set(self.amp) - {"enabled", "amp_dtype"}
-            if extra_keys:
-                raise TypeError(f"Unexpected amp keys: {sorted(extra_keys)}")
-            enabled = self.amp.get("enabled", False)
-            amp_dtype = self.amp.get("amp_dtype", "float16")
-            if not isinstance(enabled, bool) or not isinstance(amp_dtype, str):
-                raise TypeError("amp enabled must be bool and amp_dtype must be str")
-            self.amp = OptimAMPConf(enabled=enabled, amp_dtype=amp_dtype)
+        self.amp = _normalize_amp(self.amp)
 
 
 @dataclass

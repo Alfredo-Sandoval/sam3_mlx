@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from types import SimpleNamespace
 from typing import cast
 
@@ -9,9 +9,9 @@ import pytest
 
 from sam3_mlx._unsupported import Sam3MlxUnsupportedError
 from sam3_mlx.train.data.sam3_video_dataset import VideoGroundingDataset
-from sam3_mlx.train.utils import checkpoint_utils, distributed, train_utils
 from sam3_mlx.train.data.torch_dataset import TorchDataset
 from sam3_mlx.train.trainer import OptimAMPConf, OptimConf
+from sam3_mlx.train.utils import checkpoint_utils, distributed, train_utils
 from sam3_mlx.train.utils.logger import Logger
 
 
@@ -121,6 +121,14 @@ def test_get_state_dict_traverses_mapping_and_sequence_keys():
 
     with pytest.raises(KeyError, match="sequence length 1"):
         checkpoint_utils.get_state_dict(checkpoint, ["models", 2])
+    with pytest.raises(KeyError, match="sequence length 1"):
+        checkpoint_utils.get_state_dict(checkpoint, ["models", -2])
+    with pytest.raises(TypeError, match="sequence keys must not be booleans"):
+        checkpoint_utils.get_state_dict(checkpoint, ["models", True])
+
+    assert checkpoint_utils.get_state_dict(
+        checkpoint, ["models", -1, "state_dict"]
+    ) == {"weight": 3}
 
 
 def test_frozen_parameter_checks_detect_trainable_or_changed_values():
@@ -275,14 +283,52 @@ def test_python_batch_loader_is_epoch_deterministic_and_rejects_boolean_epoch():
         wrapper.get_loader(True)
 
 
-def test_trainer_amp_config_normalizes_mapping_and_validates_values():
-    config = OptimConf(amp={"enabled": True, "amp_dtype": "bfloat16"})
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param([], id="list"),
+        pytest.param((), id="tuple"),
+        pytest.param("float16", id="string"),
+        pytest.param(1, id="integer"),
+        pytest.param(True, id="boolean"),
+        pytest.param(object(), id="object"),
+    ],
+)
+def test_trainer_amp_config_rejects_non_mapping_values(value: object) -> None:
+    amp = cast(OptimAMPConf | Mapping[str, object] | None, value)
 
-    assert config.amp == OptimAMPConf(enabled=True, amp_dtype="bfloat16")
-    with pytest.raises(TypeError, match="Unexpected amp keys"):
+    with pytest.raises(TypeError, match="^amp must be a mapping or OptimAMPConf$"):
+        OptimConf(amp=amp)
+
+
+def test_trainer_amp_config_normalizes_default_and_mappings() -> None:
+    assert OptimConf().amp == OptimAMPConf()
+    assert OptimConf(amp={}).amp == OptimAMPConf()
+    assert OptimConf(amp={"enabled": True, "amp_dtype": "bfloat16"}).amp == (
+        OptimAMPConf(enabled=True, amp_dtype="bfloat16")
+    )
+
+
+def test_trainer_amp_config_preserves_existing_config() -> None:
+    amp = OptimAMPConf(enabled=True, amp_dtype="bfloat16")
+
+    assert OptimConf(amp=amp).amp is amp
+
+
+def test_trainer_amp_config_validates_mapping_keys_and_values() -> None:
+    with pytest.raises(TypeError, match=r"Unexpected amp keys: \['unknown'\]"):
         OptimConf(amp={"unknown": True})
-    with pytest.raises(TypeError, match="enabled must be bool"):
+    with pytest.raises(TypeError, match="^amp enabled must be bool$"):
         OptimConf(amp={"enabled": 1})
+    with pytest.raises(TypeError, match="^amp amp_dtype must be str$"):
+        OptimConf(amp={"amp_dtype": 16})
+
+
+def test_trainer_amp_config_rejects_non_string_mapping_key() -> None:
+    amp = cast(Mapping[str, object], {1: True})
+
+    with pytest.raises(TypeError, match="^amp keys must be strings$"):
+        OptimConf(amp=amp)
 
 
 def test_logger_tensorboard_config_remains_fail_fast():

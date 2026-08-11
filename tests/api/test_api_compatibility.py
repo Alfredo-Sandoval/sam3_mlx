@@ -16,6 +16,12 @@ from sam3_mlx.model.sam3_multiplex_video_predictor import (
     Sam3MultiplexVideoPredictor,
 )
 from sam3_mlx.model.sam3_video_predictor import Sam3VideoPredictor
+from sam3_mlx.model.tokenizer_ve import get_clean_fn
+from sam3_mlx.model.video_tracking_multiplex import VideoTrackingMultiplex
+from sam3_mlx.model.video_tracking_multiplex_demo import (
+    Sam3VideoTrackingMultiplexDemo,
+    VideoTrackingMultiplexDemo,
+)
 
 
 BLOCKED_ACCELERATOR = "cu" + "da"
@@ -188,6 +194,51 @@ def test_public_builders_keep_upstream_parameter_names_and_order():
             target = getattr(sam3_mlx, name)
         signature = inspect.signature(target)
         assert list(signature.parameters)[: len(expected_order)] == expected_order
+
+
+def test_tokenizer_cleaner_preserves_upstream_keyword_name():
+    cleaner = get_clean_fn(type="lower")
+
+    assert cleaner(" Mixed CASE ") == "mixed case"
+
+
+def test_multiplex_demo_preserves_legacy_positional_parameter_order():
+    init_parameters = list(
+        inspect.signature(Sam3VideoTrackingMultiplexDemo.init_state).parameters
+    )
+    mask_parameters = inspect.signature(
+        VideoTrackingMultiplexDemo.add_new_masks
+    ).parameters
+
+    assert init_parameters[:8] == [
+        "self",
+        "video_height",
+        "video_width",
+        "num_frames",
+        "cached_features",
+        "offload_video_to_cpu",
+        "offload_state_to_cpu",
+        "video_path",
+    ]
+    assert list(mask_parameters)[:7] == [
+        "self",
+        "inference_state",
+        "frame_idx",
+        "obj_ids",
+        "masks",
+        "add_mask_to_memory",
+        "reconditioning",
+    ]
+    assert mask_parameters["are_masks_from_pts"].kind is inspect.Parameter.KEYWORD_ONLY
+
+    multiplex_mask_parameters = inspect.signature(
+        VideoTrackingMultiplex.add_new_masks
+    ).parameters
+    assert all(
+        parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        for name, parameter in multiplex_mask_parameters.items()
+        if name != "self"
+    )
 
 
 def test_video_predictor_builder_keeps_upstream_vararg_shape():

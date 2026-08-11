@@ -8,14 +8,19 @@ import pytest
 
 from sam3_mlx._unsupported import Sam3MlxUnsupportedError
 from sam3_mlx.model.io_utils import load_video_frames_from_video_file
+from sam3_mlx.model.sam3_image import Sam3Image
 from sam3_mlx.model.sam3_multiplex_base import (
     Sam3MultiplexBase,
     TrackerState,
     _is_bucket_state,
     _optional_int_attribute,
     _require_multiplex_controller,
+    text_outputs_for_batch,
 )
-from sam3_mlx.model.sam3_multiplex_tracking import _integer_value
+from sam3_mlx.model.sam3_multiplex_tracking import (
+    _integer_value,
+    _require_feature_cache,
+)
 from sam3_mlx.model.sam3_tracking_predictor import _positive_integer
 from sam3_mlx.model.sam3_video_base import _dimension
 from sam3_mlx.model.video_tracking_multiplex_demo import (
@@ -148,3 +153,70 @@ def test_multiplex_state_boundaries_reject_boolean_counts_and_dimensions():
         )
 
     assert not _is_bucket_state(SimpleNamespace(num_buckets=True))
+
+
+def test_feature_cache_rejects_boolean_frame_keys():
+    with pytest.raises(TypeError, match="string or integer keys"):
+        _require_feature_cache({True: object()})
+
+
+def test_image_matching_requires_populated_optional_target_at_transition():
+    matching_model = SimpleNamespace(
+        training=True,
+        num_interactive_steps_val=0,
+        _validate_interactive_steps_val=lambda: None,
+    )
+
+    with pytest.raises(ValueError, match="matching requires a populated find_target"):
+        Sam3Image.forward_grounding(
+            matching_model,
+            backbone_out={},
+            find_input=object(),
+            find_target=None,
+            geometric_prompt=object(),
+        )
+
+
+def test_empty_packed_output_does_not_treat_boolean_as_zero_count():
+    false_count_state = {"multiplex_state": SimpleNamespace(total_valid_entries=False)}
+    empty_count_state = {"multiplex_state": SimpleNamespace(total_valid_entries=0)}
+
+    Sam3MultiplexBase._ensure_empty_packed_current_output(false_count_state, 3)
+    Sam3MultiplexBase._ensure_empty_packed_current_output(empty_count_state, 3)
+
+    assert "output_dict" not in false_count_state
+    assert empty_count_state["output_dict"]["cond_frame_outputs"][3] == {
+        "conditioning_objects": set()
+    }
+
+
+@pytest.mark.parametrize("text_batch", ["shoe", b"shoe", ["shoe", 1]])
+def test_detector_text_batch_rejects_string_like_and_mixed_iterables(text_batch):
+    with pytest.raises(TypeError, match="sequences of strings"):
+        text_outputs_for_batch(object(), {}, text_batch, device="mlx")
+
+
+def test_detector_text_batch_accepts_string_sequence_and_reuses_cache():
+    class _TextBackbone:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def forward_text(self, prompts, *, device):
+            self.calls += 1
+            assert prompts == ["shoe", "visual"]
+            assert device == "mlx"
+            return {"language_features": np.zeros((2, 1), dtype=np.float32)}
+
+    backbone = _TextBackbone()
+    detector = SimpleNamespace(backbone=backbone)
+    feature_cache = {}
+
+    first = text_outputs_for_batch(
+        detector, feature_cache, ["shoe", "visual"], device="mlx"
+    )
+    second = text_outputs_for_batch(
+        detector, feature_cache, ["shoe", "visual"], device="mlx"
+    )
+
+    assert second["language_features"] is first["language_features"]
+    assert backbone.calls == 1

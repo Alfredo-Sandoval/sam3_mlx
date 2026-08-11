@@ -81,12 +81,21 @@ norecursedirs = [
 
 [tool.pyright]
 typeCheckingMode = "strict"
+include = ["sam3_mlx"]
 exclude = [
     ".venv",
     "third_party",
 ]
 
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
 [dependency-groups]
 dev = [
+    "pyright>=1.1.411",
     "pytest-reportlog>=1.0.0",
+    "ruff>=0.12.0",
 ]
