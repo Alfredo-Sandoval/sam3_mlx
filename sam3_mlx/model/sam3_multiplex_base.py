@@ -41,6 +41,7 @@ SAM3_COLLECTIVE_OP_TIMEOUT_SEC = 180
 NumpyArray: TypeAlias = NDArray[np.generic]
 IntArray: TypeAlias = NDArray[np.int64]
 BoolArray: TypeAlias = NDArray[np.bool_]
+FloatArray: TypeAlias = NDArray[np.float32]
 FeatureCache: TypeAlias = dict[str | int, object]
 TrackerState: TypeAlias = dict[str, object]
 MetadataValue = TypeVar("MetadataValue")
@@ -166,6 +167,10 @@ class _ArrayMethods(Protocol):
     def reshape(self, *shape: int) -> mx.array: ...
 
 
+class _ScalarArrayMethods(Protocol):
+    def reshape(self, shape: tuple[()]) -> mx.array: ...
+
+
 class _MlxBinaryArrayCall(Protocol):
     def __call__(self, left: mx.array, right: mx.array) -> object: ...
 
@@ -178,6 +183,33 @@ class _MultiplexArrayState(Protocol):
     def mux(self, value: mx.array) -> mx.array: ...
 
     def demux(self, value: mx.array) -> mx.array: ...
+
+
+class _ReconditionMasksCall(Protocol):
+    def __call__(
+        self,
+        *,
+        inference_state: TrackerState,
+        frame_idx: int,
+        obj_ids: list[int],
+        masks: mx.array,
+        reconditioning: bool,
+    ) -> object: ...
+
+
+class _ReconditionMaskCall(Protocol):
+    def __call__(
+        self,
+        *,
+        inference_state: TrackerState,
+        frame_idx: int,
+        obj_id: int,
+        mask: mx.array,
+    ) -> object: ...
+
+
+class _ArbitraryCall(Protocol):
+    def __call__(self, *args: object, **kwargs: object) -> object: ...
 
 
 def _require_multiplex_controller(tracker: object) -> _MultiplexControllerView:
@@ -266,6 +298,10 @@ def _is_tracker_array(value: object) -> TypeGuard[TrackerArray]:
 
 def _reshape(array: mx.array, *shape: int) -> mx.array:
     return cast(_ArrayMethods, array).reshape(*shape)
+
+
+def _reshape_scalar(array: mx.array) -> mx.array:
+    return cast(_ScalarArrayMethods, array).reshape(())
 
 
 def _call_mlx_binary_array(
@@ -694,7 +730,7 @@ class Sam3MultiplexTrackerPredictor(nn.Module):
 
     def add_output_per_object(
         self, *args: object, **kwargs: object
-    ) -> NoReturn:
+    ) -> object | None:
         del args, kwargs
         raise_unsupported_multiplex_runtime(
             "Sam3MultiplexTrackerPredictor.add_output_per_object"
@@ -2015,6 +2051,8 @@ class Sam3MultiplexBase(Sam3VideoBase):
         normalized["scores"] = det_scores.astype(mx.float32)
         bbox = normalized.get("bbox")
         if bbox is not None:
+            if not _is_tracker_array(bbox):
+                raise TypeError("video detector bbox must be an array")
             bbox_mx = bbox if _is_mlx_array(bbox) else mx.array(bbox)
             if bbox_mx.ndim == 3 and bbox_mx.shape[0] == 1:
                 bbox_mx = bbox_mx[0]
@@ -2428,8 +2466,8 @@ class Sam3MultiplexBase(Sam3VideoBase):
         if pred_masks.ndim == 4 and pred_masks.shape[0] == 1:
             pred_masks = pred_masks[0]
         pred_scores = mx.where(
-            det_keep.reshape(-1),
-            pred_scores.reshape(-1),
+            _reshape(det_keep, -1),
+            _reshape(pred_scores, -1),
             mx.array(-1.0, dtype=pred_scores.dtype),
         )
         keep_indices, _num_dropped = self._image_only_detection_keep_indices(
@@ -2574,7 +2612,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
                     low_res_masks_local.append(low_res_mask.astype(mx.float32))
                     sam2_score = state_sam2_scores_mx[obj_idx]
                     if int(np.prod(sam2_score.shape)) == 1:
-                        sam2_score = sam2_score.reshape(())
+                        sam2_score = _reshape_scalar(sam2_score)
                     sam2_scores_local.append(sam2_score)
 
         return obj_ids_local, low_res_masks_local, sam2_scores_local
@@ -2663,7 +2701,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
         obj_id_to_mask: dict[int, Any] = {}
         obj_id_to_score: dict[int, float] = {}
         score_map = tracker_metadata_prev.get("obj_id_to_score", {})
-        sam2_scores_global = []
+        sam2_scores_global: list[mx.array] = []
         for obj_idx, obj_id in enumerate(obj_ids_local):
             obj_id_int = int(obj_id)
             sam2_score_prob = mx.sigmoid(
@@ -2725,12 +2763,22 @@ class Sam3MultiplexBase(Sam3VideoBase):
             raise_unsupported_multiplex_runtime(
                 "Sam3MultiplexBase._recondition_masklets(input_mask_size)"
             )
-        add_new_masks = getattr(self.tracker, "add_new_masks", None)
-        add_new_mask = getattr(self.tracker, "add_new_mask", None)
-        if add_new_masks is None and add_new_mask is None:
+        add_new_masks_value: object = getattr(self.tracker, "add_new_masks", None)
+        add_new_mask_value: object = getattr(self.tracker, "add_new_mask", None)
+        if not callable(add_new_masks_value) and not callable(add_new_mask_value):
             raise_unsupported_multiplex_runtime(
                 "Sam3MultiplexBase._recondition_masklets(add_mask)"
             )
+        add_new_masks = (
+            cast(_ReconditionMasksCall, add_new_masks_value)
+            if callable(add_new_masks_value)
+            else None
+        )
+        add_new_mask = (
+            cast(_ReconditionMaskCall, add_new_mask_value)
+            if callable(add_new_mask_value)
+            else None
+        )
 
         obj_ids_all = np.asarray(
             tracker_metadata["obj_ids_all_gpu"],
@@ -2854,6 +2902,10 @@ class Sam3MultiplexBase(Sam3VideoBase):
                     reconditioning=True,
                 )
             else:
+                if add_new_mask is None:
+                    raise_unsupported_multiplex_runtime(
+                        "Sam3MultiplexBase._recondition_masklets(add_new_mask)"
+                    )
                 for obj_idx, obj_id in enumerate(obj_ids_to_recondition):
                     add_new_mask(
                         inference_state=inference_state,
@@ -2950,7 +3002,9 @@ class Sam3MultiplexBase(Sam3VideoBase):
         det_boxes_bbox_iou = mx.take(det_boxes.astype(mx.float32), det_idx_mx, axis=0)
         det_scores_bbox_iou = mx.take(det_scores, det_idx_mx, axis=0)
         sam2_mask = mx.take(tracker_masks.astype(mx.float32), tracker_idx_mx, axis=0)
-        sam2_box_pixels = mask_to_box((sam2_mask > 0)[:, None, :, :]).reshape(-1, 4)
+        sam2_box_pixels = _reshape(
+            mask_to_box((sam2_mask > 0)[:, None, :, :]), -1, 4
+        )
         mask_height, mask_width = sam2_mask.shape[-2:]
         sam2_box_normalized = sam2_box_pixels.astype(mx.float32) / mx.array(
             [mask_width, mask_height, mask_width, mask_height],
@@ -2962,8 +3016,13 @@ class Sam3MultiplexBase(Sam3VideoBase):
             det_boxes_bbox_iou,
             sam2_box_normalized,
         )
-        iou_np = _array_to_numpy(iou, dtype=np.float32).reshape(-1)
-        score_np = _array_to_numpy(det_scores_bbox_iou, dtype=np.float32).reshape(-1)
+        iou_np = cast(
+            FloatArray, _array_to_numpy(iou, dtype=np.float32).reshape(-1)
+        )
+        score_np = cast(
+            FloatArray,
+            _array_to_numpy(det_scores_bbox_iou, dtype=np.float32).reshape(-1),
+        )
         recondition = (iou_np < float(self.reconstruction_bbox_iou_thresh)) & (
             score_np >= float(self.reconstruction_bbox_det_score)
         )
@@ -4208,11 +4267,11 @@ class Sam3MultiplexBase(Sam3VideoBase):
         if sam2_scores_local:
             tracker_obj_scores_global = mx.stack(
                 [
-                    (
+                    _reshape_scalar(
                         score
                         if _is_mlx_array(score)
                         else mx.array(score, dtype=mx.float32)
-                    ).reshape(())
+                    )
                     for score in sam2_scores_local
                 ],
                 axis=0,
@@ -4711,7 +4770,7 @@ class Sam3MultiplexPredictorWrapper(Sam3MultiplexTrackerPredictor):
 
     def __init__(
         self,
-        model: Any,
+        model: object,
         per_obj_inference: bool = False,
         fill_hole_area: int = 0,
         is_multiplex: bool = True,
@@ -4724,24 +4783,33 @@ class Sam3MultiplexPredictorWrapper(Sam3MultiplexTrackerPredictor):
         self.is_multiplex = is_multiplex
         self.is_multiplex_dynamic = is_multiplex_dynamic
 
-    def __getattr__(self, name: str) -> Any:
+    def _wrapped_model(self) -> object:
         try:
-            model = self["model"]
+            return cast(object, self["model"])
         except KeyError as exc:
-            raise AttributeError(name) from exc
+            raise AttributeError("model") from exc
+
+    def __getattr__(self, name: str) -> object:
+        model = self._wrapped_model()
         if name == "model":
             return model
-        return getattr(model, name)
+        attribute: object = getattr(model, name)
+        return attribute
 
-    def forward(self, *args: Any, **kwargs: Any) -> Any:
+    def forward(self, *args: object, **kwargs: object) -> NoReturn:
         del args, kwargs
         raise_unsupported_multiplex_runtime("Sam3MultiplexPredictorWrapper.forward")
 
-    def add_output_per_object(self, *args: Any, **kwargs: Any) -> Any:
+    def add_output_per_object(
+        self, *args: object, **kwargs: object
+    ) -> object | None:
         if self.per_obj_inference:
             return None
-        if hasattr(self.model, "_add_output_per_object"):
-            return self.model._add_output_per_object(*args, **kwargs)
+        method: object = getattr(
+            self._wrapped_model(), "_add_output_per_object", None
+        )
+        if callable(method):
+            return cast(_ArbitraryCall, method)(*args, **kwargs)
         raise_unsupported_multiplex_runtime(
             "Sam3MultiplexPredictorWrapper.add_output_per_object"
         )
