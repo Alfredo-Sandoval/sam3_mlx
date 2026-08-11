@@ -6,7 +6,7 @@ try:
     from typing import NotRequired, Required, TypedDict
 except ImportError:
     from typing_extensions import NotRequired, Required, TypedDict
-from typing import Any
+from typing import Any, cast
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -36,7 +36,7 @@ NO_OBJ_SCORE = -1024.0
 neck_outs = ["interactive", "sam2_backbone_out"]
 
 
-def _trunc_normal(shape, std: float = 0.02) -> mx.array:
+def _trunc_normal(shape: tuple[int, ...], std: float = 0.02) -> mx.array:
     return mx.random.truncated_normal(lower=-2.0, upper=2.0, shape=shape) * std
 
 
@@ -257,15 +257,18 @@ class VideoTrackingMultiplex(nn.Module):
 
         assert transformer.decoder is None, "transformer should be encoder-only"
         self.transformer = transformer
-        self.hidden_dim = transformer.d_model
+        self.hidden_dim = cast(int, transformer.d_model)
 
         self.maskmem_backbone = maskmem_backbone
-        self.mem_dim = self.hidden_dim
-        if hasattr(self.maskmem_backbone, "out_proj") and hasattr(
-            self.maskmem_backbone.out_proj,
-            "weight",
-        ):
-            mem_dim = self.maskmem_backbone.out_proj.weight.shape[0]
+        self.mem_dim: int = self.hidden_dim
+        out_proj: object | None = getattr(self.maskmem_backbone, "out_proj", None)
+        weight: mx.array | None = (
+            cast(mx.array, getattr(out_proj, "weight"))
+            if out_proj is not None and hasattr(out_proj, "weight")
+            else None
+        )
+        if weight is not None:
+            mem_dim = weight.shape[0]
             assert mem_dim == self.hidden_dim, (
                 "there should be no compression of memory embeddings"
             )
