@@ -23,8 +23,8 @@ import numpy as np
 from numpy.typing import DTypeLike, NDArray
 
 from sam3_mlx.mlx_runtime import to_numpy
-from sam3_mlx.perflib.masks_ops import mask_iou
-from sam3_mlx.model.box_ops import fast_diag_box_iou
+from sam3_mlx.perflib import masks_ops
+from sam3_mlx.model import box_ops
 from sam3_mlx.model.data_misc import interpolate
 from sam3_mlx.model.sam3_tracker_utils import fill_holes_in_mask_scores, mask_to_box
 from sam3_mlx.model.sam3_video_base import (
@@ -162,6 +162,24 @@ class _PackedRemoveCall(Protocol):
     def __call__(self, indices: list[int], *, strict: bool) -> object: ...
 
 
+class _ArrayMethods(Protocol):
+    def reshape(self, *shape: int) -> mx.array: ...
+
+
+class _MlxBinaryArrayCall(Protocol):
+    def __call__(self, left: mx.array, right: mx.array) -> object: ...
+
+
+class _MlxArrayCall(Protocol):
+    def __call__(self, value: mx.array) -> object: ...
+
+
+class _MultiplexArrayState(Protocol):
+    def mux(self, value: mx.array) -> mx.array: ...
+
+    def demux(self, value: mx.array) -> mx.array: ...
+
+
 def _require_multiplex_controller(tracker: object) -> _MultiplexControllerView:
     controller: object = getattr(tracker, "multiplex_controller", None)
     allowed_bucket_capacity: object = getattr(
@@ -229,12 +247,48 @@ def _optional_int_attribute(target: object, name: str) -> int | None:
     raise TypeError(f"{name} must be an integer when provided")
 
 
+def _float_attribute(target: object, name: str) -> float:
+    value: object = getattr(target, name, None)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, (np.integer, np.floating)):
+        return float(value.item())
+    raise TypeError(f"{name} must be numeric")
+
+
 def _is_mlx_array(value: object) -> TypeGuard[mx.array]:
     return value.__class__.__module__.startswith("mlx.")
 
 
 def _is_tracker_array(value: object) -> TypeGuard[TrackerArray]:
     return _is_mlx_array(value) or isinstance(value, np.ndarray)
+
+
+def _reshape(array: mx.array, *shape: int) -> mx.array:
+    return cast(_ArrayMethods, array).reshape(*shape)
+
+
+def _call_mlx_binary_array(
+    target: object,
+    name: str,
+    left: mx.array,
+    right: mx.array,
+) -> mx.array:
+    method: object = getattr(target, name, None)
+    if not callable(method):
+        raise TypeError(f"{name} must be callable")
+    result: object = cast(_MlxBinaryArrayCall, method)(left, right)
+    if not _is_mlx_array(result):
+        raise TypeError(f"{name} must return an MLX array for MLX inputs")
+    return result
+
+
+def _require_multiplex_array_state(value: object) -> _MultiplexArrayState:
+    if not callable(getattr(value, "mux", None)) or not callable(
+        getattr(value, "demux", None)
+    ):
+        raise TypeError("multiplex_state must expose callable mux and demux methods")
+    return cast(_MultiplexArrayState, value)
 
 
 def _require_text_outputs(value: object) -> dict[str, TrackerArray]:
@@ -278,6 +332,13 @@ def _array_to_numpy(
 
 def _int_array(value: object) -> IntArray:
     return cast(IntArray, _array_to_numpy(value, dtype=np.int64))
+
+
+def _int_scalar(value: object) -> int:
+    array = _int_array(value).reshape(-1)
+    if array.size != 1:
+        raise ValueError("expected one integer value")
+    return int(array[0])
 
 
 def _score_to_float(value: object) -> float:
@@ -2895,7 +2956,12 @@ class Sam3MultiplexBase(Sam3VideoBase):
             [mask_width, mask_height, mask_width, mask_height],
             dtype=mx.float32,
         )
-        iou = fast_diag_box_iou(det_boxes_bbox_iou, sam2_box_normalized)
+        iou = _call_mlx_binary_array(
+            box_ops,
+            "fast_diag_box_iou",
+            det_boxes_bbox_iou,
+            sam2_box_normalized,
+        )
         iou_np = _array_to_numpy(iou, dtype=np.float32).reshape(-1)
         score_np = _array_to_numpy(det_scores_bbox_iou, dtype=np.float32).reshape(-1)
         recondition = (iou_np < float(self.reconstruction_bbox_iou_thresh)) & (
@@ -3637,12 +3703,14 @@ class Sam3MultiplexBase(Sam3VideoBase):
 
     def _reapply_no_object_pointer_for_suppressed(
         self,
-        sam2_state: dict[str, Any],
-        current_out: dict[str, Any],
-        local_object_score_logits: Any,
+        sam2_state: TrackerState,
+        current_out: dict[str, object],
+        local_object_score_logits: TrackerArray,
     ) -> None:
-        no_obj_ptr_linear = getattr(self.tracker, "no_obj_ptr_linear", None)
-        if no_obj_ptr_linear is None:
+        no_obj_ptr_linear: object = getattr(
+            self.tracker, "no_obj_ptr_linear", None
+        )
+        if not callable(no_obj_ptr_linear):
             raise_unsupported_multiplex_runtime(
                 "Sam3MultiplexBase._tracker_update_memories(no_obj_ptr_linear)"
             )
@@ -3655,22 +3723,26 @@ class Sam3MultiplexBase(Sam3VideoBase):
                 "current_out must contain object_score_logits when "
                 "reapply_no_object_pointer=True."
             )
-        multiplex_state = sam2_state.get("multiplex_state")
-        if multiplex_state is None:
+        multiplex_state_value = sam2_state.get("multiplex_state")
+        if multiplex_state_value is None:
             raise ValueError(
                 "SAM2 state must contain multiplex_state when "
                 "reapply_no_object_pointer=True."
             )
+        multiplex_state = _require_multiplex_array_state(multiplex_state_value)
         if not hasattr(self.tracker, "object_score_logit_threshold"):
             raise_unsupported_multiplex_runtime(
                 "Sam3MultiplexBase._tracker_update_memories("
                 "object_score_logit_threshold)"
             )
 
+        previous_logits_value = current_out["object_score_logits"]
+        if not _is_tracker_array(previous_logits_value):
+            raise TypeError("current_out object_score_logits must be an array")
         previous_logits = (
-            current_out["object_score_logits"]
-            if _is_mlx_array(current_out["object_score_logits"])
-            else mx.array(current_out["object_score_logits"])
+            previous_logits_value
+            if _is_mlx_array(previous_logits_value)
+            else mx.array(previous_logits_value)
         ).astype(mx.float32)
         new_logits = (
             local_object_score_logits
@@ -3692,7 +3764,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
                 f"got {previous_logits.shape}."
             )
 
-        threshold = float(self.tracker.object_score_logit_threshold)
+        threshold = _float_attribute(self.tracker, "object_score_logit_threshold")
         newly_suppressed = (previous_logits > threshold) & (new_logits < 0)
         any_suppressed = _array_to_numpy(
             mx.any(newly_suppressed),
@@ -3700,22 +3772,37 @@ class Sam3MultiplexBase(Sam3VideoBase):
         ).reshape(-1)[0]
         if not bool(any_suppressed):
             return
-        existing_pointers = multiplex_state.demux(current_out["obj_ptr"])
+        current_pointer_value = current_out["obj_ptr"]
+        if not _is_tracker_array(current_pointer_value):
+            raise TypeError("current_out obj_ptr must be an array")
+        current_pointer = (
+            current_pointer_value
+            if _is_mlx_array(current_pointer_value)
+            else mx.array(current_pointer_value)
+        )
+        existing_pointers = multiplex_state.demux(current_pointer)
         if newly_suppressed.shape[0] != existing_pointers.shape[0]:
             raise ValueError(
                 "object_score_logits must align with demuxed obj_ptr entries; got "
                 f"{newly_suppressed.shape[0]} logits for "
                 f"{existing_pointers.shape[0]} pointers."
             )
-        replacement_pointers = no_obj_ptr_linear(existing_pointers)
+        replacement_pointers_value: object = cast(
+            _MlxArrayCall, no_obj_ptr_linear
+        )(existing_pointers)
+        if not _is_mlx_array(replacement_pointers_value):
+            raise TypeError("tracker.no_obj_ptr_linear must return an MLX array")
+        replacement_pointers = replacement_pointers_value
         if replacement_pointers.shape != existing_pointers.shape:
             raise ValueError(
                 "tracker.no_obj_ptr_linear must preserve obj_ptr shape; got "
                 f"{replacement_pointers.shape} for {existing_pointers.shape}."
             )
         suppress_mask = newly_suppressed.astype(existing_pointers.dtype)
-        suppress_mask = suppress_mask.reshape(
-            (suppress_mask.shape[0],) + (1,) * (existing_pointers.ndim - 1)
+        suppress_mask = _reshape(
+            suppress_mask,
+            suppress_mask.shape[0],
+            *((1,) * (existing_pointers.ndim - 1)),
         )
         new_pointers = (
             suppress_mask * replacement_pointers
@@ -3725,12 +3812,12 @@ class Sam3MultiplexBase(Sam3VideoBase):
 
     def _get_objects_to_suppress_based_on_most_recently_occluded(
         self,
-        binary_low_res_masks: Any,
-        last_occluded: Any,
-        obj_ids: Any,
+        binary_low_res_masks: TrackerArray,
+        last_occluded: TrackerArray,
+        obj_ids: object,
         frame_idx: int | None = None,
         reverse: bool = False,
-    ) -> Any:
+    ) -> mx.array:
         del frame_idx
         masks = (
             binary_low_res_masks
@@ -3741,7 +3828,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
             raise ValueError(
                 f"binary_low_res_masks must have shape (N, H, W), got {masks.shape}."
             )
-        obj_ids_np = np.asarray(obj_ids, dtype=np.int64).reshape(-1)
+        obj_ids_np = _int_array(obj_ids).reshape(-1)
         if masks.shape[0] != obj_ids_np.size:
             raise ValueError(
                 "binary_low_res_masks and obj_ids must have the same length; "
@@ -3759,7 +3846,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
                 f"{last_occ.shape[0]} values for {obj_ids_np.size} object ids."
             )
 
-        iou = mask_iou(masks, masks)
+        iou = _call_mlx_binary_array(masks_ops, "mask_iou", masks, masks)
         idx = mx.arange(obj_ids_np.size, dtype=mx.int64)
         upper_tri = idx[:, None] < idx[None, :]
         overlapping_pairs = (
@@ -3786,12 +3873,12 @@ class Sam3MultiplexBase(Sam3VideoBase):
     def _suppress_overlapping_based_on_recent_occlusion(
         self,
         frame_idx: int,
-        tracker_low_res_masks_global: Any,
-        tracker_metadata_prev: dict[str, Any],
-        tracker_metadata_new: dict[str, Any],
-        to_remove_mask: Any | None = None,
+        tracker_low_res_masks_global: TrackerArray,
+        tracker_metadata_prev: Mapping[str, object],
+        tracker_metadata_new: dict[str, object],
+        to_remove_mask: TrackerArray | set[int] | None = None,
         reverse: bool = False,
-    ) -> Any:
+    ) -> TrackerArray:
         if self.suppress_overlapping_based_on_recent_occlusion_threshold <= 0.0:
             return tracker_low_res_masks_global
 
@@ -3805,10 +3892,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
                 "tracker_low_res_masks_global must have shape (N, H, W), "
                 f"got {masks.shape}."
             )
-        obj_ids = np.asarray(
-            tracker_metadata_prev["obj_ids_all_gpu"],
-            dtype=np.int64,
-        ).reshape(-1)
+        obj_ids = _int_array(tracker_metadata_prev["obj_ids_all_gpu"]).reshape(-1)
         if masks.shape[0] != obj_ids.size:
             raise ValueError(
                 "Mask/metadata count mismatch in _suppress_overlapping: "
@@ -3818,22 +3902,30 @@ class Sam3MultiplexBase(Sam3VideoBase):
         if obj_ids.size == 0:
             return masks
 
-        gpu_metadata = tracker_metadata_new.setdefault("gpu_metadata", {})
+        gpu_metadata_value = tracker_metadata_new.setdefault("gpu_metadata", {})
+        if not isinstance(gpu_metadata_value, dict):
+            raise TypeError("gpu_metadata must be a dictionary")
+        gpu_metadata = cast(dict[str, object], gpu_metadata_value)
         last_occluded_tensor = gpu_metadata.get("last_occluded_tensor")
         if last_occluded_tensor is None:
-            last_occluded_by_id = tracker_metadata_prev.get(
+            last_occluded_by_id_value = tracker_metadata_prev.get(
                 "obj_id_to_last_occluded",
                 tracker_metadata_new.get("obj_id_to_last_occluded", {}),
             )
+            if not isinstance(last_occluded_by_id_value, Mapping):
+                raise TypeError("obj_id_to_last_occluded must be a mapping")
+            last_occluded_by_id = cast(Mapping[object, object], last_occluded_by_id_value)
             last_occluded_np = np.array(
                 [
-                    int(last_occluded_by_id.get(int(obj_id), -1))
+                    _int_scalar(last_occluded_by_id.get(int(obj_id), -1))
                     for obj_id in obj_ids.tolist()
                 ],
                 dtype=np.int64,
             )
             last_occluded = mx.array(last_occluded_np, dtype=mx.int64)
         else:
+            if not _is_tracker_array(last_occluded_tensor):
+                raise TypeError("last_occluded_tensor must be an array")
             last_occluded = (
                 last_occluded_tensor
                 if _is_mlx_array(last_occluded_tensor)
@@ -3875,7 +3967,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
             reverse=reverse,
         )
         is_obj_occluded = ~mx.any(
-            binary_masks.reshape(binary_masks.shape[0], -1),
+            _reshape(binary_masks, binary_masks.shape[0], -1),
             axis=1,
         )
         is_obj_occluded_or_suppressed = is_obj_occluded | to_suppress
@@ -3897,7 +3989,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
 
         suppress_shape = (to_suppress.shape[0],) + (1,) * (masks.ndim - 1)
         return mx.where(
-            to_suppress.reshape(suppress_shape),
+            _reshape(to_suppress, *suppress_shape),
             mx.full(masks.shape, -10.0, dtype=masks.dtype),
             masks,
         )
