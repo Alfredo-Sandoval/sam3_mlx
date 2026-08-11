@@ -833,6 +833,8 @@ def test_multiplex_tracking_init_state_constructs_mlx_input_batch():
     ]
     assert len(state["input_batch"].find_inputs) == 3
     assert state["input_batch"].find_inputs[2].img_ids_np.tolist() == [2]
+    assert state["input_batch"].find_targets == [None, None, None]
+    assert state["input_batch"].find_metadatas == [None, None, None]
     assert state["constants"]["empty_geometric_prompt"].box_embeddings.shape == (
         0,
         1,

@@ -351,8 +351,8 @@ class BatchedDatapoint:
     img_batch: MyTensor
     find_text_batch: List[str]
     find_inputs: List[FindStage]
-    find_targets: List[BatchedFindTarget]
-    find_metadatas: List[BatchedInferenceMetadata]
+    find_targets: List[Optional[BatchedFindTarget]]
+    find_metadatas: List[Optional[BatchedInferenceMetadata]]
     raw_images: Optional[List[Any]] = None
     get_queries: Optional[Any] = None
 
