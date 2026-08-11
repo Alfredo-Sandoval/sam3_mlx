@@ -1,3 +1,4 @@
+from pathlib import Path
 from threading import Event, Thread
 
 import pytest
@@ -29,7 +30,7 @@ class _BlockingInitModel:
         self.frames = _ClosableFrames()
         self.init_calls = 0
 
-    def init_state(self, **_kwargs):
+    def init_state(self, **_kwargs: object) -> dict[str, object]:
         self.init_calls += 1
         self.started.set()
         assert self.release.wait(timeout=2)
@@ -42,11 +43,11 @@ class _BlockingInitModel:
 
 
 class _ImmediateModel:
-    def __init__(self, *, frames=None) -> None:
-        self.frames = frames or _ClosableFrames()
+    def __init__(self, *, frames: _ClosableFrames | None = None) -> None:
+        self.frames = frames if frames is not None else _ClosableFrames()
         self.init_calls = 0
 
-    def init_state(self, **_kwargs):
+    def init_state(self, **_kwargs: object) -> dict[str, object]:
         self.init_calls += 1
         return {
             "frames": self.frames,
@@ -56,7 +57,7 @@ class _ImmediateModel:
         }
 
 
-def _predictor(model):
+def _predictor(model: object) -> Sam3BasePredictor:
     predictor = Sam3BasePredictor()
     predictor.model = model
     return predictor
@@ -98,9 +99,9 @@ def test_shutdown_prevents_inflight_session_publication_and_disposes_state():
     ]
     assert model.frames.closed is True
     assert predictor.is_shutdown is True
-    assert predictor._all_inference_states == {}
-    assert predictor._reserved_session_ids == set()
-    assert predictor._cancelled_session_ids == set()
+    assert predictor._all_inference_states == {}  # pyright: ignore[reportPrivateUsage]
+    assert predictor._reserved_session_ids == set()  # pyright: ignore[reportPrivateUsage]
+    assert predictor._cancelled_session_ids == set()  # pyright: ignore[reportPrivateUsage]
 
 
 def test_close_session_prevents_inflight_session_publication():
@@ -128,9 +129,9 @@ def test_close_session_prevents_inflight_session_publication():
         "the loaded state was disposed."
     ]
     assert model.frames.closed is True
-    assert predictor._all_inference_states == {}
-    assert predictor._reserved_session_ids == set()
-    assert predictor._cancelled_session_ids == set()
+    assert predictor._all_inference_states == {}  # pyright: ignore[reportPrivateUsage]
+    assert predictor._reserved_session_ids == set()  # pyright: ignore[reportPrivateUsage]
+    assert predictor._cancelled_session_ids == set()  # pyright: ignore[reportPrivateUsage]
 
 
 def test_shutdown_is_terminal_and_idempotent():
@@ -142,7 +143,7 @@ def test_shutdown_is_terminal_and_idempotent():
     predictor.shutdown()
 
     assert model.frames.closed is True
-    assert predictor._all_inference_states == {}
+    assert predictor._all_inference_states == {}  # pyright: ignore[reportPrivateUsage]
     with pytest.raises(RuntimeError, match="cannot start new sessions"):
         predictor.start_session("resource", session_id="after-shutdown")
     assert model.init_calls == 1
@@ -152,18 +153,22 @@ def test_close_provider_failure_still_clears_and_closes_session():
     model = _ImmediateModel(frames=_FailingFrames())
     predictor = _predictor(model)
     predictor.start_session("resource", session_id="bad-close")
-    session = predictor._all_inference_states["bad-close"]
+    session = predictor._all_inference_states[  # pyright: ignore[reportPrivateUsage]
+        "bad-close"
+    ]
 
     with pytest.raises(RuntimeError, match="Failed to close frame provider"):
         predictor.close_session("bad-close", run_gc_collect=False)
 
-    assert predictor._all_inference_states == {}
+    assert predictor._all_inference_states == {}  # pyright: ignore[reportPrivateUsage]
     assert model.frames.closed is True
     assert session["closed"] is True
     assert session["state"] == {}
 
 
-def test_selected_frame_async_folder_loading_fails_before_unbounded_preload(tmp_path):
+def test_selected_frame_async_folder_loading_fails_before_unbounded_preload(
+    tmp_path: Path,
+) -> None:
     model = _ImmediateModel()
     predictor = Sam3VideoPredictor(
         video_model=model,

@@ -1,5 +1,6 @@
 import inspect
 from threading import Event, Thread
+from typing import Callable, cast
 
 import numpy as np
 import pytest
@@ -86,10 +87,13 @@ UPSTREAM_BUILDER_PARAM_ORDER = {
 
 
 class _FakeBackbone:
-    def forward_image(self, image):
+    def forward_image(self, image: object) -> dict[str, object]:
         return {"image_batch": image}
 
-    def forward_text(self, prompts, device=None):
+    def forward_text(
+        self, prompts: list[str], device: object | None = None
+    ) -> dict[str, object]:
+        del device
         return {
             "language_features": np.zeros((1, len(prompts), 1), dtype=np.float32),
             "language_mask": np.zeros((len(prompts), 1), dtype=bool),
@@ -100,17 +104,22 @@ class _FakeModel:
     inst_interactive_predictor = None
     backbone = _FakeBackbone()
 
-    def _get_dummy_prompt(self, num_prompts=1):
+    def _get_dummy_prompt(self, num_prompts: int = 1) -> dict[str, int]:
         return {"num_prompts": num_prompts}
 
 
 class _FakeImageProcessor:
-    def __init__(self, image_model, resolution=1008, confidence_threshold=0.5):
+    def __init__(
+        self,
+        image_model: object,
+        resolution: int = 1008,
+        confidence_threshold: float = 0.5,
+    ) -> None:
         self.image_model = image_model
         self.resolution = resolution
         self.confidence_threshold = confidence_threshold
 
-    def set_image(self, image):
+    def set_image(self, image: object) -> dict[str, object]:
         del image
         return {
             "masks": np.zeros((0, 480, 640), dtype=bool),
@@ -120,18 +129,50 @@ class _FakeImageProcessor:
 
     def set_text_prompt(
         self,
-        prompt,
-        state,
+        prompt: str,
+        state: dict[str, object],
         *,
-        run_grounding=True,
-        text_outputs=None,
-    ):
+        run_grounding: bool = True,
+        text_outputs: dict[str, object] | None = None,
+    ) -> dict[str, object]:
         del prompt
         del run_grounding, text_outputs
         return state
 
-    def run_grounding(self, state):
+    def add_geometric_prompt(
+        self,
+        box: object,
+        label: bool,
+        state: dict[str, object],
+        *,
+        run_grounding: bool = True,
+    ) -> dict[str, object]:
+        del box, label, run_grounding
         return state
+
+    def add_point_prompt(
+        self,
+        point: object,
+        label: bool,
+        state: dict[str, object],
+        *,
+        run_grounding: bool = True,
+    ) -> dict[str, object]:
+        del point, label, run_grounding
+        return state
+
+    def run_grounding(self, state: dict[str, object]) -> dict[str, object]:
+        return state
+
+
+def _dynamic_video_predictor(**kwargs: object) -> Sam3VideoPredictor:
+    constructor = cast(Callable[..., Sam3VideoPredictor], Sam3VideoPredictor)
+    return constructor(**kwargs)
+
+
+def _dynamic_image_model(**kwargs: object) -> Sam3Image:
+    builder = cast(Callable[..., Sam3Image], sam3_mlx.build_sam3_image_model)
+    return builder(**kwargs)
 
 
 def test_public_builders_keep_upstream_parameter_names_and_order():
@@ -169,8 +210,10 @@ def test_image_builder_uses_explicit_mlx_default():
 
 
 @pytest.mark.parametrize("device", ["mlx", None])
-def test_image_processor_accepts_only_explicit_mlx_device(device):
-    processor = Sam3Processor(_FakeModel(), resolution=14, device=device)
+def test_image_processor_accepts_only_explicit_mlx_device(device: object) -> None:
+    processor = Sam3Processor(
+        cast(Sam3Image, _FakeModel()), resolution=14, device=device
+    )
 
     assert processor.device == "mlx"
 
@@ -187,18 +230,18 @@ def test_image_processor_accepts_only_explicit_mlx_device(device):
         42,
     ],
 )
-def test_non_mlx_devices_fail_fast(device):
+def test_non_mlx_devices_fail_fast(device: object) -> None:
     with pytest.raises(Sam3MlxUnsupportedError) as builder_exc:
-        sam3_mlx.build_sam3_image_model(device=device, load_from_HF=False)
+        _dynamic_image_model(device=device, load_from_HF=False)
     assert builder_exc.value.reason == "unsupported-device"
 
     with pytest.raises(Sam3MlxUnsupportedError) as processor_exc:
-        Sam3Processor(_FakeModel(), resolution=14, device=device)
+        Sam3Processor(cast(Sam3Image, _FakeModel()), resolution=14, device=device)
     assert processor_exc.value.reason == "unsupported-device"
 
 
 def test_video_model_builder_uses_explicit_mlx_device():
-    image_model = object()
+    image_model = cast(Sam3Image, object())
     model = sam3_mlx.build_sam3_video_model(
         device="mlx",
         image_model=image_model,
@@ -270,16 +313,19 @@ def test_sam3_predictor_version_sam3_uses_explicit_mlx_device():
 
     assert isinstance(predictor, Sam3VideoPredictor)
     assert predictor.async_loading_frames is False
+    assert isinstance(predictor.model, Sam3VideoInference)
     assert predictor.model.image_model is image_model
     assert predictor.model.image_size == 14
     assert predictor.model.processor_factory is _FakeImageProcessor
 
 
-def test_sam3_predictor_defaults_to_sam3_and_forwards_load_from_hf(monkeypatch):
-    captured = {}
+def test_sam3_predictor_defaults_to_sam3_and_forwards_load_from_hf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
     expected = object()
 
-    def fake_build_sam3_video_predictor(**kwargs):
+    def fake_build_sam3_video_predictor(**kwargs: object) -> object:
         captured.update(kwargs)
         return expected
 
@@ -327,9 +373,11 @@ def test_sam3_predictor_version_sam3_propagates_compile_fail_fast():
         ({"apply_temporal_disambiguation": False}, "video-multiplex"),
     ],
 )
-def test_video_predictor_video_model_shortcut_keeps_fail_fast_guards(kwargs, reason):
+def test_video_predictor_video_model_shortcut_keeps_fail_fast_guards(
+    kwargs: dict[str, object], reason: str
+) -> None:
     with pytest.raises(Sam3MlxUnsupportedError) as exc:
-        Sam3VideoPredictor(video_model=object(), **kwargs)
+        _dynamic_video_predictor(video_model=object(), **kwargs)
 
     assert exc.value.reason == reason
 
@@ -342,9 +390,11 @@ def test_video_predictor_video_model_shortcut_keeps_fail_fast_guards(kwargs, rea
         {"video_model": object()},
     ],
 )
-def test_video_predictor_rejects_checkpoint_with_injected_model(kwargs):
+def test_video_predictor_rejects_checkpoint_with_injected_model(
+    kwargs: dict[str, object],
+) -> None:
     with pytest.raises(ValueError, match="checkpoint_path cannot be used"):
-        Sam3VideoPredictor(checkpoint_path="weights.pt", **kwargs)
+        _dynamic_video_predictor(checkpoint_path="weights.pt", **kwargs)
 
 
 def test_video_predictor_rejects_unsupported_cache_threshold():
@@ -377,16 +427,25 @@ def test_duplicate_session_id_is_rejected_without_overwriting_state():
         processor_factory=_FakeImageProcessor,
     )
     first = predictor.start_session("<load-dummy-video-1>", session_id="duplicate")
-    original_state = predictor._all_inference_states["duplicate"]["state"]
+    original_state = predictor._all_inference_states[  # pyright: ignore[reportPrivateUsage]
+        "duplicate"
+    ]["state"]
 
     with pytest.raises(ValueError, match="Session ID already exists: duplicate"):
         predictor.start_session("<load-dummy-video-1>", session_id="duplicate")
 
     assert first == {"session_id": "duplicate"}
-    assert predictor._all_inference_states["duplicate"]["state"] is original_state
+    assert (
+        predictor._all_inference_states[  # pyright: ignore[reportPrivateUsage]
+            "duplicate"
+        ]["state"]
+        is original_state
+    )
 
 
-def test_expired_session_is_rejected_and_removed(monkeypatch):
+def test_expired_session_is_rejected_and_removed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     now = [100.0]
     monkeypatch.setattr(
         "sam3_mlx.model.sam3_base_predictor.time.monotonic",
@@ -408,10 +467,12 @@ def test_expired_session_is_rejected_and_removed(monkeypatch):
     with pytest.raises(RuntimeError, match="might have expired"):
         predictor.reset_session("expires")
 
-    assert "expires" not in predictor._all_inference_states
+    assert "expires" not in predictor._all_inference_states  # pyright: ignore[reportPrivateUsage]
 
 
-def test_operation_rechecks_session_after_concurrent_close(monkeypatch):
+def test_operation_rechecks_session_after_concurrent_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     predictor = sam3_mlx.build_sam3_video_predictor(
         model=object(),
         load_from_HF=False,
@@ -419,12 +480,12 @@ def test_operation_rechecks_session_after_concurrent_close(monkeypatch):
         processor_factory=_FakeImageProcessor,
     )
     session_id = predictor.start_session("<load-dummy-video-1>")["session_id"]
-    original_get_session = predictor._get_session
+    original_get_session = predictor._get_session  # pyright: ignore[reportPrivateUsage]
     looked_up = Event()
     resume_operation = Event()
-    operation_error = []
+    operation_error: list[str] = []
 
-    def paused_get_session(requested_session_id):
+    def paused_get_session(requested_session_id: str) -> dict[str, object]:
         session = original_get_session(requested_session_id)
         looked_up.set()
         assert resume_operation.wait(timeout=2)
@@ -515,8 +576,12 @@ def test_video_predictor_remove_object_preserves_base_schema():
 
     class _RemovalModel:
         def remove_object(
-            self, inference_state, obj_id, frame_idx=0, is_user_action=True
-        ):
+            self,
+            inference_state: dict[str, object],
+            obj_id: int,
+            frame_idx: int = 0,
+            is_user_action: bool = True,
+        ) -> tuple[int, object]:
             del inference_state, obj_id, is_user_action
             return frame_idx, sentinel_outputs
 
@@ -531,7 +596,7 @@ def test_video_predictor_remove_object_preserves_base_schema():
     from threading import Event, RLock
     import time
 
-    predictor._all_inference_states[session_id] = {
+    predictor._all_inference_states[session_id] = {  # pyright: ignore[reportPrivateUsage]
         "state": {"orig_height": 2, "orig_width": 2, "num_frames": 1},
         "session_id": session_id,
         "created_monotonic": time.monotonic(),
@@ -562,7 +627,9 @@ def test_selected_frame_output_cache_is_bounded():
         predictor.propagate_in_video(session_id, propagation_direction="forward")
     )
     assert len(frames) == 100
-    state = predictor._all_inference_states[session_id]["state"]
+    state = predictor._all_inference_states[  # pyright: ignore[reportPrivateUsage]
+        session_id
+    ]["state"]
     # Selected-frame path must not retain full-resolution per-frame outputs.
     assert state.get("cached_frame_outputs", {}) == {}
 

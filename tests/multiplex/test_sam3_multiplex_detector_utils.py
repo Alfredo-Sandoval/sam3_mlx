@@ -1,25 +1,37 @@
 from types import MethodType
+from typing import Callable, TypeGuard, cast
 
 import numpy as np
+from numpy.typing import NDArray
 import pytest
 import mlx.core as mx
 
 from sam3_mlx.model.sam3_multiplex_detector import Sam3MultiplexDetector
 from sam3_mlx.model import sam3_multiplex_detector_utils as utils
+from sam3_mlx.mlx_runtime import evaluate_boundary
 
 
-def _is_mlx_array(value):
+ArrayValue = mx.array | NDArray[np.generic]
+PairwiseOverlapFunction = Callable[[ArrayValue, ArrayValue], ArrayValue]
+BatchedOverlapFunction = Callable[[ArrayValue], ArrayValue]
+
+
+def _is_mlx_array(value: object) -> TypeGuard[mx.array]:
     return value.__class__.__module__.startswith("mlx.")
 
 
-def _as_numpy(value):
+def _as_numpy(value: object) -> NDArray[np.generic]:
     if _is_mlx_array(value):
-        mx.eval(value)
-        return np.array(value)
-    return np.asarray(value)
+        evaluate_boundary(value)
+        return cast(NDArray[np.generic], np.array(value))
+    return cast(NDArray[np.generic], np.asarray(value))
 
 
-def _maybe_mlx(value, as_mlx):
+def _as_numeric_numpy(value: object) -> NDArray[np.float64]:
+    return cast(NDArray[np.float64], _as_numpy(value))
+
+
+def _maybe_mlx(value: NDArray[np.generic], as_mlx: bool) -> ArrayValue:
     return mx.array(value) if as_mlx else value
 
 
@@ -28,7 +40,9 @@ def test_forward_video_grounding_preserves_prev_encoder_backbone_payload():
     detector.tracking_score_thresh = 0.0
     prev_encoder_out = {"backbone_out": {"sam2_backbone_out": {"sentinel": True}}}
 
-    def fake_forward_grounding(self, **kwargs):
+    def fake_forward_grounding(
+        self: Sam3MultiplexDetector, **kwargs: object
+    ) -> dict[str, object]:
         del self, kwargs
         return {
             "pred_logits": mx.ones((1, 1, 1), dtype=mx.float32),
@@ -64,7 +78,9 @@ def test_forward_video_grounding_multigpu_exports_nested_backbone_cache():
         mx.ones((1, 2, 1, 1), dtype=mx.float32) * 6,
     ]
 
-    def fake_forward_video_grounding(self, **kwargs):
+    def fake_forward_video_grounding(
+        self: Sam3MultiplexDetector, **kwargs: object
+    ) -> tuple[dict[str, object], None]:
         del self, kwargs
         return (
             {
@@ -119,7 +135,7 @@ def test_forward_video_grounding_multigpu_exports_nested_backbone_cache():
     ]
 
 
-def _single_nms_fixture():
+def _single_nms_fixture() -> tuple[NDArray[np.float32], NDArray[np.float32]]:
     masks = np.array(
         [
             [[1, 1], [0, 0]],
@@ -136,8 +152,8 @@ def _single_nms_fixture():
 
 @pytest.mark.parametrize("as_mlx", [False, True])
 def test_nms_masks_iou_mode_suppresses_identical_masks_at_near_one_threshold(
-    as_mlx,
-):
+    as_mlx: bool,
+) -> None:
     scores = np.array([0.90, 0.80, 0.70], dtype=np.float32)
     masks = np.array(
         [
@@ -183,8 +199,8 @@ def test_nms_masks_iou_mode_suppresses_identical_masks_at_near_one_threshold(
     ],
 )
 def test_nms_masks_single_mlx_matches_numpy_at_threshold_boundary(
-    nms_use_iom, expected
-):
+    nms_use_iom: bool, expected: NDArray[np.bool_]
+) -> None:
     scores, masks = _single_nms_fixture()
 
     numpy_keep = utils.nms_masks(
@@ -204,12 +220,18 @@ def test_nms_masks_single_mlx_matches_numpy_at_threshold_boundary(
 
     assert isinstance(numpy_keep, np.ndarray)
     assert _is_mlx_array(mlx_keep)
-    np.testing.assert_array_equal(numpy_keep, expected)
-    np.testing.assert_array_equal(_as_numpy(mlx_keep), numpy_keep)
+    np.testing.assert_array_equal(
+        _as_numpy(cast(object, numpy_keep)), _as_numpy(cast(object, expected))
+    )
+    np.testing.assert_array_equal(
+        _as_numpy(mlx_keep), _as_numpy(cast(object, numpy_keep))
+    )
 
 
 @pytest.mark.parametrize("as_mlx", [False, True])
-def test_nms_masks_single_iom_matches_official_source_area_denominator(as_mlx):
+def test_nms_masks_single_iom_matches_official_source_area_denominator(
+    as_mlx: bool,
+) -> None:
     scores = np.array([0.90, 0.80, 0.70], dtype=np.float32)
     masks = np.array(
         [
@@ -243,8 +265,8 @@ def test_nms_masks_single_iom_matches_official_source_area_denominator(as_mlx):
     ],
 )
 def test_nms_masks_batched_mlx_matches_numpy_and_keeps_no_valid_batch_empty(
-    nms_use_iom, expected_first_row
-):
+    nms_use_iom: bool, expected_first_row: NDArray[np.bool_]
+) -> None:
     scores, masks = _single_nms_fixture()
     batch_scores = np.stack(
         [
@@ -277,11 +299,17 @@ def test_nms_masks_batched_mlx_matches_numpy_and_keeps_no_valid_batch_empty(
 
     assert isinstance(numpy_keep, np.ndarray)
     assert _is_mlx_array(mlx_keep)
-    np.testing.assert_array_equal(numpy_keep, expected)
-    np.testing.assert_array_equal(_as_numpy(mlx_keep), numpy_keep)
+    np.testing.assert_array_equal(
+        _as_numpy(cast(object, numpy_keep)), _as_numpy(cast(object, expected))
+    )
+    np.testing.assert_array_equal(
+        _as_numpy(mlx_keep), _as_numpy(cast(object, numpy_keep))
+    )
 
 
-def test_nms_masks_batched_numpy_skips_overlap_for_invalid_batches(monkeypatch):
+def test_nms_masks_batched_numpy_skips_overlap_for_invalid_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     scores = np.array(
         [
             [0.10, 0.20, 0.30],
@@ -304,10 +332,12 @@ def test_nms_masks_batched_numpy_skips_overlap_for_invalid_batches(monkeypatch):
         ],
         dtype=np.float32,
     )
-    original_pairwise = utils._pairwise_mask_iou_np
-    overlap_candidate_counts = []
+    original_pairwise = utils._pairwise_mask_iou_np  # pyright: ignore[reportPrivateUsage]
+    overlap_candidate_counts: list[int] = []
 
-    def counted_pairwise(pred_masks, gt_masks):
+    def counted_pairwise(
+        pred_masks: NDArray[np.generic], gt_masks: NDArray[np.generic]
+    ) -> NDArray[np.generic]:
         overlap_candidate_counts.append(pred_masks.shape[0])
         return original_pairwise(pred_masks, gt_masks)
 
@@ -362,7 +392,9 @@ def test_nms_masks_no_valid_single_mlx_matches_numpy():
 
 
 @pytest.mark.parametrize("as_mlx", [False, True])
-def test_nms_masks_empty_inputs_preserve_single_and_batched_keep_shapes(as_mlx):
+def test_nms_masks_empty_inputs_preserve_single_and_batched_keep_shapes(
+    as_mlx: bool,
+) -> None:
     single_scores = np.zeros((0,), dtype=np.float32)
     single_masks = np.zeros((0, 2, 2), dtype=np.float32)
     batched_scores = np.zeros((2, 0), dtype=np.float32)
@@ -424,9 +456,13 @@ def test_pairwise_mask_iou_and_iom_mlx_match_numpy_outputs():
     mlx_iom = utils.perf_mask_iom(mx.array(pred_masks), mx.array(gt_masks))
 
     np.testing.assert_allclose(numpy_iou, expected_iou, rtol=1e-6, atol=1e-6)
-    np.testing.assert_allclose(_as_numpy(mlx_iou), numpy_iou, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(
+        _as_numeric_numpy(mlx_iou), numpy_iou, rtol=1e-6, atol=1e-6
+    )
     np.testing.assert_allclose(numpy_iom, expected_iom, rtol=1e-6, atol=1e-6)
-    np.testing.assert_allclose(_as_numpy(mlx_iom), numpy_iom, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(
+        _as_numeric_numpy(mlx_iom), numpy_iom, rtol=1e-6, atol=1e-6
+    )
 
 
 def test_batched_mask_iou_and_iom_mlx_match_numpy_outputs():
@@ -482,9 +518,13 @@ def test_batched_mask_iou_and_iom_mlx_match_numpy_outputs():
     mlx_iom = utils.batched_mask_iom(mx.array(masks))
 
     np.testing.assert_allclose(numpy_iou, expected_iou, rtol=1e-6, atol=1e-6)
-    np.testing.assert_allclose(_as_numpy(mlx_iou), numpy_iou, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(
+        _as_numeric_numpy(mlx_iou), numpy_iou, rtol=1e-6, atol=1e-6
+    )
     np.testing.assert_allclose(numpy_iom, expected_iom, rtol=1e-6, atol=1e-6)
-    np.testing.assert_allclose(_as_numpy(mlx_iom), numpy_iom, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(
+        _as_numeric_numpy(mlx_iom), numpy_iom, rtol=1e-6, atol=1e-6
+    )
 
 
 def test_pairwise_mask_overlap_empty_inputs_preserve_pairwise_shapes():
@@ -519,7 +559,7 @@ def test_batched_mask_overlap_zero_detections_preserve_empty_square_shape():
 
 
 @pytest.mark.parametrize("as_mlx", [False, True])
-def test_nms_masks_rejects_invalid_shapes(as_mlx):
+def test_nms_masks_rejects_invalid_shapes(as_mlx: bool) -> None:
     with pytest.raises(ValueError, match="pred_probs must have shape"):
         utils.nms_masks(
             _maybe_mlx(np.zeros((1, 1, 1), dtype=np.float32), as_mlx),
@@ -555,7 +595,9 @@ def test_nms_masks_rejects_invalid_shapes(as_mlx):
 
 @pytest.mark.parametrize("as_mlx", [False, True])
 @pytest.mark.parametrize("overlap_fn", [utils.perf_mask_iou, utils.perf_mask_iom])
-def test_pairwise_mask_overlap_rejects_invalid_shapes(overlap_fn, as_mlx):
+def test_pairwise_mask_overlap_rejects_invalid_shapes(
+    overlap_fn: PairwiseOverlapFunction, as_mlx: bool
+) -> None:
     valid_masks = np.zeros((1, 2, 2), dtype=np.float32)
     same_size_wrong_shape = np.zeros((1, 1, 4), dtype=np.float32)
     wrong_rank = np.zeros((1, 4), dtype=np.float32)
@@ -575,18 +617,22 @@ def test_pairwise_mask_overlap_rejects_invalid_shapes(overlap_fn, as_mlx):
 
 @pytest.mark.parametrize("as_mlx", [False, True])
 @pytest.mark.parametrize("overlap_fn", [utils.batched_mask_iou, utils.batched_mask_iom])
-def test_batched_mask_overlap_rejects_invalid_rank(overlap_fn, as_mlx):
+def test_batched_mask_overlap_rejects_invalid_rank(
+    overlap_fn: BatchedOverlapFunction, as_mlx: bool
+) -> None:
     with pytest.raises(ValueError, match="batched masks"):
         overlap_fn(_maybe_mlx(np.zeros((2, 2, 2), dtype=np.float32), as_mlx))
 
 
-def test_mlx_overlap_and_nms_paths_do_not_export_full_masks(monkeypatch):
+def test_mlx_overlap_and_nms_paths_do_not_export_full_masks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     scores, masks = _single_nms_fixture()
     pred_masks = masks[:2]
     gt_masks = masks[2:5]
-    original_to_numpy = utils._to_numpy
+    original_to_numpy = utils._to_numpy  # pyright: ignore[reportPrivateUsage]
 
-    def guarded_to_numpy(value):
+    def guarded_to_numpy(value: ArrayValue) -> NDArray[np.generic]:
         if _is_mlx_array(value) and len(value.shape) >= 3:
             raise AssertionError(f"full mask tensor exported to host: {value.shape}")
         return original_to_numpy(value)
@@ -606,14 +652,16 @@ def test_mlx_overlap_and_nms_paths_do_not_export_full_masks(monkeypatch):
         np.array([True, True, True, False, False]),
     )
     np.testing.assert_allclose(
-        _as_numpy(iou),
+        _as_numeric_numpy(iou),
         utils.perf_mask_iou(pred_masks, gt_masks),
         rtol=1e-6,
         atol=1e-6,
     )
 
 
-def test_batched_mlx_nms_exports_only_valid_overlap_submatrices(monkeypatch):
+def test_batched_mlx_nms_exports_only_valid_overlap_submatrices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     scores, masks = _single_nms_fixture()
     batch_scores = np.stack(
         [
@@ -628,10 +676,10 @@ def test_batched_mlx_nms_exports_only_valid_overlap_submatrices(monkeypatch):
             [False, False, False, False, True],
         ]
     )
-    exported_mlx_shapes = []
-    original_to_host = utils._to_host_postprocess_numpy
+    exported_mlx_shapes: list[tuple[int, ...]] = []
+    original_to_host = utils._to_host_postprocess_numpy  # pyright: ignore[reportPrivateUsage]
 
-    def guarded_to_host(value):
+    def guarded_to_host(value: ArrayValue) -> NDArray[np.generic]:
         if _is_mlx_array(value):
             exported_mlx_shapes.append(value.shape)
             if len(value.shape) >= 3:
@@ -653,7 +701,7 @@ def test_batched_mlx_nms_exports_only_valid_overlap_submatrices(monkeypatch):
 
 
 @pytest.mark.parametrize("as_mlx", [False, True])
-def test_nms_masks_do_compile_still_fails_fast(as_mlx):
+def test_nms_masks_do_compile_still_fails_fast(as_mlx: bool) -> None:
     scores, masks = _single_nms_fixture()
 
     with pytest.raises(NotImplementedError, match="do_compile=True"):

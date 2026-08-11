@@ -13,7 +13,11 @@ from sam3_mlx.model.model_misc import DotProductScoring, TransformerWrapper
 from sam3_mlx.model.necks import Sam3DualViTDetNeck
 from sam3_mlx.model.sam1_task_predictor import SAM3InteractiveImagePredictor
 from sam3_mlx.model.sam3_image import Sam3Image
+from sam3_mlx.model.sam3_multiplex_tracking import (
+    Sam3MultiplexTrackingWithInteractivity,
+)
 from sam3_mlx.model.sam3_multiplex_video_predictor import Sam3MultiplexVideoPredictor
+from sam3_mlx.model.sam3_video_inference import Sam3VideoInference
 from sam3_mlx.model.sam3_video_predictor import Sam3VideoPredictor
 from sam3_mlx.model.text_encoder_ve import VETextEncoder
 from sam3_mlx.model.vl_combiner import SAM3VLBackbone
@@ -21,12 +25,17 @@ from tests._paths import REPO_ROOT
 
 
 class _FakeImageProcessor:
-    def __init__(self, image_model, resolution=1008, confidence_threshold=0.5):
+    def __init__(
+        self,
+        image_model: object,
+        resolution: int = 1008,
+        confidence_threshold: float = 0.5,
+    ) -> None:
         self.image_model = image_model
         self.resolution = resolution
         self.confidence_threshold = confidence_threshold
 
-    def set_image(self, image):
+    def set_image(self, image: object) -> dict[str, object]:
         del image
         mask = np.zeros((1, 480, 640), dtype=bool)
         mask[:, 10:20, 30:45] = True
@@ -38,43 +47,59 @@ class _FakeImageProcessor:
 
     def set_text_prompt(
         self,
-        prompt,
-        state,
+        prompt: str,
+        state: dict[str, object],
         *,
-        run_grounding=True,
-        text_outputs=None,
-    ):
+        run_grounding: bool = True,
+        text_outputs: dict[str, object] | None = None,
+    ) -> dict[str, object]:
         del run_grounding, text_outputs
         state = dict(state)
         state["text_prompt"] = prompt
         return state
 
-    def add_geometric_prompt(self, box, label, state, *, run_grounding=True):
+    def add_geometric_prompt(
+        self,
+        box: object,
+        label: bool,
+        state: dict[str, object],
+        *,
+        run_grounding: bool = True,
+    ) -> dict[str, object]:
         del run_grounding
         state = dict(state)
         state["box_prompt"] = (box, label)
         return state
 
-    def add_point_prompt(self, point, label, state, *, run_grounding=True):
+    def add_point_prompt(
+        self,
+        point: object,
+        label: bool,
+        state: dict[str, object],
+        *,
+        run_grounding: bool = True,
+    ) -> dict[str, object]:
         del run_grounding
         state = dict(state)
         state["point_prompt"] = (point, label)
         return state
 
-    def run_grounding(self, state):
+    def run_grounding(self, state: dict[str, object]) -> dict[str, object]:
         return state
 
 
 class _WarmUpModel:
-    def __init__(self):
-        self.calls = []
+    _warm_up_complete: bool
 
-    def warm_up_compilation(self):
+    def __init__(self) -> None:
+        self.calls: list[bool] = []
+
+    def warm_up_compilation(self) -> None:
         self.calls.append(self._warm_up_complete)
 
 
 class _NoWarmHookModel:
-    pass
+    _warm_up_complete: bool
 
 
 def test_public_package_exports_image_and_selected_frame_builders():
@@ -171,7 +196,9 @@ def test_video_predictor_request_api_uses_official_output_schema():
     start = predictor.handle_request(
         {"type": "start_session", "resource_path": "<load-dummy-video-2>"}
     )
-    state = predictor._all_inference_states[start["session_id"]]["state"]
+    state = predictor._all_inference_states[  # pyright: ignore[reportPrivateUsage]
+        start["session_id"]
+    ]["state"]
     assert state["frames"].images is None
     add = predictor.handle_request(
         {
@@ -212,15 +239,20 @@ def test_video_predictor_request_api_uses_official_output_schema():
 
 
 def test_selected_frame_batches_prompt_mutation_into_one_grounding_pass():
-    processors = []
+    processors: list[_CountingImageProcessor] = []
 
     class _CountingImageProcessor(_FakeImageProcessor):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
+        def __init__(
+            self,
+            image_model: object,
+            resolution: int = 1008,
+            confidence_threshold: float = 0.5,
+        ) -> None:
+            super().__init__(image_model, resolution, confidence_threshold)
             self.grounding_calls = 0
             processors.append(self)
 
-        def run_grounding(self, state):
+        def run_grounding(self, state: dict[str, object]) -> dict[str, object]:
             self.grounding_calls += 1
             return state
 
@@ -243,14 +275,15 @@ def test_selected_frame_batches_prompt_mutation_into_one_grounding_pass():
 
     assert len(processors) == 1
     assert processors[0].grounding_calls == 1
+    assert isinstance(predictor.model, Sam3VideoInference)
     assert processors[0].image_model is predictor.model.image_model
 
 
 def test_selected_frame_uses_bounded_lru_for_backbone_features():
-    set_image_calls = []
+    set_image_calls: list[object] = []
 
     class _CountingImageProcessor(_FakeImageProcessor):
-        def set_image(self, image):
+        def set_image(self, image: object) -> dict[str, object]:
             set_image_calls.append(image)
             return super().set_image(image)
 
@@ -271,7 +304,9 @@ def test_selected_frame_uses_bounded_lru_for_backbone_features():
             propagation_direction="forward",
         )
     )
-    state = predictor._all_inference_states[session_id]["state"]
+    state = predictor._all_inference_states[  # pyright: ignore[reportPrivateUsage]
+        session_id
+    ]["state"]
 
     assert len(set_image_calls) == 3
     assert list(state["frame_feature_cache"]) == [1, 2]
@@ -308,7 +343,8 @@ def test_multiplex_predictor_builder_constructs_checkpoint_free_mlx_stack():
     assert (
         predictor.model.__class__.__name__ == "Sam3MultiplexTrackingWithInteractivity"
     )
-    assert predictor.model._warm_up_complete is True
+    assert isinstance(predictor.model, Sam3MultiplexTrackingWithInteractivity)
+    assert getattr(predictor.model, "_warm_up_complete") is True
     assert predictor.model.max_num_objects == 4
     assert predictor.model.bucket_capacity == 4
     assert predictor.model.score_threshold_detection == 0.4
@@ -325,7 +361,9 @@ def test_multiplex_predictor_builder_constructs_checkpoint_free_mlx_stack():
         }
     )
     assert start == {"session_id": "mux-session"}
-    state = predictor._all_inference_states["mux-session"]["state"]
+    state = predictor._all_inference_states[  # pyright: ignore[reportPrivateUsage]
+        "mux-session"
+    ]["state"]
     assert state["num_frames"] == 1
     assert state["device"] == "mlx"
     assert state["is_image_only"] is True
@@ -350,6 +388,7 @@ def test_multiplex_predictor_builder_threads_detection_thresholds():
         suppress_det_close_to_boundary=False,
     )
 
+    assert isinstance(predictor.model, Sam3MultiplexTrackingWithInteractivity)
     assert predictor.model.score_threshold_detection == 0.125
     assert predictor.model.image_only_det_thresh == 0.25
     assert predictor.model.suppress_det_close_to_boundary is False
@@ -362,7 +401,7 @@ def test_multiplex_predictor_warm_up_uses_optional_mlx_model_hook():
 
     assert predictor.warm_up is True
     assert model.calls == [False]
-    assert model._warm_up_complete is True
+    assert model._warm_up_complete is True  # pyright: ignore[reportPrivateUsage]
 
 
 def test_multiplex_predictor_warm_up_without_hook_is_noop_marker():
@@ -371,7 +410,7 @@ def test_multiplex_predictor_warm_up_without_hook_is_noop_marker():
     predictor = Sam3MultiplexVideoPredictor(model=model, warm_up=True)
 
     assert predictor.warm_up is True
-    assert model._warm_up_complete is True
+    assert model._warm_up_complete is True  # pyright: ignore[reportPrivateUsage]
 
 
 def test_multiplex_public_api_fails_fast_until_runtime_is_ported():
