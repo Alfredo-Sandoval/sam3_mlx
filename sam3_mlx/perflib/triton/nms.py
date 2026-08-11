@@ -21,12 +21,12 @@ _UNSUPPORTED_DETAIL = "The official SAM3 implementation requires Triton kernels.
     detail=_UNSUPPORTED_DETAIL,
 )
 def _nms_suppression_kernel(
-    iou_mask_ptr,
-    keep_mask_ptr,
-    num_boxes,
-    iou_mask_stride,
-    cxpr_block_size,
-):
+    iou_mask_ptr: object,
+    keep_mask_ptr: object,
+    num_boxes: object,
+    iou_mask_stride: object,
+    cxpr_block_size: object,
+) -> None:
     return None
 
 
@@ -36,7 +36,7 @@ def _nms_suppression_kernel(
     alternative="sam3_mlx.perflib.nms",
     detail=_UNSUPPORTED_DETAIL,
 )
-def nms_triton(ious, scores, iou_threshold):
+def nms_triton(ious: object, scores: object, iou_threshold: float) -> None:
     return None
 
 

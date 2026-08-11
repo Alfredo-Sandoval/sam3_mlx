@@ -1,21 +1,41 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from importlib import import_module
+from typing import Protocol, TypeAlias, cast
 
 import numpy as np
+import numpy.typing as npt
 
 from sam3_mlx._unsupported import raise_unsupported, unsupported
 from sam3_mlx.mlx_runtime import to_numpy
 from sam3_mlx.perflib.masks_ops import mask_iou
 
 
-def _to_numpy(value) -> np.ndarray:
-    return to_numpy(value, copy=False)
+NumpyArray = npt.NDArray[np.generic]
+NumericArray = npt.NDArray[np.number | np.bool_]
+FloatArray = npt.NDArray[np.float32]
+BoolArray = npt.NDArray[np.bool_]
+IndexArray = npt.NDArray[np.intp]
+AssociationResult: TypeAlias = tuple[
+    list[int],
+    list[int],
+    dict[int, list[int]],
+    dict[int, list[float]],
+]
 
 
-def _linear_sum_assignment(cost_matrix: np.ndarray):
+class _LinearSumAssignment(Protocol):
+    def __call__(self, cost_matrix: FloatArray) -> tuple[IndexArray, IndexArray]: ...
+
+
+def _to_numpy(value: object) -> NumpyArray:
+    return cast(NumpyArray, to_numpy(value, copy=False))
+
+
+def _linear_sum_assignment(cost_matrix: FloatArray) -> tuple[IndexArray, IndexArray]:
     try:
-        from scipy.optimize import linear_sum_assignment
+        module = import_module("scipy.optimize")
     except ImportError as exc:
         raise unsupported(
             "sam3_mlx.perflib.associate_det_trk._linear_sum_assignment",
@@ -26,19 +46,22 @@ def _linear_sum_assignment(cost_matrix: np.ndarray):
                 "the MLX port."
             ),
         ) from exc
-    return linear_sum_assignment(cost_matrix)
+    solver: object = getattr(module, "linear_sum_assignment", None)
+    if not callable(solver):
+        raise TypeError("scipy.optimize must expose linear_sum_assignment")
+    return cast(_LinearSumAssignment, solver)(cost_matrix)
 
 
 def associate_det_trk(
-    det_masks,
-    track_masks,
-    iou_threshold=0.5,
-    iou_threshold_trk=0.5,
-    det_scores=None,
-    new_det_thresh=0.0,
-):
-    det_np = _to_numpy(det_masks)
-    track_np = _to_numpy(track_masks)
+    det_masks: object,
+    track_masks: object,
+    iou_threshold: float = 0.5,
+    iou_threshold_trk: float = 0.5,
+    det_scores: object | None = None,
+    new_det_thresh: float = 0.0,
+) -> AssociationResult:
+    det_np = cast(NumericArray, _to_numpy(det_masks))
+    track_np = cast(NumericArray, _to_numpy(track_masks))
     if det_np.ndim != 3 or track_np.ndim != 3:
         raise ValueError("det_masks and track_masks must have shape (N, H, W).")
 
@@ -61,20 +84,23 @@ def associate_det_trk(
     track_binary = track_np > 0
     iou = _to_numpy(mask_iou(det_binary, track_binary)).astype(np.float32, copy=False)
     iou_ge_det = iou >= iou_threshold
-    iou_ge_det_any = iou_ge_det.any(axis=1)
+    iou_ge_det_any = cast(BoolArray, np.any(iou_ge_det, axis=1))
     iou_ge_trk = iou >= iou_threshold_trk
 
-    scores = None
+    scores: FloatArray | None = None
     if det_scores is not None:
-        scores = _to_numpy(det_scores).astype(np.float32, copy=False).reshape(-1)
+        scores = cast(
+            FloatArray,
+            _to_numpy(det_scores).astype(np.float32, copy=False).reshape(-1),
+        )
         if scores.shape != (num_det,):
             raise ValueError("det_scores must have one score per detection mask.")
 
-    cost_matrix = 1.0 - iou
+    cost_matrix = cast(FloatArray, 1.0 - iou)
     row_ind, col_ind = _linear_sum_assignment(cost_matrix)
 
-    matched_trk = set()
-    matched_det_scores = {}
+    matched_trk: set[int] = set()
+    matched_det_scores: dict[int, list[float]] = {}
     for det_idx, trk_idx in zip(row_ind, col_ind):
         det_idx = int(det_idx)
         trk_idx = int(trk_idx)
@@ -88,13 +114,13 @@ def associate_det_trk(
         trk_idx for trk_idx in range(num_track) if trk_idx not in matched_trk
     ]
 
-    new_det_indices = []
+    new_det_indices: list[int] = []
     if scores is not None:
         for det_idx in range(num_det):
             if not iou_ge_det_any[det_idx] and scores[det_idx] >= new_det_thresh:
                 new_det_indices.append(det_idx)
 
-    det_to_matched_trk = defaultdict(list)
+    det_to_matched_trk: defaultdict[int, list[int]] = defaultdict(list)
     for det_idx in range(num_det):
         for trk_idx in range(num_track):
             if iou_ge_det[det_idx, trk_idx]:
@@ -108,5 +134,19 @@ def associate_det_trk(
     )
 
 
-def associate_detections_to_trackers(*args, **kwargs):
-    return associate_det_trk(*args, **kwargs)
+def associate_detections_to_trackers(
+    det_masks: object,
+    track_masks: object,
+    iou_threshold: float = 0.5,
+    iou_threshold_trk: float = 0.5,
+    det_scores: object | None = None,
+    new_det_thresh: float = 0.0,
+) -> AssociationResult:
+    return associate_det_trk(
+        det_masks,
+        track_masks,
+        iou_threshold,
+        iou_threshold_trk,
+        det_scores,
+        new_det_thresh,
+    )
