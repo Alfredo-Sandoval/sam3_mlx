@@ -1,6 +1,7 @@
 import mlx.core as mx
 import numpy as np
 
+from sam3_mlx.eval.coco_writer import PredictionDumper
 from sam3_mlx.eval.postprocessors import PostProcessImage
 
 UPSTREAM_EVAL_POSTPROCESSORS_SOURCE_COMMIT = "2814fa619404a722d03e9a012e083e4f293a4e53"
@@ -15,6 +16,12 @@ def _to_numpy(value):
 def _sigmoid(value):
     value = np.asarray(value, dtype=np.float32)
     return 1.0 / (1.0 + np.exp(-value))
+
+
+class _UnusedPostprocessor:
+    def process_results(self, *args, **kwargs):
+        del args, kwargs
+        return {}
 
 
 def test_postprocess_image_scales_boxes_and_applies_forced_labels():
@@ -241,3 +248,46 @@ def test_postprocess_image_rle_output_is_compressed_and_filtered_by_detection_ke
         rtol=0,
         atol=1e-6,
     )
+
+
+def test_prediction_dumper_prepares_typed_detection_and_segmentation_records(
+    tmp_path,
+):
+    dumper = PredictionDumper(
+        dump_dir=str(tmp_path),
+        postprocessor=_UnusedPostprocessor(),
+        maxdets=10,
+        iou_type="bbox",
+    )
+    common = {
+        "scores": np.array([0.875], dtype=np.float32),
+        "labels": np.array([4], dtype=np.int64),
+        "boxes": np.array([[1.0, 2.0, 6.0, 8.0]], dtype=np.float32),
+    }
+
+    detections = dumper.prepare({17: common}, "bbox")
+    segmentations = dumper.prepare(
+        {
+            17: {
+                **common,
+                "masks": np.array(
+                    [[[True, False], [True, False]]], dtype=bool
+                ),
+            }
+        },
+        "segm",
+    )
+
+    assert detections == [
+        {
+            "image_id": 17,
+            "category_id": 4,
+            "bbox": [1.0, 2.0, 5.0, 6.0],
+            "score": 0.875,
+        }
+    ]
+    assert segmentations[0]["segmentation"] == {
+        "counts": [0, 2, 2],
+        "size": [2, 2],
+    }
+    assert segmentations[0]["area"] == 0.5

@@ -2,36 +2,53 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any, Literal, Never, Protocol, TypeAlias, cast
+
 import mlx.core as mx
 import numpy as np
+from numpy.typing import DTypeLike, NDArray
 
 from sam3_mlx.eval._unsupported import raise_unsupported
+from sam3_mlx.mlx_runtime import evaluate_boundary, to_numpy
 from sam3_mlx.model.data_misc import interpolate
-from sam3_mlx.train.masks_ops import rle_encode
+from sam3_mlx.train import masks_ops as _masks_ops
 
 MLX_EVAL_POSTPROCESSORS_BASE_COMMIT = "e30678519ff456845aafc13b705fe0ea0a3db028"
 
-
-def _is_mlx_array(value) -> bool:
-    return isinstance(value, mx.array)
-
-
-def _to_numpy(value, dtype=None) -> np.ndarray:
-    if isinstance(value, np.ndarray):
-        array = value
-    else:
-        if _is_mlx_array(value):
-            mx.eval(value)
-        array = np.asarray(value)
-    return array.astype(dtype, copy=False) if dtype is not None else array
+ArrayValue: TypeAlias = mx.array | NDArray[Any]
+OutputValue: TypeAlias = ArrayValue | list[dict[str, object]] | None
+ImageResult: TypeAlias = dict[str, OutputValue]
+ImageResults: TypeAlias = list[ImageResult]
+ModelOutputs: TypeAlias = Mapping[str, object]
 
 
-def _to_output_array(value: np.ndarray, *, to_cpu: bool):
-    value = np.asarray(value)
+class _Metadata(Protocol):
+    original_size: object
+    original_category_id: object
+    original_image_id: object
+    coco_image_id: object
+
+
+class _RleEncoder(Protocol):
+    def __call__(
+        self, mask: NDArray[Any], return_areas: bool = False
+    ) -> list[dict[str, object]]: ...
+
+
+_rle_encode = cast(_RleEncoder, getattr(_masks_ops, "rle_encode"))
+_raise_unsupported = cast(Callable[[str], Never], raise_unsupported)
+
+
+def _to_numpy(value: object, dtype: DTypeLike | None = None) -> NDArray[Any]:
+    return to_numpy(value, dtype=dtype)
+
+
+def _to_output_array(value: NDArray[Any], *, to_cpu: bool) -> ArrayValue:
     return value if to_cpu else mx.array(value)
 
 
-def _sigmoid_np(value) -> np.ndarray:
+def _sigmoid_np(value: object) -> NDArray[Any]:
     value = np.asarray(value, dtype=np.float32)
     return np.where(
         value >= 0,
@@ -40,7 +57,7 @@ def _sigmoid_np(value) -> np.ndarray:
     )
 
 
-def _item(value):
+def _item(value: object) -> object:
     array = _to_numpy(value)
     if array.shape == ():
         return array.item()
@@ -49,7 +66,7 @@ def _item(value):
     raise ValueError(f"Expected scalar value, got shape {array.shape}.")
 
 
-def _box_cxcywh_to_xyxy_np(boxes: np.ndarray) -> np.ndarray:
+def _box_cxcywh_to_xyxy_np(boxes: NDArray[Any]) -> NDArray[Any]:
     x_c, y_c, w, h = np.moveaxis(np.asarray(boxes, dtype=np.float32), -1, 0)
     return np.stack(
         [x_c - 0.5 * w, y_c - 0.5 * h, x_c + 0.5 * w, y_c + 0.5 * h],
@@ -57,7 +74,7 @@ def _box_cxcywh_to_xyxy_np(boxes: np.ndarray) -> np.ndarray:
     )
 
 
-def _as_size_tuple(size) -> tuple[int, int]:
+def _as_size_tuple(size: object) -> tuple[int, int]:
     size_np = _to_numpy(size, dtype=np.int64).reshape(-1)
     if size_np.size != 2:
         raise ValueError(
@@ -66,7 +83,9 @@ def _as_size_tuple(size) -> tuple[int, int]:
     return int(size_np[0]), int(size_np[1])
 
 
-def _resize_mask_block(mask_block: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+def _resize_mask_block(
+    mask_block: NDArray[Any], size: tuple[int, int]
+) -> NDArray[Any]:
     if mask_block.ndim == 3:
         mask_block = mask_block[:, None, :, :]
         squeeze_channel = True
@@ -84,24 +103,26 @@ def _resize_mask_block(mask_block: np.ndarray, size: tuple[int, int]) -> np.ndar
         )
         > 0.5
     )
-    mx.eval(resized)
+    evaluate_boundary(resized)
     resized_np = np.asarray(resized)
     if squeeze_channel:
         resized_np = resized_np[:, 0]
     return resized_np.astype(bool, copy=False)
 
 
-def _concat_values(left, right):
+def _concat_values(left: OutputValue, right: OutputValue) -> OutputValue:
     if left is None:
         return right
     if right is None:
         return left
     if isinstance(left, list):
-        return left + list(right)
+        if not isinstance(right, list):
+            raise TypeError("RLE results can only be concatenated with RLE results.")
+        return left + right
     return np.concatenate([_to_numpy(left), _to_numpy(right)], axis=0)
 
 
-def _take_value(value, indices: np.ndarray):
+def _take_value(value: OutputValue, indices: NDArray[Any]) -> OutputValue:
     if value is None:
         return None
     if isinstance(value, list):
@@ -110,17 +131,18 @@ def _take_value(value, indices: np.ndarray):
 
 
 class PostProcessNullOp:
-    def __init__(self, **kwargs):
-        pass
+    def __init__(self, **kwargs: object) -> None:
+        del kwargs
 
-    def forward(self, input):
+    def forward(self, input: object) -> None:
+        del input
         return None
 
-    def process_results(self, **kwargs):
+    def process_results(self, **kwargs: object) -> object:
         return kwargs["find_stages"]
 
-    def __call__(self, *args, **kwargs):
-        return self.forward(*args, **kwargs)
+    def __call__(self, input: object) -> None:
+        return self.forward(input)
 
 
 class PostProcessImage:
@@ -129,7 +151,7 @@ class PostProcessImage:
     def __init__(
         self,
         max_dets_per_img: int,
-        iou_type="bbox",
+        iou_type: Literal["bbox", "segm"] = "bbox",
         to_cpu: bool = True,
         use_original_ids: bool = False,
         use_original_sizes_box: bool = False,
@@ -152,15 +174,15 @@ class PostProcessImage:
 
     def forward(
         self,
-        outputs,
-        target_sizes_boxes,
-        target_sizes_masks,
-        forced_labels=None,
-        consistent=False,
+        outputs: ModelOutputs,
+        target_sizes_boxes: object,
+        target_sizes_masks: object,
+        forced_labels: object | None = None,
+        consistent: bool = False,
         ret_tensordict: bool = False,
-    ):
+    ) -> ImageResults:
         if ret_tensordict:
-            raise_unsupported("eval.postprocessors.PostProcessImage.ret_tensordict")
+            _raise_unsupported("eval.postprocessors.PostProcessImage.ret_tensordict")
 
         out_bbox = outputs["pred_boxes"] if "pred_boxes" in outputs else None
         out_logits = _to_numpy(outputs["pred_logits"], dtype=np.float32)
@@ -200,8 +222,10 @@ class PostProcessImage:
             boxes = [None] * batch_size
             scores = [None] * batch_size
             labels = [None] * batch_size
+        if scores is None or labels is None:
+            raise AssertionError("Box, score, and label results must be aligned.")
 
-        results = {
+        results: dict[str, Sequence[OutputValue]] = {
             "scores": scores,
             "labels": labels,
             "boxes": boxes,
@@ -214,10 +238,15 @@ class PostProcessImage:
             for per_image_values in zip(*results.values())
         ]
 
-    def __call__(self, *args, **kwargs):
-        return self.forward(*args, **kwargs)
+    __call__ = forward
 
-    def _process_masks(self, target_sizes, pred_masks, consistent=True, keep=None):
+    def _process_masks(
+        self,
+        target_sizes: object,
+        pred_masks: object | None,
+        consistent: bool = True,
+        keep: NDArray[Any] | None = None,
+    ) -> list[ArrayValue] | list[list[dict[str, object]]] | None:
         if pred_masks is None:
             return None
 
@@ -227,7 +256,7 @@ class PostProcessImage:
 
         if consistent:
             if keep is not None:
-                raise_unsupported(
+                _raise_unsupported(
                     "eval.postprocessors.PostProcessImage.keep_consistent_masks"
                 )
             unique_sizes = np.unique(_to_numpy(target_sizes, dtype=np.int64), axis=0)
@@ -235,34 +264,49 @@ class PostProcessImage:
                 raise AssertionError(
                     "consistent=True requires equal target mask sizes."
                 )
-            out_masks = _resize_mask_block(
+            resized_masks = _resize_mask_block(
                 pred_masks_np, _as_size_tuple(unique_sizes[0])
             )
             if self.convert_mask_to_rle:
-                return [rle_encode(out_masks[i]) for i in range(out_masks.shape[0])]
+                return [
+                    _rle_encode(resized_masks[i])
+                    for i in range(resized_masks.shape[0])
+                ]
             return [
-                _to_output_array(out_masks[i], to_cpu=self.to_cpu)
-                for i in range(out_masks.shape[0])
+                _to_output_array(resized_masks[i], to_cpu=self.to_cpu)
+                for i in range(resized_masks.shape[0])
             ]
 
-        out_masks = []
+        out_masks: list[ArrayValue] | list[list[dict[str, object]]] = []
+        target_sizes_np = _to_numpy(target_sizes, dtype=np.int64)
         if keep is not None and len(keep) != len(pred_masks_np):
             raise AssertionError("keep and pred_masks batch dimensions must match.")
         for batch_index, mask in enumerate(pred_masks_np):
             if keep is not None:
                 mask = mask[_to_numpy(keep[batch_index], dtype=bool)]
             resized = _resize_mask_block(
-                mask, _as_size_tuple(target_sizes[batch_index])
+                mask, _as_size_tuple(target_sizes_np[batch_index])
             )
             if self.convert_mask_to_rle:
-                out_masks.append(rle_encode(resized))
+                cast(list[list[dict[str, object]]], out_masks).append(
+                    _rle_encode(resized)
+                )
             else:
                 out_masks.append(_to_output_array(resized, to_cpu=self.to_cpu))
         return out_masks
 
     def _process_boxes_and_labels(
-        self, target_sizes, forced_labels, out_bbox, out_probs
-    ):
+        self,
+        target_sizes: NDArray[Any],
+        forced_labels: object | None,
+        out_bbox: object | None,
+        out_probs: object,
+    ) -> tuple[
+        list[ArrayValue] | None,
+        list[ArrayValue] | None,
+        list[ArrayValue] | None,
+        NDArray[Any] | None,
+    ]:
         if out_bbox is None:
             return None, None, None, None
         out_bbox_np = _to_numpy(out_bbox, dtype=np.float32)
@@ -304,14 +348,24 @@ class PostProcessImage:
         labels = [_to_output_array(label, to_cpu=self.to_cpu) for label in labels]
         return boxes, scores, labels, keep
 
-    def process_results(self, find_stages, find_metadatas, **kwargs):
+    def process_results(
+        self,
+        find_stages: Sequence[ModelOutputs],
+        find_metadatas: Sequence[_Metadata],
+        **kwargs: object,
+    ) -> dict[object, ImageResult]:
         del kwargs
-        if getattr(find_stages, "loss_stages", None) is not None:
-            find_metadatas = [find_metadatas[i] for i in find_stages.loss_stages]
+        loss_stages = getattr(find_stages, "loss_stages", None)
+        if isinstance(loss_stages, Sequence):
+            stage_indices = [
+                int(index)
+                for index in cast(Sequence[int], loss_stages)
+            ]
+            find_metadatas = [find_metadatas[index] for index in stage_indices]
         if len(find_stages) != len(find_metadatas):
             raise AssertionError("find_stages and find_metadatas length mismatch.")
 
-        results = {}
+        results: dict[object, ImageResult] = {}
         for outputs, meta in zip(find_stages, find_metadatas):
             original_size = _to_numpy(meta.original_size, dtype=np.int64)
             unit_size = np.ones_like(original_size, dtype=np.int64)
@@ -364,43 +418,82 @@ class PostProcessImage:
 class PostProcessAPIVideo(PostProcessImage):
     def __init__(
         self,
-        *args,
+        max_dets_per_img: int,
+        iou_type: Literal["bbox", "segm"] = "bbox",
         to_cpu: bool = True,
         convert_mask_to_rle: bool = False,
         always_interpolate_masks_on_gpu: bool = True,
         prob_thresh: float = 0.5,
         use_presence: bool = False,
-        **kwargs,
-    ):
+        use_original_ids: bool = False,
+        use_original_sizes_box: bool = False,
+        use_original_sizes_mask: bool = False,
+        detection_threshold: float = -1.0,
+    ) -> None:
         super().__init__(
-            *args,
+            max_dets_per_img=max_dets_per_img,
+            iou_type=iou_type,
             convert_mask_to_rle=False,
             always_interpolate_masks_on_gpu=always_interpolate_masks_on_gpu,
             use_presence=use_presence,
-            **kwargs,
+            to_cpu=to_cpu,
+            use_original_ids=use_original_ids,
+            use_original_sizes_box=use_original_sizes_box,
+            use_original_sizes_mask=use_original_sizes_mask,
+            detection_threshold=detection_threshold,
         )
         self.EXPECTED_KEYS = ["pred_logits", "pred_boxes", "pred_masks"]
         self.convert_mask_to_rle_for_video = convert_mask_to_rle
         self.to_cpu_for_video = to_cpu
         self.prob_thresh = prob_thresh
 
-    def process_results(self, find_stages, find_metadatas, **kwargs):
-        raise_unsupported("eval.postprocessors.PostProcessAPIVideo.process_results")
+    def process_results(
+        self,
+        find_stages: Sequence[ModelOutputs],
+        find_metadatas: Sequence[_Metadata],
+        **kwargs: object,
+    ) -> dict[object, ImageResult]:
+        del find_stages, find_metadatas, kwargs
+        _raise_unsupported("eval.postprocessors.PostProcessAPIVideo.process_results")
 
 
 class PostProcessTracking(PostProcessImage):
     def __init__(
         self,
         max_dets_per_img: int,
-        iou_type="bbox",
+        iou_type: Literal["bbox", "segm"] = "bbox",
         force_single_mask: bool = False,
-        **kwargs,
+        to_cpu: bool = True,
+        use_original_ids: bool = False,
+        use_original_sizes_box: bool = False,
+        use_original_sizes_mask: bool = False,
+        convert_mask_to_rle: bool = False,
+        always_interpolate_masks_on_gpu: bool = True,
+        use_presence: bool = True,
+        detection_threshold: float = -1.0,
     ) -> None:
-        super().__init__(max_dets_per_img=max_dets_per_img, iou_type=iou_type, **kwargs)
+        super().__init__(
+            max_dets_per_img=max_dets_per_img,
+            iou_type=iou_type,
+            to_cpu=to_cpu,
+            use_original_ids=use_original_ids,
+            use_original_sizes_box=use_original_sizes_box,
+            use_original_sizes_mask=use_original_sizes_mask,
+            convert_mask_to_rle=convert_mask_to_rle,
+            always_interpolate_masks_on_gpu=always_interpolate_masks_on_gpu,
+            use_presence=use_presence,
+            detection_threshold=detection_threshold,
+        )
         self.force_single_mask = force_single_mask
 
-    def process_results(self, find_stages, find_metadatas, **kwargs):
-        raise_unsupported("eval.postprocessors.PostProcessTracking.process_results")
+    def process_results(
+        self,
+        find_stages: Sequence[ModelOutputs],
+        find_metadatas: Sequence[_Metadata],
+        **kwargs: object,
+    ) -> dict[object, ImageResult]:
+        del find_stages, find_metadatas, kwargs
+        _raise_unsupported("eval.postprocessors.PostProcessTracking.process_results")
 
 
 class PostProcessCounting:
@@ -416,7 +509,9 @@ class PostProcessCounting:
         self.threshold = threshold
         self.use_presence = use_presence
 
-    def forward(self, outputs, target_sizes):
+    def forward(
+        self, outputs: ModelOutputs, target_sizes: object
+    ) -> list[dict[str, int]]:
         del target_sizes
         logits = _to_numpy(outputs["pred_logits"], dtype=np.float32).squeeze(-1)
         scores = _sigmoid_np(logits)
@@ -428,14 +523,18 @@ class PostProcessCounting:
         counts = (scores > self.threshold).sum(axis=1)
         return [{"count": int(count)} for count in counts]
 
-    def __call__(self, *args, **kwargs):
-        return self.forward(*args, **kwargs)
+    __call__ = forward
 
-    def process_results(self, find_stages, find_metadatas, **kwargs):
+    def process_results(
+        self,
+        find_stages: Sequence[ModelOutputs],
+        find_metadatas: Sequence[_Metadata],
+        **kwargs: object,
+    ) -> dict[object, dict[str, int]]:
         del kwargs
         if len(find_stages) != len(find_metadatas):
             raise AssertionError("find_stages and find_metadatas length mismatch.")
-        results = {}
+        results: dict[object, dict[str, int]] = {}
         for outputs, meta in zip(find_stages, find_metadatas):
             detection_results = self(outputs, meta.original_size)
             ids = (
