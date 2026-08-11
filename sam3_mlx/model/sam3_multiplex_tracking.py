@@ -90,6 +90,8 @@ class GeneratorState(TypedDict):
 
 
 class _ArrayMethods(Protocol):
+    shape: Sequence[int]
+
     def reshape(self, *shape: int) -> mx.array: ...
 
 
@@ -121,6 +123,35 @@ class _IterableCall(Protocol):
 
 class _KeywordCall(Protocol):
     def __call__(self, **kwargs: object) -> object: ...
+
+
+class _MaterializedVideoFrames(Protocol):
+    images: object
+
+    def __len__(self) -> int: ...
+
+
+class _SizedValue(Protocol):
+    def __len__(self) -> int: ...
+
+
+def _runtime_type(value: object) -> object:
+    return type(value)
+
+
+def _require_materialized_video_frames(value: object) -> _MaterializedVideoFrames:
+    length_method: object = getattr(value, "__len__", None)
+    if not callable(length_method) or not hasattr(value, "images"):
+        raise TypeError("loaded video frames must expose length and images")
+    return cast(_MaterializedVideoFrames, value)
+
+
+def _integer_value(value: object, *, name: str) -> int:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, np.integer):
+        return value.item()
+    raise TypeError(f"{name} must be an integer")
 
 
 def _is_mlx_array(value: object) -> TypeGuard[mx.array]:
@@ -323,8 +354,8 @@ def _mask_centers(binary_masks: TrackerArray) -> FloatArray:
 
 def _point_count(points: TrackerArray | Sequence[object]) -> int:
     if _is_mlx_array(points):
-        shape = tuple(cast(Sequence[int], points.shape))
-        if not shape:
+        shape = cast(_ArrayMethods, points).shape
+        if len(shape) == 0:
             return 0
         if len(shape) >= 2 and shape[-1] in (2, 3):
             return int(shape[-2])
@@ -338,10 +369,13 @@ def recursive_to(
     if _is_mlx_array(data):
         return cast(RecursiveValue, _mlx_to(data, *args, **kwargs))
     if isinstance(data, np.ndarray):
-        return data
+        return cast(RecursiveValue, cast(NumpyArray, data))
     if isinstance(data, Mapping):
         source = cast(Mapping[object, object], data)
-        ret_value = cast(_NoArgCall, type(data))()
+        constructor = _runtime_type(source)
+        if not callable(constructor):
+            raise TypeError("recursive_to mapping types must be callable")
+        ret_value = cast(_NoArgCall, constructor)()
         if not isinstance(ret_value, MutableMapping):
             raise TypeError("recursive_to mapping constructors must return mappings")
         ret = cast(MutableMapping[object, object], ret_value)
@@ -356,9 +390,14 @@ def recursive_to(
         )
     if isinstance(data, Sequence) and not isinstance(data, str):
         values = cast(Sequence[object], data)
-        constructed = cast(_IterableCall, type(data))(
+        constructor = _runtime_type(values)
+        if not callable(constructor):
+            raise TypeError("recursive_to sequence types must be callable")
+        constructed = cast(_IterableCall, constructor)(
             recursive_to(value, *args, **kwargs) for value in values
         )
+        if not isinstance(constructed, Sequence) or isinstance(constructed, str):
+            raise TypeError("recursive_to sequence constructors must return sequences")
         return cast(RecursiveValue, constructed)
     if is_dataclass(data):
         ret_cls = cast(_KeywordCall, type(data))
@@ -396,11 +435,18 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         self.postprocess_batch_size = postprocess_batch_size
         self._compiled_for_propagation = False
 
-    def _construct_initial_input_batch(self, inference_state: dict[str, Any], images):
+    def _construct_initial_input_batch(
+        self,
+        inference_state: dict[str, Any],
+        images: _MaterializedVideoFrames,
+    ) -> None:
         num_frames = len(images)
-        image_tensors = getattr(images, "images", None)
-        if image_tensors is None:
+        image_tensors_raw = images.images
+        if image_tensors_raw is None:
             raise ValueError("Loaded video frames must expose normalized MLX images.")
+        if not _is_mlx_array(image_tensors_raw):
+            raise TypeError("Loaded video frame images must be an MLX array.")
+        image_tensors = image_tensors_raw
 
         find_text_batch = ["<text placeholder>", "visual", "geometric"]
         dummy_ptrs = BatchedPointer(
@@ -777,18 +823,36 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
             return
         total_valid_objects = 0
         total_num_buckets = 0
-        for state in inference_state.get("sam2_inference_states", []):
-            obj_ids = state.get("obj_ids", []) if isinstance(state, Mapping) else []
-            multiplex_state = (
-                state.get("multiplex_state") if isinstance(state, Mapping) else None
-            )
+        states_raw: object = inference_state.get("sam2_inference_states", [])
+        if not isinstance(states_raw, Sequence) or isinstance(states_raw, str):
+            raise TypeError("sam2_inference_states must be a sequence")
+        for state_raw in cast(Sequence[object], states_raw):
+            if not isinstance(state_raw, Mapping):
+                continue
+            state = cast(Mapping[object, object], state_raw)
+            obj_ids_raw = state.get("obj_ids", [])
+            obj_ids_length: object = getattr(obj_ids_raw, "__len__", None)
+            if isinstance(obj_ids_raw, str) or not callable(obj_ids_length):
+                raise TypeError("tracker state obj_ids must be sized")
+            obj_ids_count = len(cast(_SizedValue, obj_ids_raw))
+            multiplex_state = state.get("multiplex_state")
             if multiplex_state is None:
                 continue
-            total_valid_entries = getattr(multiplex_state, "total_valid_entries", None)
-            if total_valid_entries is not None:
-                assert len(obj_ids) == total_valid_entries
-            total_valid_objects += len(obj_ids)
-            total_num_buckets += int(getattr(multiplex_state, "num_buckets", 0))
+            total_valid_entries_raw: object = getattr(
+                multiplex_state,
+                "total_valid_entries",
+                None,
+            )
+            if total_valid_entries_raw is not None:
+                total_valid_entries = _integer_value(
+                    total_valid_entries_raw,
+                    name="total_valid_entries",
+                )
+                assert obj_ids_count == total_valid_entries
+            num_buckets_raw: object = getattr(multiplex_state, "num_buckets", 0)
+            num_buckets = _integer_value(num_buckets_raw, name="num_buckets")
+            total_valid_objects += obj_ids_count
+            total_num_buckets += num_buckets
         if total_num_buckets == 0:
             return
         inference_state["bucket_utilization_stats"] = {
@@ -1018,7 +1082,10 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
             "orig_width": images.orig_width,
             "constants": {},
         }
-        self._construct_initial_input_batch(inference_state, images)
+        self._construct_initial_input_batch(
+            inference_state,
+            _require_materialized_video_frames(images),
+        )
         inference_state["sam2_inference_states"] = []
         inference_state["tracker_metadata"] = {}
         inference_state["feature_cache"] = {}
