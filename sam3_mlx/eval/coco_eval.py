@@ -2,50 +2,55 @@
 
 from __future__ import annotations
 
-import numpy as np
+from typing import Never
 
+from sam3_mlx.eval._geometry import convert_to_xywh as convert_to_xywh
 from sam3_mlx.eval._unsupported import FailFastEvaluator, raise_unsupported
 
 
 class CocoEvaluator(FailFastEvaluator):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
         raise_unsupported("eval.coco_eval.CocoEvaluator")
 
 
-def convert_to_xywh(boxes):
-    boxes = np.asarray(boxes, dtype=np.float32)
-    xmin, ymin, xmax, ymax = np.moveaxis(boxes, -1, 0)
-    return np.stack((xmin, ymin, xmax - xmin, ymax - ymin), axis=-1)
-
-
-def merge(img_ids, eval_imgs, gather_pred_via_filesys=False):
+def merge(
+    img_ids: object, eval_imgs: object, gather_pred_via_filesys: bool = False
+) -> Never:
+    del img_ids, eval_imgs, gather_pred_via_filesys
     raise_unsupported("eval.coco_eval.merge")
 
 
 def create_common_coco_eval(
-    coco_eval,
-    img_ids,
-    eval_imgs,
-    gather_pred_via_filesys=False,
-):
+    coco_eval: object,
+    img_ids: object,
+    eval_imgs: object,
+    gather_pred_via_filesys: bool = False,
+) -> Never:
+    del coco_eval, img_ids, eval_imgs, gather_pred_via_filesys
     raise_unsupported("eval.coco_eval.create_common_coco_eval")
 
 
-def segmentation_prepare(self):
+def segmentation_prepare(self: object) -> Never:
+    del self
     raise_unsupported("eval.coco_eval.segmentation_prepare")
 
 
-def evaluate(self, use_self_evaluate):
+def evaluate(self: object, use_self_evaluate: bool) -> Never:
+    del self, use_self_evaluate
     raise_unsupported("eval.coco_eval.evaluate")
 
 
-def loadRes(self, resFile):
+def loadRes(self: object, resFile: object) -> Never:
+    del self, resFile
     raise_unsupported("eval.coco_eval.loadRes")
 
 
-def summarize(self):
+def summarize(self: object) -> Never:
+    del self
     raise_unsupported("eval.coco_eval.summarize")
 
 
-def accumulate(self, use_self_eval=False):
+def accumulate(self: object, use_self_eval: bool = False) -> Never:
+    del self, use_self_eval
     raise_unsupported("eval.coco_eval.accumulate")

@@ -3,41 +3,44 @@
 from __future__ import annotations
 
 import heapq
+from collections.abc import Sequence
+from typing import SupportsFloat, cast
 
-import numpy as np
-
+from sam3_mlx.eval._geometry import convert_to_xywh as convert_to_xywh
 from sam3_mlx.eval._unsupported import FailFastEvaluator, raise_unsupported
+from sam3_mlx.eval.coco_writer import CocoResult
 
 
-def convert_to_xywh(boxes):
-    """Convert ``XYXY`` boxes to ``XYWH`` using NumPy-compatible arrays."""
-    boxes = np.asarray(boxes, dtype=np.float32)
-    xmin, ymin, xmax, ymax = np.moveaxis(boxes, -1, 0)
-    return np.stack((xmin, ymin, xmax - xmin, ymax - ymin), axis=-1)
+def _score(result: CocoResult) -> float:
+    return float(cast(SupportsFloat, result["score"]))
 
 
 class HeapElement:
-    def __init__(self, val):
+    def __init__(self, val: CocoResult) -> None:
         self.val = val
 
-    def __lt__(self, other):
-        return self.val["score"] < other.val["score"]
+    def __lt__(self, other: HeapElement) -> bool:
+        return _score(self.val) < _score(other.val)
 
 
 class COCOevalCustom(FailFastEvaluator):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
         raise_unsupported("eval.coco_eval_offline.COCOevalCustom")
 
 
 class CocoEvaluatorOfflineWithPredFileEvaluators(FailFastEvaluator):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
         raise_unsupported(
             "eval.coco_eval_offline.CocoEvaluatorOfflineWithPredFileEvaluators"
         )
 
 
-def _topk_by_image(predictions, maxdets):
-    by_image = {}
+def _topk_by_image(  # pyright: ignore[reportUnusedFunction]
+    predictions: Sequence[CocoResult], maxdets: int
+) -> list[CocoResult]:
+    by_image: dict[object, list[HeapElement]] = {}
     for pred in predictions:
         heap = by_image.setdefault(pred["image_id"], [])
         item = HeapElement(pred)

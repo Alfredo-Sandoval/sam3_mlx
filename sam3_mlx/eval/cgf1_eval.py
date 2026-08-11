@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Union
+from typing import Never
 
 from sam3_mlx.eval._unsupported import FailFastEvaluator, raise_unsupported
 
@@ -12,7 +12,7 @@ from sam3_mlx.eval._unsupported import FailFastEvaluator, raise_unsupported
 class Metric:
     name: str
     image_level: bool
-    iou_threshold: Union[float, None]
+    iou_threshold: float | None
 
 
 CGF1_METRICS = [
@@ -46,19 +46,23 @@ CGF1_METRICS = [
 
 
 class COCOCustom(FailFastEvaluator):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
         raise_unsupported("eval.cgf1_eval.COCOCustom")
 
 
 class CGF1Eval(FailFastEvaluator):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
         raise_unsupported("eval.cgf1_eval.CGF1Eval")
 
 
-def _evaluate(self):
+def _evaluate(self: object) -> Never:  # pyright: ignore[reportUnusedFunction]
+    del self
     raise_unsupported("eval.cgf1_eval._evaluate")
 
 
 class CGF1Evaluator(FailFastEvaluator):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
         raise_unsupported("eval.cgf1_eval.CGF1Evaluator")
