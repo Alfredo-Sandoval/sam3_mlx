@@ -553,7 +553,7 @@ class Sam3VideoBase(nn.Module):
 
     def forward(
         self, input: object | None = None, is_inference: bool = False
-    ) -> NoReturn:
+    ) -> object:
         del input, is_inference
         _raise_video_base_unsupported(
             "sam3_mlx.model.sam3_video_base.Sam3VideoBase.forward",

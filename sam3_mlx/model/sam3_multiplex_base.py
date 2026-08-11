@@ -351,7 +351,7 @@ def _require_text_outputs(value: object) -> dict[str, TrackerArray]:
     return outputs
 
 
-def _text_outputs_for_batch(
+def text_outputs_for_batch(
     detector: object,
     feature_cache: FeatureCache,
     text_batch: object,
@@ -2259,7 +2259,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
             pred_masks = det_out["mask"]
             pred_boxes = det_out.get("bbox")
         else:
-            text_outputs = _text_outputs_for_batch(
+            text_outputs = text_outputs_for_batch(
                 self.detector,
                 feature_cache,
                 input_batch.find_text_batch,
@@ -4495,7 +4495,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
         use_batched_grounding: bool = False,
         batched_grounding_batch_size: int = 16,
     ) -> tuple[DetectionOutput, mx.array]:
-        text_outputs = _text_outputs_for_batch(
+        text_outputs = text_outputs_for_batch(
             self.detector,
             feature_cache,
             input_batch.find_text_batch,

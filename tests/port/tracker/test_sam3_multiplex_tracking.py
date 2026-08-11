@@ -4218,6 +4218,18 @@ def test_multiplex_tracking_forward_runs_image_only_eval_prompts_and_restores_ra
     assert preds["masks_rle"][1][0]["area"] == 2
 
 
+def test_multiplex_tracking_forward_requires_batched_datapoint():
+    tracking = Sam3MultiplexTracking(
+        tracker=_DummyTracker(),
+        detector=_DummyDetector(),
+        is_multiplex=True,
+        image_size=4,
+    )
+
+    with pytest.raises(TypeError, match="forward requires a BatchedDatapoint"):
+        tracking.forward()
+
+
 def test_multiplex_tracking_forward_runs_video_eval_and_restores_rank():
     detector = _FramewiseVideoDetector(
         logits_by_frame=[

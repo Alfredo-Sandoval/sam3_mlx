@@ -33,8 +33,11 @@ from sam3_mlx.model.multiplex_utils import (
     raise_unsupported_multiplex_runtime,
 )
 from sam3_mlx.model.sam3_multiplex_base import (
+    FeatureCache,
     MaskletConfirmationStatus,
     Sam3MultiplexBase,
+    TrackerState,
+    text_outputs_for_batch,
 )
 from sam3_mlx.model.sam3_tracker_base import NO_OBJ_SCORE
 from sam3_mlx.model.sam3_tracker_utils import fill_holes_in_mask_scores
@@ -158,6 +161,58 @@ def _mapping_view(value: object, *, name: str) -> Mapping[object, object]:
     if not isinstance(value, Mapping):
         raise TypeError(f"{name} must be a mapping")
     return cast(Mapping[object, object], value)
+
+
+def _require_feature_cache(value: object) -> FeatureCache:
+    if not isinstance(value, dict):
+        raise TypeError("feature_cache must be a dictionary with string or integer keys")
+    mapping = cast(dict[object, object], value)
+    if not all(isinstance(key, (str, int)) for key in mapping):
+        raise TypeError("feature_cache must be a dictionary with string or integer keys")
+    return cast(FeatureCache, value)
+
+
+def _require_tracker_state(value: object) -> TrackerState:
+    if not isinstance(value, dict):
+        raise TypeError("tracker state must be a dictionary with string keys")
+    mapping = cast(dict[object, object], value)
+    if not all(isinstance(key, str) for key in mapping):
+        raise TypeError("tracker state must be a dictionary with string keys")
+    return cast(TrackerState, value)
+
+
+def _require_tracker_state_list(value: object) -> list[TrackerState]:
+    if not isinstance(value, list):
+        raise TypeError("sam2_inference_states must be a list")
+    for state in cast(list[object], value):
+        _require_tracker_state(state)
+    return cast(list[TrackerState], value)
+
+
+def _object_id_sequence(value: object) -> Sequence[object]:
+    if not isinstance(value, Sequence) or isinstance(value, str):
+        raise TypeError("tracker state obj_ids must be a sequence")
+    return cast(Sequence[object], value)
+
+
+def _object_id_collection(value: object) -> Sequence[object] | set[object]:
+    if isinstance(value, set):
+        return cast(set[object], value)
+    return _object_id_sequence(value)
+
+
+def _optional_text(value: object) -> str | None:
+    if value is not None and not isinstance(value, str):
+        raise TypeError("text_str must be a string when provided.")
+    return value
+
+
+def _first_axis_size(value: object, *, name: str) -> int:
+    shape = getattr(value, "shape", None)
+    if not isinstance(shape, Sequence) or isinstance(shape, str) or not shape:
+        raise TypeError(f"{name} must expose a non-empty shape")
+    shape_values = cast(Sequence[object], shape)
+    return _integer_value(shape_values[0], name=f"{name} first dimension")
 
 
 def _int_keyed_object_dict(value: object, *, name: str) -> dict[int, object]:
@@ -1802,27 +1857,22 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
             raise TypeError("inference_state must be a dictionary")
         inference_state = cast(dict[str, Any], inference_state_raw)
         start_frame_idx_raw: object = kwargs.pop("start_frame_idx", None)
-        if start_frame_idx_raw is not None and not isinstance(
-            start_frame_idx_raw,
-            (int, np.integer),
-        ):
-            raise TypeError("start_frame_idx must be an integer or None")
         start_frame_idx = (
-            None if start_frame_idx_raw is None else int(start_frame_idx_raw)
+            None
+            if start_frame_idx_raw is None
+            else _integer_value(start_frame_idx_raw, name="start_frame_idx")
         )
         max_frame_num_to_track_raw: object = kwargs.pop(
             "max_frame_num_to_track",
             None,
         )
-        if max_frame_num_to_track_raw is not None and not isinstance(
-            max_frame_num_to_track_raw,
-            (int, np.integer),
-        ):
-            raise TypeError("max_frame_num_to_track must be an integer or None")
         max_frame_num_to_track = (
             None
             if max_frame_num_to_track_raw is None
-            else int(max_frame_num_to_track_raw)
+            else _integer_value(
+                max_frame_num_to_track_raw,
+                name="max_frame_num_to_track",
+            )
         )
         reverse = bool(kwargs.pop("reverse", False))
         kwargs.pop("output_prob_thresh", 0.5)
@@ -1843,14 +1893,19 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         )
 
     def _init_backbone_out(self, inference_state: dict[str, Any]) -> dict[str, Any]:
-        input_batch = inference_state["input_batch"]
-        text_outputs = self.detector.backbone.forward_text(
+        input_batch_raw: object = inference_state["input_batch"]
+        if not isinstance(input_batch_raw, BatchedDatapoint):
+            raise TypeError("input_batch must be a BatchedDatapoint")
+        input_batch = input_batch_raw
+        feature_cache = _require_feature_cache(
+            inference_state.setdefault("feature_cache", {})
+        )
+        text_outputs = text_outputs_for_batch(
+            self.detector,
+            feature_cache,
             input_batch.find_text_batch,
             device=self.device,
         )
-        inference_state.setdefault("feature_cache", {})["text"] = {
-            tuple(input_batch.find_text_batch): text_outputs
-        }
         return {
             "img_batch_all_stages": input_batch.img_batch,
             **text_outputs,
@@ -1886,8 +1941,7 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
             raise ValueError("clear_old_boxes must be True.")
         if (boxes_xywh is None) != (box_labels is None):
             raise ValueError("boxes_xywh and box_labels must be provided together.")
-        if text_str is not None and not isinstance(text_str, str):
-            raise TypeError("text_str must be a string when provided.")
+        text_str = _optional_text(text_str)
 
         self.reset_state(inference_state)
 
@@ -1954,8 +2008,14 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         )
         return frame_idx, self._postprocess_output(inference_state, out)
 
-    def forward(self, input: Any, is_inference: bool = False) -> Any:
+    def forward(
+        self,
+        input: object | None = None,
+        is_inference: bool = False,
+    ) -> dict[int, object]:
         del is_inference
+        if not isinstance(input, BatchedDatapoint):
+            raise TypeError("Sam3MultiplexTracking.forward requires a BatchedDatapoint.")
         if input.raw_images is None:
             raise ValueError("Sam3MultiplexTracking.forward requires input.raw_images.")
         if not input.find_metadatas or input.find_metadatas[0] is None:
@@ -2156,14 +2216,13 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
             raise_unsupported_multiplex_runtime(
                 "Sam3MultiplexTrackingWithInteractivity._init_new_sam2_state"
             )
-        sam2_state = init_state(
+        sam2_state_raw: object = cast(_KeywordCall, init_state)(
             cached_features=inference_state.get("feature_cache", {}),
             video_height=int(inference_state["orig_height"]),
             video_width=int(inference_state["orig_width"]),
             num_frames=int(inference_state["num_frames"]),
         )
-        if not isinstance(sam2_state, dict):
-            raise TypeError("tracker.init_state must return a SAM2 state dict.")
+        sam2_state = _require_tracker_state(sam2_state_raw)
         sam2_state.setdefault("obj_ids", [])
         return sam2_state
 
@@ -2223,11 +2282,14 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
             )
 
         obj_id_int = int(obj_id)
-        tracker_states_local = inference_state.setdefault("sam2_inference_states", [])
-        source_state: dict[str, Any] | None = None
+        tracker_states_local = _require_tracker_state_list(
+            inference_state.setdefault("sam2_inference_states", [])
+        )
+        source_state: TrackerState | None = None
         source_state_idx: int | None = None
         for idx, state in enumerate(tracker_states_local):
-            if isinstance(state, dict) and obj_id_int in state.get("obj_ids", []):
+            state_obj_ids = _object_id_sequence(state.get("obj_ids", []))
+            if obj_id_int in state_obj_ids:
                 source_state = state
                 source_state_idx = idx
                 break
@@ -2235,7 +2297,7 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
             raise ValueError(
                 f"Object id {obj_id_int} is not present in local SAM2 states."
             )
-        if len(source_state.get("obj_ids", [])) <= 1:
+        if len(_object_id_sequence(source_state.get("obj_ids", []))) <= 1:
             return
 
         obj_idx_in_source = self._lookup_existing_obj_idx(source_state, obj_id_int)
@@ -2248,9 +2310,24 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
             "cond_frame_outputs": {},
             "non_cond_frame_outputs": {},
         }
+        source_output_dict = _mapping_view(
+            source_state.get("output_dict", {}),
+            name="source output_dict",
+        )
         for storage_key in ("cond_frame_outputs", "non_cond_frame_outputs"):
-            source_outputs = source_state.get("output_dict", {}).get(storage_key, {})
-            for output_frame_idx, source_frame_out in source_outputs.items():
+            source_outputs = _mapping_view(
+                source_output_dict.get(storage_key, {}),
+                name=f"source output_dict {storage_key}",
+            )
+            for output_frame_idx_raw, source_frame_out_raw in source_outputs.items():
+                output_frame_idx = _integer_value(
+                    output_frame_idx_raw,
+                    name=f"{storage_key} frame index",
+                )
+                source_frame_out = _mapping_view(
+                    source_frame_out_raw,
+                    name=f"{storage_key} frame output",
+                )
                 pred_masks = source_frame_out.get("pred_masks")
                 object_score_logits = source_frame_out.get("object_score_logits")
                 if pred_masks is None or object_score_logits is None:
@@ -2258,9 +2335,9 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
                         "Packed singleton extraction requires pred_masks and "
                         f"object_score_logits for {storage_key} frame {output_frame_idx}."
                     )
-                if pred_masks.shape[0] < obj_idx_in_source + 1:
+                if _first_axis_size(pred_masks, name="pred_masks") < obj_idx_in_source + 1:
                     continue
-                singleton_frame_out = {
+                singleton_frame_out: dict[str, object] = {
                     "pred_masks": _copy_first_axis_slice(
                         pred_masks,
                         obj_idx_in_source,
@@ -2285,13 +2362,18 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
                 if maskmem_pos_enc is None:
                     singleton_frame_out["maskmem_pos_enc"] = None
                 else:
+                    if not isinstance(maskmem_pos_enc, Sequence) or isinstance(
+                        maskmem_pos_enc,
+                        str,
+                    ):
+                        raise TypeError("maskmem_pos_enc must be a sequence")
                     singleton_frame_out["maskmem_pos_enc"] = [
                         _demux_and_slice_first_axis(
                             level_enc, multiplex_state, obj_idx_in_source
                         )
                         if level_enc is not None
                         else None
-                        for level_enc in maskmem_pos_enc
+                        for level_enc in cast(Sequence[object], maskmem_pos_enc)
                     ]
 
                 if "obj_ptr" in source_frame_out and getattr(
@@ -2303,68 +2385,94 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
                         obj_idx_in_source,
                     )
                 if "conditioning_objects" in source_frame_out:
+                    conditioning_objects = _object_id_collection(
+                        source_frame_out["conditioning_objects"]
+                    )
                     singleton_frame_out["conditioning_objects"] = (
                         {0}
-                        if obj_idx_in_source in source_frame_out["conditioning_objects"]
+                        if obj_idx_in_source in conditioning_objects
                         else set()
                     )
                 singleton_consolidated_outputs[storage_key][output_frame_idx] = (
                     singleton_frame_out
                 )
 
-        extracted_point_inputs = (
-            source_state.get("point_inputs_per_obj", {})
-            .get(
-                obj_idx_in_source,
-                {},
-            )
-            .copy()
+        point_inputs_per_obj = _mapping_view(
+            source_state.get("point_inputs_per_obj", {}),
+            name="point_inputs_per_obj",
         )
-        extracted_mask_inputs = (
-            source_state.get("mask_inputs_per_obj", {})
-            .get(
-                obj_idx_in_source,
-                {},
+        extracted_point_inputs = dict(
+            _mapping_view(
+                point_inputs_per_obj.get(obj_idx_in_source, {}),
+                name="object point inputs",
             )
-            .copy()
+        )
+        mask_inputs_per_obj = _mapping_view(
+            source_state.get("mask_inputs_per_obj", {}),
+            name="mask_inputs_per_obj",
+        )
+        extracted_mask_inputs = dict(
+            _mapping_view(
+                mask_inputs_per_obj.get(obj_idx_in_source, {}),
+                name="object mask inputs",
+            )
         )
 
         extracted_obj_cond_outputs: dict[Any, Any] = {}
         extracted_obj_non_cond_outputs: dict[Any, Any] = {}
-        obj_output_dict = source_state.get("output_dict_per_obj", {}).get(
-            obj_idx_in_source,
+        output_dict_per_obj = _mapping_view(
+            source_state.get("output_dict_per_obj", {}),
+            name="output_dict_per_obj",
         )
-        if obj_output_dict is not None:
+        obj_output_dict_raw = output_dict_per_obj.get(obj_idx_in_source)
+        if obj_output_dict_raw is not None:
+            obj_output_dict = _mapping_view(
+                obj_output_dict_raw,
+                name="object output_dict",
+            )
             cond_input_keys = (
                 extracted_point_inputs.keys() | extracted_mask_inputs.keys()
             )
+            cond_outputs = _mapping_view(
+                obj_output_dict.get("cond_frame_outputs", {}),
+                name="object cond_frame_outputs",
+            )
             extracted_obj_cond_outputs = {
                 frame_key: frame_out
-                for frame_key, frame_out in obj_output_dict.get(
-                    "cond_frame_outputs",
-                    {},
-                ).items()
+                for frame_key, frame_out in cond_outputs.items()
                 if frame_key in cond_input_keys
             }
-            extracted_obj_non_cond_outputs = obj_output_dict.get(
-                "non_cond_frame_outputs",
-                {},
-            ).copy()
+            extracted_obj_non_cond_outputs = dict(
+                _mapping_view(
+                    obj_output_dict.get("non_cond_frame_outputs", {}),
+                    name="object non_cond_frame_outputs",
+                )
+            )
 
         extracted_temp_cond_outputs: dict[Any, Any] = {}
         extracted_temp_non_cond_outputs: dict[Any, Any] = {}
-        temp_obj_output_dict = source_state.get("temp_output_dict_per_obj", {}).get(
-            obj_idx_in_source,
+        temp_output_dict_per_obj = _mapping_view(
+            source_state.get("temp_output_dict_per_obj", {}),
+            name="temp_output_dict_per_obj",
         )
-        if temp_obj_output_dict is not None:
-            extracted_temp_cond_outputs = temp_obj_output_dict.get(
-                "cond_frame_outputs",
-                {},
-            ).copy()
-            extracted_temp_non_cond_outputs = temp_obj_output_dict.get(
-                "non_cond_frame_outputs",
-                {},
-            ).copy()
+        temp_obj_output_dict_raw = temp_output_dict_per_obj.get(obj_idx_in_source)
+        if temp_obj_output_dict_raw is not None:
+            temp_obj_output_dict = _mapping_view(
+                temp_obj_output_dict_raw,
+                name="object temp_output_dict",
+            )
+            extracted_temp_cond_outputs = dict(
+                _mapping_view(
+                    temp_obj_output_dict.get("cond_frame_outputs", {}),
+                    name="object temp cond_frame_outputs",
+                )
+            )
+            extracted_temp_non_cond_outputs = dict(
+                _mapping_view(
+                    temp_obj_output_dict.get("non_cond_frame_outputs", {}),
+                    name="object temp non_cond_frame_outputs",
+                )
+            )
 
         remove_object = getattr(self.tracker, "remove_object", None)
         if remove_object is None:
