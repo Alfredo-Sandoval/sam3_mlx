@@ -14,8 +14,8 @@ from __future__ import annotations
 import contextlib
 import fnmatch
 import logging
-from collections.abc import Mapping, Sequence
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
+from collections.abc import Generator, Iterable, Mapping, Sequence
+from typing import Never, Protocol, SupportsFloat, cast
 
 import numpy as np
 
@@ -30,7 +30,7 @@ _UNSUPPORTED_CHECKPOINT_MESSAGE = (
 )
 
 
-def _raise_checkpoint_unsupported(feature: str) -> None:
+def _raise_checkpoint_unsupported(feature: str) -> Never:
     raise_unsupported(
         feature,
         reason="training-loop",
@@ -39,12 +39,55 @@ def _raise_checkpoint_unsupported(feature: str) -> None:
     )
 
 
+class _Summable(Protocol):
+    def sum(self) -> object: ...
+
+
+class _ItemValue(Protocol):
+    def item(self) -> object: ...
+
+
+class _StateDictGetter(Protocol):
+    def __call__(self) -> object: ...
+
+
+class _NamedParameters(Protocol):
+    def __call__(self) -> Iterable[tuple[str, object]]: ...
+
+
+class _LoadStateDict(Protocol):
+    def __call__(self, state_dict: dict[str, object], *, strict: bool) -> object: ...
+
+
+class CheckpointKernel(Protocol):
+    def __call__(self, *, state_dict: dict[str, object]) -> dict[str, object]: ...
+
+
+def _state_dict(model: object) -> dict[str, object]:
+    getter = getattr(model, "state_dict", None)
+    if not callable(getter):
+        _raise_checkpoint_unsupported("model must expose state_dict")
+    result = cast(_StateDictGetter, getter)()
+    if not isinstance(result, dict):
+        raise TypeError("model state_dict() must return a dict")
+    return cast(dict[str, object], result)
+
+
+def _string_list(value: object, name: str) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise TypeError(f"{name} must be a sequence of strings")
+    items = list(cast(Sequence[object], value))
+    if not all(isinstance(item, str) for item in items):
+        raise TypeError(f"{name} must be a sequence of strings")
+    return cast(list[str], items)
+
+
 def unix_pattern_to_parameter_names(
-    constraints: List[str], all_parameter_names: Sequence[str]
-) -> Union[None, Set[str]]:
+    constraints: Sequence[str], all_parameter_names: Sequence[str]
+) -> set[str]:
     """Select names matching any of the provided unix-style constraints."""
 
-    parameter_names = []
+    parameter_names: list[set[str]] = []
     for param_name in constraints:
         matching_parameters = set(fnmatch.filter(all_parameter_names, param_name))
         if len(matching_parameters) <= 0:
@@ -52,12 +95,12 @@ def unix_pattern_to_parameter_names(
                 f"param_names {param_name} don't match any param in the given names."
             )
         parameter_names.append(matching_parameters)
-    return set.union(*parameter_names) if parameter_names else set()
+    return parameter_names[0].union(*parameter_names[1:]) if parameter_names else set()
 
 
-def filter_params_matching_unix_pattern(
-    patterns: List[str], state_dict: Dict[str, Any]
-) -> Dict[str, Any]:
+def filter_params_matching_unix_pattern[T](
+    patterns: Sequence[str], state_dict: Mapping[str, T]
+) -> dict[str, T]:
     """Keep only state-dict entries matching the provided unix patterns."""
 
     if len(patterns) == 0:
@@ -68,9 +111,9 @@ def filter_params_matching_unix_pattern(
     return {key: state_dict[key] for key in included_keys}
 
 
-def exclude_params_matching_unix_pattern(
-    patterns: List[str], state_dict: Dict[str, Any]
-) -> Dict[str, Any]:
+def exclude_params_matching_unix_pattern[T](
+    patterns: Sequence[str], state_dict: dict[str, T]
+) -> dict[str, T]:
     """Remove state-dict entries matching the provided unix patterns."""
 
     if len(patterns) == 0:
@@ -81,36 +124,45 @@ def exclude_params_matching_unix_pattern(
     return {key: value for key, value in state_dict.items() if key not in excluded_keys}
 
 
-def _to_scalar_sum(value: Any) -> float:
-    summed = value.sum() if hasattr(value, "sum") else np.asarray(value).sum()
-    if hasattr(summed, "item"):
-        summed = summed.item()
-    return float(summed)
+def _to_scalar_sum(value: object) -> float:
+    sum_method = getattr(value, "sum", None)
+    summed = (
+        cast(_Summable, value).sum()
+        if callable(sum_method)
+        else np.asarray(value).sum()
+    )
+    item_method = getattr(summed, "item", None)
+    if callable(item_method):
+        summed = cast(_ItemValue, summed).item()
+    return float(cast(SupportsFloat, summed))
 
 
-def _get_state_dict_summary(state_dict: Dict[str, Any]):
-    keys = []
-    trace = []
+def _get_state_dict_summary(state_dict: Mapping[str, object]) -> np.ndarray:
+    keys: list[str] = []
+    trace: list[float] = []
     for key, value in state_dict.items():
         keys.append(key)
         trace.append(_to_scalar_sum(value))
     return np.array(trace)[np.argsort(keys)]
 
 
-def assert_skipped_parameters_are_frozen(model, patterns: List[str]):
+def assert_skipped_parameters_are_frozen(
+    model: object, patterns: Sequence[str]
+) -> None:
     """Verify that skipped parameters are frozen when the model exposes that API."""
 
     if not patterns:
         return
-    if not hasattr(model, "state_dict") or not hasattr(model, "named_parameters"):
+    named_parameters = getattr(model, "named_parameters", None)
+    if not callable(named_parameters):
         _raise_checkpoint_unsupported("assert_skipped_parameters_are_frozen")
 
     frozen_state_dict = filter_params_matching_unix_pattern(
-        patterns=patterns, state_dict=model.state_dict()
+        patterns=patterns, state_dict=_state_dict(model)
     )
     non_frozen_keys = {
         name
-        for name, parameter in model.named_parameters()
+        for name, parameter in cast(_NamedParameters, named_parameters)()
         if name in frozen_state_dict and getattr(parameter, "requires_grad", False)
     }
     if non_frozen_keys:
@@ -121,24 +173,23 @@ def assert_skipped_parameters_are_frozen(model, patterns: List[str]):
 
 
 @contextlib.contextmanager
-def with_check_parameter_frozen(model, patterns: List[str], disabled: bool = True):
+def with_check_parameter_frozen(
+    model: object, patterns: Sequence[str], disabled: bool = True
+) -> Generator[None, None, None]:
     """Context manager checking that selected state-dict values stay unchanged."""
 
     if not patterns or disabled:
         yield
         return
-    if not hasattr(model, "state_dict"):
-        _raise_checkpoint_unsupported("with_check_parameter_frozen")
-
     frozen_state_dict = filter_params_matching_unix_pattern(
-        patterns=patterns, state_dict=model.state_dict()
+        patterns=patterns, state_dict=_state_dict(model)
     )
     summary_before = _get_state_dict_summary(frozen_state_dict)
 
     yield
 
     frozen_state_dict = filter_params_matching_unix_pattern(
-        patterns=patterns, state_dict=model.state_dict()
+        patterns=patterns, state_dict=_state_dict(model)
     )
     summary_after = _get_state_dict_summary(frozen_state_dict)
 
@@ -152,10 +203,10 @@ def with_check_parameter_frozen(model, patterns: List[str], disabled: bool = Tru
 class CkptExcludeKernel:
     """Remove keys from a state dict when they match a unix pattern."""
 
-    def __init__(self, key_pattern: List[str]):
+    def __init__(self, key_pattern: Sequence[str]):
         self.key_pattern = key_pattern
 
-    def __call__(self, state_dict: Dict[str, Any]):
+    def __call__[T](self, state_dict: dict[str, T]) -> dict[str, T]:
         if len(self.key_pattern) == 0:
             return state_dict
         exclude_keys = unix_pattern_to_parameter_names(
@@ -167,58 +218,64 @@ class CkptExcludeKernel:
 
 
 def load_checkpoint(
-    path_list: List[str],
-    pick_recursive_keys: Optional[List[str]] = None,
+    path_list: Sequence[str],
+    pick_recursive_keys: Sequence[str] | None = None,
     map_location: str = "cpu",
-) -> Any:
+) -> Never:
     _raise_checkpoint_unsupported("load_checkpoint")
 
 
-def get_state_dict(checkpoint, ckpt_state_dict_keys):
+def get_state_dict(
+    checkpoint: object, ckpt_state_dict_keys: Sequence[str | int]
+) -> object:
     pre_train_dict = checkpoint
     for index, key in enumerate(ckpt_state_dict_keys):
-        key_exists = (
-            isinstance(pre_train_dict, Mapping)
-            and key in pre_train_dict
-            or isinstance(pre_train_dict, Sequence)
-            and not isinstance(pre_train_dict, (str, bytes))
-            and isinstance(key, int)
-            and key < len(pre_train_dict)
-        )
+        available: object
+        if isinstance(pre_train_dict, Mapping):
+            mapping = cast(Mapping[object, object], pre_train_dict)
+            key_exists = key in mapping
+            available = mapping.keys()
+        elif isinstance(pre_train_dict, Sequence) and not isinstance(
+            pre_train_dict, (str, bytes)
+        ):
+            sequence = cast(Sequence[object], pre_train_dict)
+            key_exists = isinstance(key, int) and key < len(sequence)
+            available = f"sequence length {len(sequence)}"
+        else:
+            key_exists = False
+            available = type(pre_train_dict).__name__
         if not key_exists:
             key_str = "".join(
                 f"[{prior_key!r}]" for prior_key in ckpt_state_dict_keys[:index]
             )
-            available = (
-                pre_train_dict.keys()
-                if isinstance(pre_train_dict, Mapping)
-                else f"sequence length {len(pre_train_dict)}"
-                if isinstance(pre_train_dict, Sequence)
-                else type(pre_train_dict).__name__
-            )
             raise KeyError(
                 f"{key!r} not found in checkpoint{key_str} with keys: {available}"
             )
-        pre_train_dict = pre_train_dict[key]
+        if isinstance(pre_train_dict, Mapping):
+            pre_train_dict = cast(Mapping[object, object], pre_train_dict)[key]
+        else:
+            pre_train_dict = cast(Sequence[object], pre_train_dict)[cast(int, key)]
     return pre_train_dict
 
 
 def load_checkpoint_and_apply_kernels(
     checkpoint_path: str,
-    checkpoint_kernels: List[Callable] = None,
-    ckpt_state_dict_keys: Tuple[str] = ("state_dict",),
+    checkpoint_kernels: Sequence[CheckpointKernel] | None = None,
+    ckpt_state_dict_keys: tuple[str, ...] = ("state_dict",),
     map_location: str = "cpu",
-):
+) -> Never:
     _raise_checkpoint_unsupported("load_checkpoint_and_apply_kernels")
 
 
 def check_load_state_dict_errors(
-    missing_keys,
-    unexpected_keys,
+    missing_keys: Sequence[str],
+    unexpected_keys: Sequence[str],
     strict: bool,
-    ignore_missing_keys: List[str] = None,
-    ignore_unexpected_keys: List[str] = None,
-):
+    ignore_missing_keys: Sequence[str] | None = None,
+    ignore_unexpected_keys: Sequence[str] | None = None,
+) -> None:
+    missing_keys = list(missing_keys)
+    unexpected_keys = list(unexpected_keys)
     if ignore_missing_keys is not None and len(ignore_missing_keys) > 0:
         ignored_keys = unix_pattern_to_parameter_names(
             ignore_missing_keys, missing_keys
@@ -246,27 +303,33 @@ def check_load_state_dict_errors(
 
 
 def load_state_dict_into_model(
-    state_dict: Dict[str, Any],
-    model,
+    state_dict: dict[str, object],
+    model: object,
     strict: bool = True,
-    ignore_missing_keys: List[str] = None,
-    ignore_unexpected_keys: List[str] = None,
-    checkpoint_kernels: List[Callable] = None,
-):
+    ignore_missing_keys: Sequence[str] | None = None,
+    ignore_unexpected_keys: Sequence[str] | None = None,
+    checkpoint_kernels: Sequence[CheckpointKernel] | None = None,
+) -> object:
     """Load a state dict into a model only when the model exposes the API."""
 
     if checkpoint_kernels is not None:
         for fn in checkpoint_kernels:
             state_dict = fn(state_dict=state_dict)
     load_state_dict = getattr(model, "load_state_dict", None)
-    if load_state_dict is None:
+    if not callable(load_state_dict):
         _raise_checkpoint_unsupported("load_state_dict_into_model")
-    result = load_state_dict(state_dict, strict=False)
+    result = cast(_LoadStateDict, load_state_dict)(state_dict, strict=False)
     if isinstance(result, tuple):
-        missing_keys, unexpected_keys = result
+        result_tuple = cast(tuple[object, ...], result)
+        if len(result_tuple) != 2:
+            raise TypeError("load_state_dict result tuple must have two items")
+        missing_value, unexpected_value = result_tuple
     else:
-        missing_keys = getattr(result, "missing_keys", [])
-        unexpected_keys = getattr(result, "unexpected_keys", [])
+        missing_value = getattr(result, "missing_keys", [])
+        unexpected_value = getattr(result, "unexpected_keys", [])
+
+    missing_keys = _string_list(missing_value, "missing_keys")
+    unexpected_keys = _string_list(unexpected_value, "unexpected_keys")
 
     check_load_state_dict_errors(
         missing_keys,
