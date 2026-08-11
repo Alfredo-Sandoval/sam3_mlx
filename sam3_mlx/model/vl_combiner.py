@@ -1,14 +1,21 @@
+from __future__ import annotations
+
+from collections.abc import Sequence
 from copy import copy
+from typing import NoReturn, Protocol, cast
 
 import mlx.core as mx
-import mlx.nn as nn
+from mlx import nn
 
 from sam3_mlx._unsupported import raise_unsupported
 from sam3_mlx.model.act_ckpt_utils import activation_ckpt_wrapper
 from sam3_mlx.model.necks import Sam3DualViTDetNeck, Sam3TriViTDetNeck
+from sam3_mlx.model.text_encoder_ve import PreencodedText
 
 
-def _raise_vl_unsupported(feature: str, *, detail: str, alternative=None):
+def _raise_vl_unsupported(
+    feature: str, *, detail: str, alternative: str | None = None
+) -> NoReturn:
     raise_unsupported(
         feature,
         reason="torch-compile",
@@ -17,24 +24,118 @@ def _raise_vl_unsupported(feature: str, *, detail: str, alternative=None):
     )
 
 
-def _feature_tensor(feature):
+def _feature_tensor(feature: object) -> object:
     return getattr(feature, "tensors", feature)
 
 
-def _feature_mask(feature):
+def _feature_mask(feature: object) -> object | None:
     return getattr(feature, "mask", None)
+
+
+class _LanguageBackbone(Protocol):
+    def __call__(
+        self,
+        text: list[str] | PreencodedText,
+        input_boxes: list[object] | None = None,
+    ) -> tuple[mx.array, mx.array, mx.array]: ...
+
+
+class _TriVisionBackbone(Protocol):
+    def forward(
+        self,
+        samples: mx.array,
+        *,
+        need_sam3_out: bool,
+        need_interactive_out: bool,
+        need_propagation_out: bool,
+    ) -> tuple[
+        list[object],
+        list[mx.array],
+        list[object],
+        list[mx.array],
+        list[object],
+        list[mx.array],
+    ]: ...
+
+
+class _VisionBackbone(Protocol):
+    def forward(self, samples: mx.array) -> tuple[list[object], list[mx.array]]: ...
+
+
+def _forward_tri_vision(
+    backbone: _TriVisionBackbone,
+    samples: mx.array,
+    *,
+    scalp: int,
+    need_sam3_out: bool,
+    need_interactive_out: bool,
+    need_propagation_out: bool,
+) -> dict[str, object]:
+    (
+        sam3_features,
+        sam3_pos,
+        interactive_features,
+        interactive_pos,
+        propagation_features,
+        propagation_pos,
+    ) = backbone.forward(
+        samples,
+        need_sam3_out=need_sam3_out,
+        need_interactive_out=need_interactive_out,
+        need_propagation_out=need_propagation_out,
+    )
+
+    if scalp > 0:
+        sam3_features, sam3_pos = sam3_features[:-scalp], sam3_pos[:-scalp]
+        interactive_features, interactive_pos = (
+            interactive_features[:-scalp],
+            interactive_pos[:-scalp],
+        )
+        propagation_features, propagation_pos = (
+            propagation_features[:-scalp],
+            propagation_pos[:-scalp],
+        )
+
+    output: dict[str, object] = {}
+    if need_sam3_out:
+        sam3_last = sam3_features[-1]
+        output.update(
+            {
+                "vision_features": _feature_tensor(sam3_last),
+                "vision_mask": _feature_mask(sam3_last),
+                "vision_pos_enc": sam3_pos,
+                "backbone_fpn": sam3_features,
+            }
+        )
+    if need_interactive_out:
+        interactive_last = interactive_features[-1]
+        output["interactive"] = {
+            "vision_features": _feature_tensor(interactive_last),
+            "vision_mask": _feature_mask(interactive_last),
+            "vision_pos_enc": interactive_pos,
+            "backbone_fpn": interactive_features,
+        }
+    if need_propagation_out:
+        propagation_last = propagation_features[-1]
+        output["sam2_backbone_out"] = {
+            "vision_features": _feature_tensor(propagation_last),
+            "vision_mask": _feature_mask(propagation_last),
+            "vision_pos_enc": propagation_pos,
+            "backbone_fpn": propagation_features,
+        }
+    return output
 
 
 class SAM3VLBackbone(nn.Module):
     def __init__(
         self,
         visual: Sam3DualViTDetNeck,
-        text,
+        text: _LanguageBackbone | None,
         compile_visual: bool = False,
         act_ckpt_whole_vision_backbone: bool = False,
         act_ckpt_whole_language_backbone: bool = False,
-        scalp=0,
-    ):
+        scalp: int = 0,
+    ) -> None:
         super().__init__()
         if compile_visual:
             _raise_vl_unsupported(
@@ -49,15 +150,27 @@ class SAM3VLBackbone(nn.Module):
         self.act_ckpt_whole_vision_backbone = act_ckpt_whole_vision_backbone
         self.act_ckpt_whole_language_backbone = act_ckpt_whole_language_backbone
 
-    def __call__(self, samples, captions, input_boxes=None, additional_text=None):
+    def __call__(
+        self,
+        samples: mx.array,
+        captions: list[str] | PreencodedText,
+        input_boxes: list[object] | None = None,
+        additional_text: Sequence[str] | None = None,
+    ) -> dict[str, object]:
         return self.forward(samples, captions, input_boxes, additional_text)
 
-    def forward(self, samples, captions, input_boxes=None, additional_text=None):
+    def forward(
+        self,
+        samples: mx.array,
+        captions: list[str] | PreencodedText,
+        input_boxes: list[object] | None = None,
+        additional_text: Sequence[str] | None = None,
+    ) -> dict[str, object]:
         output = self.forward_image(samples)
         output.update(self.forward_text(captions, input_boxes, additional_text))
         return output
 
-    def forward_image(self, samples: mx.array):
+    def forward_image(self, samples: mx.array) -> dict[str, object]:
         return activation_ckpt_wrapper(self._forward_image_no_act_ckpt)(
             samples=samples,
             act_ckpt_enable=(
@@ -65,7 +178,7 @@ class SAM3VLBackbone(nn.Module):
             ),
         )
 
-    def _forward_image_no_act_ckpt(self, samples):
+    def _forward_image_no_act_ckpt(self, samples: mx.array) -> dict[str, object]:
         sam3_features, sam3_pos, sam2_features, sam2_pos = self.vision_backbone.forward(
             samples
         )
@@ -100,11 +213,11 @@ class SAM3VLBackbone(nn.Module):
 
     def forward_text(
         self,
-        captions,
-        input_boxes=None,
-        additional_text=None,
-        device=None,
-    ):
+        captions: list[str] | PreencodedText,
+        input_boxes: list[object] | None = None,
+        additional_text: Sequence[str] | None = None,
+        device: str | None = None,
+    ) -> dict[str, mx.array]:
         return activation_ckpt_wrapper(self._forward_text_no_ack_ckpt)(
             captions=captions,
             input_boxes=input_boxes,
@@ -118,19 +231,22 @@ class SAM3VLBackbone(nn.Module):
 
     def _forward_text_no_ack_ckpt(
         self,
-        captions,
-        input_boxes=None,
-        additional_text=None,
-        device=None,
-    ):
+        captions: list[str] | PreencodedText,
+        input_boxes: list[object] | None = None,
+        additional_text: Sequence[str] | None = None,
+        device: str | None = None,
+    ) -> dict[str, mx.array]:
         del device
-        output = {}
+        output: dict[str, mx.array] = {}
 
         text_to_encode = copy(captions)
         if additional_text is not None:
-            text_to_encode += additional_text
+            typed_text = cast(list[str], text_to_encode)
+            typed_text.extend(additional_text)
+            text_to_encode = typed_text
 
-        text_attention_mask, text_memory, text_embeds = self.language_backbone(
+        language_backbone = cast(_LanguageBackbone, self.language_backbone)
+        text_attention_mask, text_memory, text_embeds = language_backbone(
             text_to_encode, input_boxes
         )
 
@@ -150,9 +266,15 @@ class SAM3VLBackbone(nn.Module):
 
 
 class SAM3VLBackboneTri(SAM3VLBackbone):
-    def __init__(self, visual, text, compile_visual=False, scalp=0):
+    def __init__(
+        self,
+        visual: Sam3TriViTDetNeck,
+        text: _LanguageBackbone | None,
+        compile_visual: bool = False,
+        scalp: int = 0,
+    ) -> None:
         super().__init__(
-            visual=visual,
+            visual=cast(Sam3DualViTDetNeck, visual),
             text=text,
             compile_visual=compile_visual,
             scalp=scalp,
@@ -165,12 +287,12 @@ class SAM3VLBackboneTri(SAM3VLBackbone):
 
     def forward_image(
         self,
-        samples,
+        samples: mx.array,
         *,
         need_sam3_out: bool = True,
         need_interactive_out: bool = True,
         need_propagation_out: bool = True,
-    ):
+    ) -> dict[str, object]:
         return activation_ckpt_wrapper(self._forward_image_tri_no_act_ckpt)(
             samples=samples,
             need_sam3_out=need_sam3_out,
@@ -183,81 +305,33 @@ class SAM3VLBackboneTri(SAM3VLBackbone):
 
     def _forward_image_tri_no_act_ckpt(
         self,
-        samples,
-        need_sam3_out=True,
-        need_interactive_out=True,
-        need_propagation_out=True,
-    ):
-        (
-            sam3_features,
-            sam3_pos,
-            interactive_features,
-            interactive_pos,
-            propagation_features,
-            propagation_pos,
-        ) = self.vision_backbone.forward(
+        samples: mx.array,
+        need_sam3_out: bool = True,
+        need_interactive_out: bool = True,
+        need_propagation_out: bool = True,
+    ) -> dict[str, object]:
+        return _forward_tri_vision(
+            cast(_TriVisionBackbone, self.vision_backbone),
             samples,
+            scalp=self.scalp,
             need_sam3_out=need_sam3_out,
             need_interactive_out=need_interactive_out,
             need_propagation_out=need_propagation_out,
         )
 
-        if self.scalp > 0:
-            sam3_features, sam3_pos = (
-                sam3_features[: -self.scalp],
-                sam3_pos[: -self.scalp],
-            )
-            interactive_features, interactive_pos = (
-                interactive_features[: -self.scalp],
-                interactive_pos[: -self.scalp],
-            )
-            propagation_features, propagation_pos = (
-                propagation_features[: -self.scalp],
-                propagation_pos[: -self.scalp],
-            )
-
-        output = {}
-        if need_sam3_out:
-            sam3_last = sam3_features[-1]
-            output.update(
-                {
-                    "vision_features": _feature_tensor(sam3_last),
-                    "vision_mask": _feature_mask(sam3_last),
-                    "vision_pos_enc": sam3_pos,
-                    "backbone_fpn": sam3_features,
-                }
-            )
-        if need_interactive_out:
-            interactive_last = interactive_features[-1]
-            output["interactive"] = {
-                "vision_features": _feature_tensor(interactive_last),
-                "vision_mask": _feature_mask(interactive_last),
-                "vision_pos_enc": interactive_pos,
-                "backbone_fpn": interactive_features,
-            }
-        if need_propagation_out:
-            propagation_last = propagation_features[-1]
-            output["sam2_backbone_out"] = {
-                "vision_features": _feature_tensor(propagation_last),
-                "vision_mask": _feature_mask(propagation_last),
-                "vision_pos_enc": propagation_pos,
-                "backbone_fpn": propagation_features,
-            }
-        return output
-
 
 class VisionOnly(nn.Module):
     def __init__(
         self,
-        visual,
-        n_features,
-        forward_in_chunk_for_eval=False,
-        eval_chunk_size=4,
-        eval_cast_to_cpu=False,
-        scalp=0,
+        visual: _VisionBackbone,
+        n_features: int,
+        forward_in_chunk_for_eval: bool = False,
+        eval_chunk_size: int = 4,
+        eval_cast_to_cpu: bool = False,
+        scalp: int = 0,
         compile_mode: str | None = None,
-        compile_extra_args: dict | None = None,
-    ):
+        compile_extra_args: dict[str, object] | None = None,
+    ) -> None:
         super().__init__()
         if compile_mode is not None or compile_extra_args is not None:
             _raise_vl_unsupported(
@@ -274,10 +348,10 @@ class VisionOnly(nn.Module):
         self.should_compile = False
         self.compiled = False
 
-    def _compile(self):
-        return None
+    def _compile(self) -> None:
+        pass
 
-    def forward_image(self, samples):
+    def forward_image(self, samples: mx.array) -> dict[str, object]:
         self._compile()
         features, pos = self.vision_backbone.forward(samples)
         if self.scalp > 0:
@@ -296,11 +370,11 @@ class VisionOnly(nn.Module):
 
     def forward_text(
         self,
-        captions,
-        input_boxes=None,
-        additional_text=None,
-        device=None,
-    ):
+        captions: Sequence[str],
+        input_boxes: object | None = None,
+        additional_text: Sequence[str] | None = None,
+        device: str | None = None,
+    ) -> dict[str, mx.array]:
         del input_boxes, additional_text, device
         bs = len(captions)
         return {
@@ -312,17 +386,17 @@ class VisionOnly(nn.Module):
 class TriHeadVisionOnly(VisionOnly):
     def __init__(
         self,
-        visual,
-        n_features,
-        forward_in_chunk_for_eval=False,
-        eval_chunk_size=4,
-        eval_cast_to_cpu=False,
-        scalp=0,
+        visual: Sam3TriViTDetNeck,
+        n_features: int,
+        forward_in_chunk_for_eval: bool = False,
+        eval_chunk_size: int = 4,
+        eval_cast_to_cpu: bool = False,
+        scalp: int = 0,
         compile_mode: str | None = None,
-        compile_extra_args: dict | None = None,
-    ):
+        compile_extra_args: dict[str, object] | None = None,
+    ) -> None:
         super().__init__(
-            visual=visual,
+            visual=cast(_VisionBackbone, visual),
             n_features=n_features,
             forward_in_chunk_for_eval=forward_in_chunk_for_eval,
             eval_chunk_size=eval_chunk_size,
@@ -339,15 +413,16 @@ class TriHeadVisionOnly(VisionOnly):
 
     def forward_image(
         self,
-        samples,
+        samples: mx.array,
         *,
         need_sam3_out: bool = True,
         need_interactive_out: bool = True,
         need_propagation_out: bool = True,
-    ):
-        return SAM3VLBackboneTri._forward_image_tri_no_act_ckpt(
-            self,
-            samples=samples,
+    ) -> dict[str, object]:
+        return _forward_tri_vision(
+            cast(_TriVisionBackbone, self.vision_backbone),
+            samples,
+            scalp=self.scalp,
             need_sam3_out=need_sam3_out,
             need_interactive_out=need_interactive_out,
             need_propagation_out=need_propagation_out,

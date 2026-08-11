@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import os
-from typing import Any, List
+from typing import Any, cast
 
 import mlx.core as mx
 import numpy as np
 
 from sam3_mlx.model.data_misc import BatchedDatapoint, FindStage
 from sam3_mlx.model.geometry_encoders import Prompt
-from sam3_mlx.model.model_misc import SAM3Output
+from sam3_mlx.model.model_misc import SAM3Output, Sam3StepDict
 from sam3_mlx.model.sam3_multiplex_detector_utils import nms_masks
 from sam3_mlx.model.sam3_image import Sam3Image
 from sam3_mlx.model.multiplex_utils import raise_unsupported_multiplex_runtime
@@ -65,24 +65,28 @@ class Sam3MultiplexImageBase(Sam3Image):
             )
             if self.offload_outputs_to_cpu_for_eval:
                 cur_out = {key: np.asarray(value) for key, value in cur_out.items()}
-            previous_stages_out.append([cur_out])
+            previous_stages_out.append([cast(Sam3StepDict, cur_out)])
 
         return previous_stages_out, None
 
-    def forward_video_grounding(self, *args: Any, **kwargs: Any) -> Any:
+    def forward_video_grounding(
+        self, *args: Any, **kwargs: Any
+    ) -> tuple[dict[str, Any], object]:
         grounding_out = self.forward_grounding(*args, **kwargs)
         out = {
             "pred_logits": grounding_out["pred_logits"],
             "pred_boxes": grounding_out["pred_boxes"],
             "pred_boxes_xyxy": grounding_out["pred_boxes_xyxy"],
             "pred_masks": grounding_out["pred_masks"],
-            "pred_object_ids": self._get_dummy_object_ids(grounding_out["pred_logits"]),
+            "pred_object_ids": self._get_dummy_object_ids(
+                cast(mx.array, grounding_out["pred_logits"])
+            ),
         }
         if "prev_encoder_out" in grounding_out:
             out["prev_encoder_out"] = grounding_out["prev_encoder_out"]
         return out, kwargs.get("backbone_out")
 
-    def _get_dummy_object_ids(self, pred_logits: Any) -> Any:
+    def _get_dummy_object_ids(self, pred_logits: mx.array) -> mx.array:
         batch_size, num_queries, _ = pred_logits.shape
         is_above_thresh = pred_logits.squeeze(2) > self.tracking_score_thresh
         dummy_obj_ids = mx.broadcast_to(
@@ -97,14 +101,15 @@ class Sam3MultiplexImageBase(Sam3Image):
 
     def _batch_find_inputs(
         self,
-        find_inputs: List[FindStage],
+        find_inputs: list[FindStage],
         chunk_start: int,
         chunk_end: int,
     ) -> FindStage:
         chunk_find_inputs = [
             find_inputs[i % len(find_inputs)] for i in range(chunk_start, chunk_end)
         ]
-        dtype = chunk_find_inputs[0].img_ids.dtype
+        first_img_ids = cast(mx.array, chunk_find_inputs[0].img_ids)
+        dtype = first_img_ids.dtype
         batched_img_ids = mx.arange(chunk_start, chunk_end, dtype=dtype)
         batched_img_ids_np = np.arange(chunk_start, chunk_end)
 
@@ -153,14 +158,14 @@ class Sam3MultiplexImageBase(Sam3Image):
 
     def _batch_geometric_prompts(
         self,
-        geometric_prompts: List[Prompt],
+        geometric_prompts: list[Prompt],
         chunk_start: int,
         chunk_end: int,
     ) -> Prompt:
         chunk_prompts = [geometric_prompts[i] for i in range(chunk_start, chunk_end)]
         return self._batch_geometric_prompts_from_list(chunk_prompts)
 
-    def _batch_geometric_prompts_from_list(self, chunk_prompts: List[Prompt]) -> Prompt:
+    def _batch_geometric_prompts_from_list(self, chunk_prompts: list[Prompt]) -> Prompt:
         def batch_tensors(values: list[Any], axis: int) -> Any:
             if values[0] is None:
                 return None
@@ -240,14 +245,17 @@ class Sam3MultiplexDetector(Sam3MultiplexImageBase):
                     raise TypeError(f"{name} passed both positionally and by keyword.")
                 kwargs[name] = value
 
-        backbone_out = kwargs.pop("backbone_out")
-        find_inputs = kwargs.pop("find_inputs")
-        geometric_prompt = kwargs.pop("geometric_prompt")
+        backbone_out = cast(dict[str, Any], kwargs.pop("backbone_out"))
+        find_inputs = cast(list[FindStage], kwargs.pop("find_inputs"))
+        geometric_prompt = cast(Prompt, kwargs.pop("geometric_prompt"))
         frame_idx = int(kwargs.pop("frame_idx"))
         num_frames = int(kwargs.pop("num_frames"))
-        multigpu_buffer = kwargs.pop("multigpu_buffer", None)
-        if multigpu_buffer is None:
-            multigpu_buffer = {}
+        buffer_value = kwargs.pop("multigpu_buffer", None)
+        multigpu_buffer: dict[int, dict[str, tuple[Any, Any]]] = (
+            {}
+            if buffer_value is None
+            else cast(dict[int, dict[str, tuple[Any, Any]]], buffer_value)
+        )
         track_in_reverse = bool(kwargs.pop("track_in_reverse", False))
         return_sam2_backbone_feats = bool(
             kwargs.pop("return_sam2_backbone_feats", False)
@@ -370,36 +378,46 @@ class Sam3MultiplexDetector(Sam3MultiplexImageBase):
         prev_encoder_out = out.get("prev_encoder_out")
         if not isinstance(prev_encoder_out, dict):
             return
-        backbone_data = prev_encoder_out.get("backbone_out", {})
+        typed_encoder_out = cast(dict[str, Any], prev_encoder_out)
+        backbone_data = typed_encoder_out.get("backbone_out", {})
         if not isinstance(backbone_data, dict):
             return
+        typed_backbone_data = cast(dict[str, Any], backbone_data)
 
-        sam2_backbone = backbone_data.get("sam2_backbone_out")
+        sam2_backbone = typed_backbone_data.get("sam2_backbone_out")
         if isinstance(sam2_backbone, dict):
-            for level, feature in enumerate(sam2_backbone.get("backbone_fpn", [])):
+            typed_sam2 = cast(dict[str, Any], sam2_backbone)
+            features = cast(list[object], typed_sam2.get("backbone_fpn", []))
+            for level, feature in enumerate(features):
                 out[f"sam2_backbone_fpn_{level}"] = getattr(
                     feature,
                     "tensors",
                     feature,
                 )
-            if "vision_pos_enc" in sam2_backbone:
+            if "vision_pos_enc" in typed_sam2:
                 out["sam2_backbone_pos_enc"] = [
                     getattr(value, "tensors", value)
-                    for value in sam2_backbone.get("vision_pos_enc", [])
+                    for value in cast(
+                        list[object], typed_sam2.get("vision_pos_enc", [])
+                    )
                 ]
 
-        interactive = backbone_data.get("interactive")
+        interactive = typed_backbone_data.get("interactive")
         if self.is_multiplex and isinstance(interactive, dict):
-            for level, feature in enumerate(interactive.get("backbone_fpn", [])):
+            typed_interactive = cast(dict[str, Any], interactive)
+            features = cast(list[object], typed_interactive.get("backbone_fpn", []))
+            for level, feature in enumerate(features):
                 out[f"interactive_backbone_fpn_{level}"] = getattr(
                     feature,
                     "tensors",
                     feature,
                 )
-            if "vision_pos_enc" in interactive:
+            if "vision_pos_enc" in typed_interactive:
                 out["interactive_backbone_pos_enc"] = [
                     getattr(value, "tensors", value)
-                    for value in interactive.get("vision_pos_enc", [])
+                    for value in cast(
+                        list[object], typed_interactive.get("vision_pos_enc", [])
+                    )
                 ]
 
     def _read_multigpu_buffer_frame(
@@ -408,7 +426,7 @@ class Sam3MultiplexDetector(Sam3MultiplexImageBase):
         *,
         return_sam2_backbone_feats: bool,
     ) -> dict[str, Any]:
-        out = {}
+        out: dict[str, Any] = {}
         for key, (value, handle) in frame_buffer.items():
             if (
                 key.startswith("sam2_backbone_")

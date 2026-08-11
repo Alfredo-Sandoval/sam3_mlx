@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypeAlias, cast
 
@@ -17,7 +18,7 @@ if TYPE_CHECKING:
     )
 
 
-VideoResourcePath: TypeAlias = str | Path | Sequence[Image.Image]
+VideoResourcePath: TypeAlias = str | os.PathLike[str] | Sequence[Image.Image]
 
 
 class _VideoRuntimeOptionsValidator(Protocol):
@@ -192,7 +193,7 @@ class Sam3VideoPredictor(LifecycleSafeSam3BasePredictor):
         # contract. Other resources retain their existing loader-specific guards.
         if (
             self.async_loading_frames
-            and isinstance(resource_path, (str, Path))
+            and isinstance(resource_path, (str, os.PathLike))
             and Path(resource_path).is_dir()
         ):
             raise_unsupported(
