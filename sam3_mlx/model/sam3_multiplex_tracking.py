@@ -45,6 +45,7 @@ from sam3_mlx.perflib import masks_ops
 
 DUMMY_OUTPUT: Literal["DUMMY_OUTPUT"] = "DUMMY_OUTPUT"
 NumpyArray: TypeAlias = NDArray[np.generic]
+BoolArray: TypeAlias = NDArray[np.bool_]
 FloatArray: TypeAlias = NDArray[np.float32]
 TrackerArray: TypeAlias = mx.array | NumpyArray
 ObjectIdCollection: TypeAlias = Sequence[int] | set[int]
@@ -61,7 +62,15 @@ class RawFrameOutput(TypedDict):
     unconfirmed_obj_ids: NotRequired[ObjectIdCollection]
 
 
-PostprocessedOutput: TypeAlias = dict[str, object]
+class PostprocessedOutput(TypedDict):
+    out_obj_ids: NDArray[np.int64]
+    out_probs: FloatArray
+    out_boxes_xywh: FloatArray
+    out_binary_masks: BoolArray
+    frame_stats: object
+    out_centers: NotRequired[FloatArray | None]
+
+
 PostprocessBatchItem: TypeAlias = tuple[
     RawFrameOutput,
     ObjectIdCollection | None,
@@ -168,6 +177,14 @@ def _apply_non_overlapping_constraints(
     return result
 
 
+def _require_postprocessed_output(
+    output: PropagationOutput,
+) -> PostprocessedOutput:
+    if output == DUMMY_OUTPUT:
+        raise RuntimeError("rank-zero propagation returned a dummy output")
+    return output
+
+
 def _mlx_to(data: Any, *args: Any, **kwargs: Any) -> Any:
     device = kwargs.pop("device", None)
     dtype = kwargs.pop("dtype", None)
@@ -258,13 +275,13 @@ def _empty_postprocessed_output(
     *,
     include_prod_outputs: bool,
 ) -> PostprocessedOutput:
-    output: PostprocessedOutput = {
-        "out_obj_ids": np.zeros(0, dtype=np.int64),
-        "out_probs": np.zeros(0, dtype=np.float32),
-        "out_boxes_xywh": np.zeros((0, 4), dtype=np.float32),
-        "out_binary_masks": np.zeros((0, height, width), dtype=bool),
-        "frame_stats": frame_stats,
-    }
+    output = PostprocessedOutput(
+        out_obj_ids=np.zeros(0, dtype=np.int64),
+        out_probs=np.zeros(0, dtype=np.float32),
+        out_boxes_xywh=np.zeros((0, 4), dtype=np.float32),
+        out_binary_masks=np.zeros((0, height, width), dtype=bool),
+        frame_stats=frame_stats,
+    )
     if include_prod_outputs:
         output["out_centers"] = np.zeros((0, 2), dtype=np.float32)
     return output
@@ -613,14 +630,20 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
             kept_masks = (constrained[:, 0, :, :] > 0).astype(mx.bool_)
 
         out_centers = _mask_centers(kept_masks) if self.running_in_prod else None
-        out_binary_masks = _array_to_numpy(kept_masks, dtype=bool)
-        outputs: PostprocessedOutput = {
-            "out_obj_ids": np.array(kept_obj_ids, dtype=np.int64),
-            "out_probs": kept_probs,
-            "out_boxes_xywh": _array_to_numpy(out_boxes_xywh, dtype=np.float32),
-            "out_binary_masks": out_binary_masks,
-            "frame_stats": frame_stats,
-        }
+        out_binary_masks = cast(
+            BoolArray,
+            _array_to_numpy(kept_masks, dtype=bool),
+        )
+        outputs = PostprocessedOutput(
+            out_obj_ids=np.array(kept_obj_ids, dtype=np.int64),
+            out_probs=kept_probs,
+            out_boxes_xywh=cast(
+                FloatArray,
+                _array_to_numpy(out_boxes_xywh, dtype=np.float32),
+            ),
+            out_binary_masks=out_binary_masks,
+            frame_stats=frame_stats,
+        )
         if self.running_in_prod:
             outputs["out_centers"] = out_centers
         return outputs
@@ -1276,7 +1299,7 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         self,
         inference_state: dict[str, Any],
         frame_idx: int | None,
-    ) -> tuple[int | None, dict[str, Any] | None]:
+    ) -> tuple[int | None, PropagationOutput | None]:
         if frame_idx is None:
             return frame_idx, None
         if self.rank != 0:
@@ -1363,7 +1386,7 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         obj_id: Any,
         frame_idx: int | None,
         strict: bool,
-    ) -> tuple[int | None, dict[str, Any] | None]:
+    ) -> tuple[int | None, PropagationOutput | None]:
         if self.world_size != 1:
             raise_unsupported_multiplex_runtime(
                 "Sam3MultiplexTracking.remove_object(existing-tracker-states-distributed)"
@@ -1474,7 +1497,7 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         frame_idx: int | None = 0,
         strict: bool = False,
         is_user_action: bool = False,
-    ) -> tuple[int | None, dict[str, Any] | None]:
+    ) -> tuple[int | None, PropagationOutput | None]:
         """Remove an object from cached/image-only state or local SAM2 states."""
         del is_user_action
         if inference_state.get("sam2_inference_states"):
@@ -1617,9 +1640,15 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         start_frame_idx: int | None,
         max_frame_num_to_track: int | None,
         reverse: bool,
-    ):
-        num_frames = inference_state["num_frames"]
-        previous_stages_out = inference_state["previous_stages_out"]
+    ) -> tuple[range, int]:
+        num_frames = int(inference_state["num_frames"])
+        previous_stages_out_raw: object = inference_state["previous_stages_out"]
+        if not isinstance(previous_stages_out_raw, Sequence) or isinstance(
+            previous_stages_out_raw,
+            str,
+        ):
+            raise TypeError("previous_stages_out must be a sequence")
+        previous_stages_out = cast(Sequence[object | None], previous_stages_out_raw)
         if all(out is None for out in previous_stages_out) and start_frame_idx is None:
             raise RuntimeError(
                 "No prompts are received on any frames. Please add prompt on at "
@@ -1644,7 +1673,9 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
             processing_order = range(start_frame_idx, end_frame_idx + 1)
         return processing_order, end_frame_idx
 
-    def propagate_in_video(self, *args: Any, **kwargs: Any) -> Any:
+    def propagate_in_video(
+        self, *args: Any, **kwargs: Any
+    ) -> Iterator[PropagationYield]:
         if args:
             if "inference_state" in kwargs:
                 raise TypeError(
@@ -1655,13 +1686,37 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
                 raise TypeError(
                     "propagate_in_video accepts at most one positional argument."
                 )
-        inference_state = kwargs.pop("inference_state")
-        start_frame_idx = kwargs.pop("start_frame_idx", None)
-        max_frame_num_to_track = kwargs.pop("max_frame_num_to_track", None)
-        reverse = kwargs.pop("reverse", False)
+        inference_state_raw: object = kwargs.pop("inference_state")
+        if not isinstance(inference_state_raw, dict):
+            raise TypeError("inference_state must be a dictionary")
+        inference_state = cast(dict[str, Any], inference_state_raw)
+        start_frame_idx_raw: object = kwargs.pop("start_frame_idx", None)
+        if start_frame_idx_raw is not None and not isinstance(
+            start_frame_idx_raw,
+            (int, np.integer),
+        ):
+            raise TypeError("start_frame_idx must be an integer or None")
+        start_frame_idx = (
+            None if start_frame_idx_raw is None else int(start_frame_idx_raw)
+        )
+        max_frame_num_to_track_raw: object = kwargs.pop(
+            "max_frame_num_to_track",
+            None,
+        )
+        if max_frame_num_to_track_raw is not None and not isinstance(
+            max_frame_num_to_track_raw,
+            (int, np.integer),
+        ):
+            raise TypeError("max_frame_num_to_track must be an integer or None")
+        max_frame_num_to_track = (
+            None
+            if max_frame_num_to_track_raw is None
+            else int(max_frame_num_to_track_raw)
+        )
+        reverse = bool(kwargs.pop("reverse", False))
         kwargs.pop("output_prob_thresh", 0.5)
         kwargs.pop("compute_stability_score", False)
-        is_instance_processing = kwargs.pop("is_instance_processing", False)
+        is_instance_processing = bool(kwargs.pop("is_instance_processing", False))
         if kwargs:
             names = ", ".join(sorted(kwargs))
             raise TypeError(
@@ -1702,7 +1757,7 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         box_labels: Any = None,
         clear_old_boxes: bool = True,
         output_prob_thresh: float = 0.5,
-    ) -> Any:
+    ) -> tuple[int, PostprocessedOutput]:
         del output_prob_thresh
         frame_idx = int(frame_idx)
         num_frames = int(inference_state["num_frames"])
@@ -1823,8 +1878,8 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
             self.detector.world_size = 1
 
         try:
-            tracking_res = defaultdict(dict)
-            scores_labels = {}
+            tracking_res: defaultdict[int, dict[int, BoolArray]] = defaultdict(dict)
+            scores_labels: dict[int, tuple[object, int]] = {}
             inference_state = self.init_state(resource_path=input.raw_images)
             for prompt_id, prompt in zip(prompt_ids, prompt_list):
                 _, prompt_out = self.add_prompt(
@@ -1833,7 +1888,7 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
                     text_str=prompt,
                 )
                 start_obj_id = max(scores_labels.keys(), default=-1) + 1
-                obj_ids_this_prompt = set()
+                obj_ids_this_prompt: set[int] = set()
                 if inference_state["is_image_only"]:
                     prompt_outputs = [(0, prompt_out)]
                 else:
@@ -1844,9 +1899,10 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
                         reverse=False,
                     )
                 for frame_idx, out in prompt_outputs:
+                    postprocessed_out = _require_postprocessed_output(out)
                     for obj_id, mask in zip(
-                        out["out_obj_ids"],
-                        out["out_binary_masks"],
+                        postprocessed_out["out_obj_ids"],
+                        postprocessed_out["out_binary_masks"],
                         strict=True,
                     ):
                         output_obj_id = int(obj_id) + start_obj_id
@@ -2741,7 +2797,7 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
         self,
         inference_state: dict[str, Any],
         frame_idx: int,
-    ) -> tuple[int, dict[str, Any]]:
+    ) -> tuple[int, PostprocessedOutput]:
         cached_frame_outputs = inference_state.get("cached_frame_outputs", {})
         if frame_idx not in cached_frame_outputs:
             raise ValueError(
