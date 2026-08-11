@@ -1,22 +1,32 @@
 from copy import deepcopy
+from typing import cast
 
 import pytest
 
 from sam3_mlx.release_contract import (
+    JsonObject,
     build_oracle_bindings,
     canonical_json_sha256,
     sha256_path,
 )
 from scripts.audit_release_evidence import (
+    CaseSpec,
     EvidenceAuditError,
     HARDENED_ORACLE,
-    _case_spec_sha256,
-    _validate_oracle,
+    _case_spec_sha256,  # pyright: ignore[reportPrivateUsage]
+    _validate_oracle,  # pyright: ignore[reportPrivateUsage]
 )
 
 
-def _valid_oracle_fixture():
-    specs = [
+def _object(value: object) -> JsonObject:
+    assert isinstance(value, dict)
+    raw_value = cast(dict[object, object], value)
+    assert all(isinstance(key, str) for key in raw_value)
+    return cast(JsonObject, raw_value)
+
+
+def _valid_oracle_fixture() -> tuple[list[CaseSpec], JsonObject, JsonObject]:
+    specs: list[CaseSpec] = [
         {
             "name": "synthetic",
             "resolution": 14,
@@ -30,7 +40,7 @@ def _valid_oracle_fixture():
         confidence_threshold=0.5,
         oracle_runner_sha256=sha256_path(HARDENED_ORACLE),
     )
-    oracle = {
+    oracle: JsonObject = {
         "bindings": bindings,
         "cache_key": canonical_json_sha256(bindings),
         "official_code": bindings["official_code"],
@@ -58,7 +68,7 @@ def _valid_oracle_fixture():
             }
         ],
     }
-    report = {
+    report: JsonObject = {
         "image": {"sha256": "a" * 64},
         "confidence_threshold": 0.5,
         "cases": [{"official_detection_count": 1}],
@@ -75,8 +85,9 @@ def test_oracle_auditor_accepts_complete_cache_binding():
 def test_oracle_auditor_rejects_stale_or_forged_checkpoint_binding():
     specs, report, oracle = _valid_oracle_fixture()
     tampered = deepcopy(oracle)
-    tampered["bindings"]["official_checkpoint"]["revision"] = "0" * 40
-    tampered["cache_key"] = canonical_json_sha256(tampered["bindings"])
+    bindings = _object(tampered["bindings"])
+    _object(bindings["official_checkpoint"])["revision"] = "0" * 40
+    tampered["cache_key"] = canonical_json_sha256(bindings)
 
     with pytest.raises(EvidenceAuditError, match="oracle bindings"):
         _validate_oracle(tampered, report=report, specs=specs)
@@ -85,9 +96,10 @@ def test_oracle_auditor_rejects_stale_or_forged_checkpoint_binding():
 def test_oracle_auditor_rejects_runner_source_drift():
     specs, report, oracle = _valid_oracle_fixture()
     tampered = deepcopy(oracle)
-    tampered["bindings"]["oracle_runner_sha256"] = "0" * 64
+    bindings = _object(tampered["bindings"])
+    bindings["oracle_runner_sha256"] = "0" * 64
     tampered["oracle_runner_sha256"] = "0" * 64
-    tampered["cache_key"] = canonical_json_sha256(tampered["bindings"])
+    tampered["cache_key"] = canonical_json_sha256(bindings)
 
     with pytest.raises(EvidenceAuditError, match="oracle bindings"):
         _validate_oracle(tampered, report=report, specs=specs)

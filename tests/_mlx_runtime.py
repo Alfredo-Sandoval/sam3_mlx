@@ -6,6 +6,10 @@ from typing import Protocol, cast
 import mlx.core as mx
 from mlx import nn
 from mlx import utils as mlx_utils
+import numpy as np
+from numpy.typing import NDArray
+
+from sam3_mlx.mlx_runtime import evaluate_boundary
 
 
 class _SaveSafetensors(Protocol):
@@ -33,6 +37,11 @@ _tree_flatten = cast(_TreeFlatten, getattr(mlx_utils, "tree_flatten"))
 
 def save_safetensors(path: Path, arrays: dict[str, mx.array]) -> None:
     _save_safetensors(path, arrays)
+
+
+def to_numpy(value: mx.array) -> NDArray[np.float32]:
+    evaluate_boundary(value)
+    return np.asarray(value, dtype=np.float32)
 
 
 def flat_parameters(model: nn.Module) -> dict[str, mx.array]:

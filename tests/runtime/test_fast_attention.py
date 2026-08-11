@@ -1,36 +1,65 @@
 import math
+from typing import TypedDict
 
 import mlx.core as mx
 import numpy as np
+from numpy.typing import NDArray
 
 from sam3_mlx.model.model_misc import (
     MultiheadAttentionWrapper,
-    _merge_attention_masks,
-    _scaled_dot_product_attention,
-    _to_attention_mask,
+    _merge_attention_masks,  # pyright: ignore[reportPrivateUsage]
+    _scaled_dot_product_attention,  # pyright: ignore[reportPrivateUsage]
+    _to_attention_mask,  # pyright: ignore[reportPrivateUsage]
     multi_head_attention_forward,
 )
 from sam3_mlx.perflib.fa3 import flash_attn_func
+from tests._mlx_runtime import to_numpy
+
+type FloatArray = NDArray[np.float32]
+type BoolArray = NDArray[np.bool_]
+type MaskArray = FloatArray | BoolArray | NDArray[np.uint8]
 
 
-def _to_numpy(value):
-    mx.eval(value)
-    return np.asarray(value)
+class _MhaKwargs(TypedDict):
+    embed_dim_to_check: int
+    num_heads: int
+    in_proj_weight: mx.array | None
+    in_proj_bias: mx.array | None
+    bias_k: mx.array | None
+    bias_v: mx.array | None
+    add_zero_attn: bool
+    dropout_p: float
+    out_proj_weight: mx.array
+    out_proj_bias: mx.array | None
+    training: bool
+    key_padding_mask: mx.array | None
+    need_weights: bool
+    use_separate_proj_weight: bool
+    q_proj_weight: mx.array | None
+    k_proj_weight: mx.array | None
+    v_proj_weight: mx.array | None
 
 
-def _softmax(value, axis=-1):
+def _attention_output(
+    value: mx.array | tuple[mx.array, mx.array | None],
+) -> mx.array:
+    assert isinstance(value, mx.array)
+    return value
+
+
+def _softmax(value: FloatArray, axis: int = -1) -> FloatArray:
     shifted = value - np.max(value, axis=axis, keepdims=True)
     exp = np.exp(shifted)
-    return exp / np.sum(exp, axis=axis, keepdims=True)
+    return np.asarray(exp / np.sum(exp, axis=axis, keepdims=True), dtype=np.float32)
 
 
-def _flash_attn_reference(q, k, v):
+def _flash_attn_reference(q: FloatArray, k: FloatArray, v: FloatArray) -> FloatArray:
     q_heads = np.transpose(q.astype(np.float32), (0, 2, 1, 3))
     k_heads = np.transpose(k.astype(np.float32), (0, 2, 3, 1))
     v_heads = np.transpose(v.astype(np.float32), (0, 2, 1, 3))
     scores = q_heads @ k_heads / math.sqrt(q.shape[-1])
     probs = _softmax(scores, axis=-1)
-    return np.transpose(probs @ v_heads, (0, 2, 1, 3)).astype(q.dtype)
+    return np.transpose(probs @ v_heads, (0, 2, 1, 3)).astype(np.float32)
 
 
 def test_attention_mask_merge_preserves_bool_keep_mask_for_fast_path():
@@ -44,9 +73,10 @@ def test_attention_mask_merge_preserves_bool_keep_mask_for_fast_path():
         preserve_bool=True,
     )
 
+    assert merged is not None
     assert merged.dtype == mx.bool_
     np.testing.assert_array_equal(
-        _to_numpy(merged),
+        to_numpy(merged),
         np.array([[[[True, False, False]]]], dtype=bool),
     )
 
@@ -62,9 +92,10 @@ def test_attention_mask_merge_converts_bool_when_additive_bias_is_present():
         preserve_bool=False,
     )
 
+    assert merged is not None
     assert merged.dtype == mx.float32
     np.testing.assert_allclose(
-        _to_numpy(merged),
+        to_numpy(merged),
         np.array([[[[0.25, -np.inf]]]], dtype=np.float32),
     )
 
@@ -78,11 +109,13 @@ def test_attention_mask_normalization_keeps_bool_for_fast_path():
         uint8_block_mask, mx.float32, preserve_bool=True
     )
 
+    assert bool_keep_mask is not None
+    assert uint8_keep_mask is not None
     assert bool_keep_mask.dtype == mx.bool_
     assert uint8_keep_mask.dtype == mx.bool_
     expected_keep = np.array([[True, False, True], [False, True, True]], dtype=bool)
-    np.testing.assert_array_equal(_to_numpy(bool_keep_mask), expected_keep)
-    np.testing.assert_array_equal(_to_numpy(uint8_keep_mask), expected_keep)
+    np.testing.assert_array_equal(to_numpy(bool_keep_mask), expected_keep)
+    np.testing.assert_array_equal(to_numpy(uint8_keep_mask), expected_keep)
 
 
 def test_attention_mask_normalization_converts_bool_for_manual_path():
@@ -90,9 +123,10 @@ def test_attention_mask_normalization_converts_bool_for_manual_path():
 
     additive = _to_attention_mask(block_mask, mx.float32, preserve_bool=False)
 
+    assert additive is not None
     assert additive.dtype == mx.float32
     np.testing.assert_allclose(
-        _to_numpy(additive),
+        to_numpy(additive),
         np.array([[0.0, -np.inf], [-np.inf, 0.0]], dtype=np.float32),
     )
 
@@ -115,7 +149,7 @@ def test_multihead_attention_wrapper_combines_bool_masks_as_fast_keep_mask():
         dtype=mx.uint8,
     )
 
-    mask = wrapper._combine_masks(
+    mask = wrapper._combine_masks(  # pyright: ignore[reportPrivateUsage]
         attn_mask,
         key_padding_mask,
         base_mask=None,
@@ -124,9 +158,10 @@ def test_multihead_attention_wrapper_combines_bool_masks_as_fast_keep_mask():
         dtype=mx.float32,
     )
 
+    assert mask is not None
     assert mask.dtype == mx.bool_
     np.testing.assert_array_equal(
-        _to_numpy(mask),
+        to_numpy(mask),
         np.array(
             [
                 [[[True, False, False], [True, True, False]]],
@@ -143,7 +178,7 @@ def test_multihead_attention_wrapper_uses_additive_mask_when_bias_requires_it():
     attn_mask = mx.array([[False, True, False], [False, False, False]], dtype=mx.bool_)
     key_padding_mask = mx.array([[0, 0, 1]], dtype=mx.uint8)
 
-    mask = wrapper._combine_masks(
+    mask = wrapper._combine_masks(  # pyright: ignore[reportPrivateUsage]
         attn_mask,
         key_padding_mask,
         base_mask=None,
@@ -152,14 +187,15 @@ def test_multihead_attention_wrapper_uses_additive_mask_when_bias_requires_it():
         dtype=mx.float32,
     )
 
+    assert mask is not None
     assert mask.dtype == mx.float32
     np.testing.assert_allclose(
-        _to_numpy(mask),
+        to_numpy(mask),
         np.array([[[[0.0, -np.inf, -np.inf], [0.0, 0.0, -np.inf]]]], dtype=np.float32),
     )
 
 
-def _split_heads(sequence_first, num_heads):
+def _split_heads(sequence_first: FloatArray, num_heads: int) -> FloatArray:
     seq_len, batch_size, embed_dim = sequence_first.shape
     head_dim = embed_dim // num_heads
     return (
@@ -170,14 +206,14 @@ def _split_heads(sequence_first, num_heads):
 
 
 def _mha_reference(
-    query,
-    key,
-    value,
-    num_heads,
-    attn_mask=None,
-    key_padding_mask=None,
-    attn_bias=None,
-):
+    query: FloatArray,
+    key: FloatArray,
+    value: FloatArray,
+    num_heads: int,
+    attn_mask: MaskArray | None = None,
+    key_padding_mask: MaskArray | None = None,
+    attn_bias: FloatArray | None = None,
+) -> tuple[FloatArray, FloatArray]:
     q = _split_heads(query, num_heads)
     k = _split_heads(key, num_heads)
     v = _split_heads(value, num_heads)
@@ -203,8 +239,12 @@ def _mha_reference(
 
 
 def _set_identity_attention_weights(
-    wrapper, q_bias=None, k_bias=None, v_bias=None, out_bias=None
-):
+    wrapper: MultiheadAttentionWrapper,
+    q_bias: FloatArray | None = None,
+    k_bias: FloatArray | None = None,
+    v_bias: FloatArray | None = None,
+    out_bias: FloatArray | None = None,
+) -> None:
     wrapper.query_proj.weight = mx.eye(4, dtype=mx.float32)
     wrapper.key_proj.weight = mx.eye(4, dtype=mx.float32)
     wrapper.value_proj.weight = mx.eye(4, dtype=mx.float32)
@@ -258,16 +298,18 @@ def test_multihead_attention_wrapper_keeps_local_batch_first_contract():
 
     wrapper = MultiheadAttentionWrapper(4, 2)
     _set_identity_attention_weights(wrapper)
-    out = wrapper(
-        mx.array(query),
-        mx.array(key),
-        mx.array(value),
-        attn_mask=mx.array(attn_mask),
-        key_padding_mask=mx.array(key_padding_mask),
+    out = _attention_output(
+        wrapper(
+            mx.array(query),
+            mx.array(key),
+            mx.array(value),
+            attn_mask=mx.array(attn_mask),
+            key_padding_mask=mx.array(key_padding_mask),
+        )
     )
 
     np.testing.assert_allclose(
-        _to_numpy(out), expected.transpose(1, 0, 2), atol=1e-6, rtol=1e-6
+        to_numpy(out), expected.transpose(1, 0, 2), atol=1e-6, rtol=1e-6
     )
 
 
@@ -310,9 +352,10 @@ def test_multihead_attention_wrapper_supports_official_embed_dim_sequence_first_
         need_weights=True,
     )
 
-    np.testing.assert_allclose(_to_numpy(out), expected_out, atol=1e-6, rtol=1e-6)
+    assert weights is not None
+    np.testing.assert_allclose(to_numpy(out), expected_out, atol=1e-6, rtol=1e-6)
     np.testing.assert_allclose(
-        _to_numpy(weights), expected_weights, atol=1e-6, rtol=1e-6
+        to_numpy(weights), expected_weights, atol=1e-6, rtol=1e-6
     )
 
 
@@ -349,20 +392,30 @@ def test_multihead_attention_wrapper_preserves_split_qkv_projection_biases():
         v_bias=v_bias,
         out_bias=out_bias,
     )
-    out = wrapper(mx.array(query), mx.array(key), mx.array(value))
+    out = _attention_output(wrapper(mx.array(query), mx.array(key), mx.array(value)))
 
-    np.testing.assert_allclose(_to_numpy(out), expected, atol=1e-6, rtol=1e-6)
+    np.testing.assert_allclose(to_numpy(out), expected, atol=1e-6, rtol=1e-6)
 
 
 def test_flash_attn_func_mlx_matches_independent_attention_reference():
-    q = (np.arange(1 * 3 * 2 * 4, dtype=np.float32).reshape(1, 3, 2, 4) - 7) / 5
-    k = (np.arange(1 * 4 * 2 * 4, dtype=np.float32).reshape(1, 4, 2, 4) - 11) / 7
-    v = (np.arange(1 * 4 * 2 * 4, dtype=np.float32).reshape(1, 4, 2, 4) - 13) / 9
+    q = np.asarray(
+        (np.arange(1 * 3 * 2 * 4, dtype=np.float32).reshape(1, 3, 2, 4) - 7) / 5,
+        dtype=np.float32,
+    )
+    k = np.asarray(
+        (np.arange(1 * 4 * 2 * 4, dtype=np.float32).reshape(1, 4, 2, 4) - 11) / 7,
+        dtype=np.float32,
+    )
+    v = np.asarray(
+        (np.arange(1 * 4 * 2 * 4, dtype=np.float32).reshape(1, 4, 2, 4) - 13) / 9,
+        dtype=np.float32,
+    )
 
     out = flash_attn_func(mx.array(q), mx.array(k), mx.array(v))
 
+    assert isinstance(out, mx.array)
     np.testing.assert_allclose(
-        _to_numpy(out), _flash_attn_reference(q, k, v), atol=1e-6, rtol=1e-6
+        to_numpy(out), _flash_attn_reference(q, k, v), atol=1e-6, rtol=1e-6
     )
 
 
@@ -419,16 +472,17 @@ def test_scaled_dot_product_attention_fast_path_matches_manual_path():
     )
 
     assert fast_weights is None
+    assert manual_weights is not None
     assert manual_weights.shape == (1, 2, 2, 3)
     np.testing.assert_allclose(
-        _to_numpy(manual_weights).sum(axis=-1),
+        to_numpy(manual_weights).sum(axis=-1),
         np.ones((1, 2, 2), dtype=np.float32),
         atol=1e-6,
         rtol=1e-6,
     )
     np.testing.assert_allclose(
-        _to_numpy(fast_out),
-        _to_numpy(manual_out),
+        to_numpy(fast_out),
+        to_numpy(manual_out),
         atol=1e-5,
         rtol=1e-5,
     )
@@ -495,7 +549,7 @@ def test_multi_head_attention_forward_fast_path_matches_masked_reference():
     )
 
     assert weights is None
-    np.testing.assert_allclose(_to_numpy(out), expected, atol=1e-6, rtol=1e-6)
+    np.testing.assert_allclose(to_numpy(out), expected, atol=1e-6, rtol=1e-6)
 
 
 def test_multi_head_attention_forward_bool_mask_matches_additive_mask():
@@ -526,25 +580,25 @@ def test_multi_head_attention_forward_bool_mask_matches_additive_mask():
     additive_mask = np.where(bool_mask, -np.inf, 0.0).astype(np.float32)
 
     identity = mx.eye(4, dtype=mx.float32)
-    common_kwargs = dict(
-        embed_dim_to_check=4,
-        num_heads=2,
-        in_proj_weight=None,
-        in_proj_bias=None,
-        bias_k=None,
-        bias_v=None,
-        add_zero_attn=False,
-        dropout_p=0.0,
-        out_proj_weight=identity,
-        out_proj_bias=None,
-        training=False,
-        key_padding_mask=None,
-        need_weights=False,
-        use_separate_proj_weight=True,
-        q_proj_weight=identity,
-        k_proj_weight=identity,
-        v_proj_weight=identity,
-    )
+    common_kwargs: _MhaKwargs = {
+        "embed_dim_to_check": 4,
+        "num_heads": 2,
+        "in_proj_weight": None,
+        "in_proj_bias": None,
+        "bias_k": None,
+        "bias_v": None,
+        "add_zero_attn": False,
+        "dropout_p": 0.0,
+        "out_proj_weight": identity,
+        "out_proj_bias": None,
+        "training": False,
+        "key_padding_mask": None,
+        "need_weights": False,
+        "use_separate_proj_weight": True,
+        "q_proj_weight": identity,
+        "k_proj_weight": identity,
+        "v_proj_weight": identity,
+    }
     bool_out, _ = multi_head_attention_forward(
         mx.array(query),
         mx.array(key),
@@ -561,7 +615,7 @@ def test_multi_head_attention_forward_bool_mask_matches_additive_mask():
     )
 
     np.testing.assert_allclose(
-        _to_numpy(bool_out), _to_numpy(additive_out), atol=1e-6, rtol=1e-6
+        to_numpy(bool_out), to_numpy(additive_out), atol=1e-6, rtol=1e-6
     )
 
 
@@ -635,7 +689,7 @@ def test_multi_head_attention_forward_combines_key_padding_mask_and_attn_bias():
     )
 
     assert weights is None
-    np.testing.assert_allclose(_to_numpy(out), expected, atol=1e-6, rtol=1e-6)
+    np.testing.assert_allclose(to_numpy(out), expected, atol=1e-6, rtol=1e-6)
 
 
 def test_scaled_dot_product_attention_keeps_manual_dropout_path_for_training():
@@ -653,21 +707,25 @@ def test_scaled_dot_product_attention_keeps_manual_dropout_path_for_training():
         need_weights=False,
     )
 
+    assert weights is not None
     assert weights.shape == (1, 1, 2, 2)
     np.testing.assert_array_equal(
-        _to_numpy(weights),
+        to_numpy(weights),
         np.zeros((1, 1, 2, 2), dtype=np.float32),
     )
-    np.testing.assert_allclose(_to_numpy(out), np.zeros((1, 1, 2, 2), dtype=np.float32))
+    np.testing.assert_allclose(to_numpy(out), np.zeros((1, 1, 2, 2), dtype=np.float32))
 
 
 def test_multihead_attention_wrapper_uint8_mask_uses_pytorch_blocking_semantics():
     mask = mx.array([[0, 1]], dtype=mx.uint8)
 
-    additive = MultiheadAttentionWrapper._to_additive_mask(mask)
+    additive = MultiheadAttentionWrapper._to_additive_mask(  # pyright: ignore[reportPrivateUsage]
+        mask
+    )
 
+    assert additive is not None
     np.testing.assert_allclose(
-        _to_numpy(additive), np.array([[0.0, -np.inf]], dtype=np.float32)
+        to_numpy(additive), np.array([[0.0, -np.inf]], dtype=np.float32)
     )
 
 
@@ -729,9 +787,10 @@ def test_multi_head_attention_forward_weight_path_still_returns_weights():
         v_proj_weight=identity,
     )
 
-    np.testing.assert_allclose(_to_numpy(out), expected_out, atol=1e-6, rtol=1e-6)
+    assert weights is not None
+    np.testing.assert_allclose(to_numpy(out), expected_out, atol=1e-6, rtol=1e-6)
     np.testing.assert_allclose(
-        _to_numpy(weights), expected_weights, atol=1e-6, rtol=1e-6
+        to_numpy(weights), expected_weights, atol=1e-6, rtol=1e-6
     )
 
 
@@ -783,7 +842,7 @@ def test_multi_head_attention_forward_applies_per_row_key_padding_in_batched_inp
         v_proj_weight=identity,
     )
 
-    out_np = _to_numpy(out)
+    out_np = to_numpy(out)
     np.testing.assert_allclose(out_np, expected, atol=1e-6, rtol=1e-6)
     # Guard the *point* of the test: row 0 and row 1 must differ, otherwise a bug
     # that collapses per-row masks would still match the (also collapsed) reference.
@@ -829,7 +888,8 @@ def test_multi_head_attention_forward_handles_single_token_query_and_key():
         v_proj_weight=identity,
     )
 
-    np.testing.assert_allclose(_to_numpy(out)[0, 0], expected, atol=1e-6, rtol=1e-6)
+    assert weights is not None
+    np.testing.assert_allclose(to_numpy(out)[0, 0], expected, atol=1e-6, rtol=1e-6)
     np.testing.assert_allclose(
-        _to_numpy(weights), np.ones((1, 1, 1), dtype=np.float32), atol=1e-6
+        to_numpy(weights), np.ones((1, 1, 1), dtype=np.float32), atol=1e-6
     )

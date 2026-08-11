@@ -5,6 +5,7 @@ import subprocess
 import numpy as np
 import pytest
 
+from scripts._oracle_runtime import OracleCase
 from tests._paths import REPO_ROOT
 
 
@@ -17,7 +18,7 @@ _parity = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_parity)
 
 
-def _outputs(mask_count=1):
+def _outputs(mask_count: int = 1) -> dict[str, np.ndarray]:
     return {
         "masks": np.ones((mask_count, 1, 4, 4), dtype=np.bool_),
         "boxes": np.ones((mask_count, 4), dtype=np.float32),
@@ -33,7 +34,7 @@ def test_release_threshold_contract_is_precision_aware_and_fixed():
 
 
 def test_compare_case_requires_count_and_numeric_contract():
-    spec = {
+    spec: OracleCase = {
         "name": "fixture",
         "resolution": 1008,
         "prompt": "object",
@@ -59,7 +60,7 @@ def test_evidence_path_uses_checkout_relative_identity():
     )
 
 
-def test_official_checkout_requires_exact_clean_commit(tmp_path):
+def test_official_checkout_requires_exact_clean_commit(tmp_path: Path) -> None:
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     subprocess.run(
         ["git", "config", "user.email", "test@example.invalid"],

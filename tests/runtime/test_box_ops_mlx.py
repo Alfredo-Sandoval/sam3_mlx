@@ -6,7 +6,9 @@ from sam3_mlx.model import box_ops
 from sam3_mlx.mlx_runtime import to_numpy
 
 
-def test_model_masks_to_boxes_mlx_matches_exclusive_xyxy_contract(monkeypatch):
+def test_model_masks_to_boxes_mlx_matches_exclusive_xyxy_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     masks = mx.array(
         np.array(
             [
@@ -26,7 +28,7 @@ def test_model_masks_to_boxes_mlx_matches_exclusive_xyxy_contract(monkeypatch):
         )
     )
 
-    def fail_broadcast_to(*_args, **_kwargs):
+    def fail_broadcast_to(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("masks_to_boxes should not build dense HxW grids")
 
     monkeypatch.setattr(box_ops.mx, "broadcast_to", fail_broadcast_to)

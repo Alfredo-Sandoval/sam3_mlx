@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -10,6 +11,7 @@ from sam3_mlx.parity_evidence import (
     write_evidence_bundle,
 )
 from sam3_mlx.release_contract import COMPARISON_ALGORITHM
+from sam3_mlx.release_contract import JsonObject
 
 
 def test_hungarian_assignment_avoids_greedy_suboptimal_pairing():
@@ -39,13 +41,13 @@ def test_hungarian_assignment_rejects_invalid_matrices():
         optimal_assignment(np.array([[1.0, np.nan], [0.0, 1.0]]))
 
 
-def _outputs(order=(0, 1)):
+def _outputs(order: tuple[int, int] = (0, 1)) -> dict[str, np.ndarray]:
     masks = np.zeros((2, 4, 4), dtype=bool)
     masks[0, :2, :2] = True
     masks[1, 2:, 2:] = True
     boxes = np.array([[0, 0, 2, 2], [2, 2, 4, 4]], dtype=np.float32)
     scores = np.array([0.9, 0.8], dtype=np.float32)
-    index = np.asarray(order)
+    index = np.asarray(order, dtype=np.intp)
     return {
         "masks": masks[index],
         "boxes": boxes[index],
@@ -76,9 +78,9 @@ def test_compare_case_matches_permuted_objects_by_mask_iou():
     ]
 
 
-def test_raw_evidence_bundle_round_trips_without_pickle(tmp_path):
+def test_raw_evidence_bundle_round_trips_without_pickle(tmp_path: Path) -> None:
     evidence_path = tmp_path / "evidence.npz"
-    metadata = {
+    metadata: JsonObject = {
         "profile": "synthetic",
         "case_specs": [
             {
@@ -107,7 +109,7 @@ def test_raw_evidence_bundle_round_trips_without_pickle(tmp_path):
         assert json.loads(str(archive["metadata_json"]))["case_count"] == 1
 
 
-def test_evidence_bundle_requires_npz_suffix(tmp_path):
+def test_evidence_bundle_requires_npz_suffix(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="end in .npz"):
         write_evidence_bundle(
             tmp_path / "evidence.bin",

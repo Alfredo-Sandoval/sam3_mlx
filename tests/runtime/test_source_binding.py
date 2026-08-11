@@ -1,4 +1,5 @@
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -9,7 +10,7 @@ from sam3_mlx.source_binding import (
 )
 
 
-def _run(repo, *args):
+def _run(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", *args],
         cwd=repo,
@@ -19,7 +20,7 @@ def _run(repo, *args):
     )
 
 
-def _repo(tmp_path):
+def _repo(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
     _run(repo, "init")
@@ -31,7 +32,9 @@ def _repo(tmp_path):
     return repo
 
 
-def test_source_binding_accepts_clean_and_evidence_only_worktrees(tmp_path):
+def test_source_binding_accepts_clean_and_evidence_only_worktrees(
+    tmp_path: Path,
+) -> None:
     repo = _repo(tmp_path)
     commit = git_commit(repo)
 
@@ -48,7 +51,7 @@ def test_source_binding_accepts_clean_and_evidence_only_worktrees(tmp_path):
     assert changed == ("parity/evidence/example.npz",)
 
 
-def test_source_binding_rejects_dirty_source_even_with_evidence(tmp_path):
+def test_source_binding_rejects_dirty_source_even_with_evidence(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     receipt = repo / "parity" / "receipts" / "latest.json"
     receipt.parent.mkdir(parents=True)

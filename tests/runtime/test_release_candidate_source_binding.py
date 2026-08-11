@@ -1,22 +1,24 @@
 import json
+from pathlib import Path
 
 import pytest
 
 from sam3_mlx.parity_evidence import write_evidence_bundle
+from sam3_mlx.release_contract import JsonObject
 from scripts import audit_release_candidate as candidate
 
 
-def _write_json(path, value):
+def _write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
-def _candidate_tree(tmp_path, *, commit="a" * 40):
+def _candidate_tree(tmp_path: Path, *, commit: str = "a" * 40) -> Path:
     evidence_dir = tmp_path / "parity" / "evidence"
     reports_dir = tmp_path / "parity" / "receipts"
     manifests_dir = tmp_path / "parity" / "manifests"
 
-    references = []
+    references: list[JsonObject] = []
     for profile in ("example", "holdout"):
         evidence_path = evidence_dir / f"{profile}.npz"
         write_evidence_bundle(
@@ -57,7 +59,9 @@ def _candidate_tree(tmp_path, *, commit="a" * 40):
     return receipt_path
 
 
-def test_candidate_source_binding_accepts_one_commit(monkeypatch, tmp_path):
+def test_candidate_source_binding_accepts_one_commit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     receipt_path = _candidate_tree(tmp_path)
     monkeypatch.setattr(candidate, "REPO_ROOT", tmp_path)
 
@@ -68,8 +72,8 @@ def test_candidate_source_binding_accepts_one_commit(monkeypatch, tmp_path):
 
 
 def test_candidate_source_binding_rejects_raw_evidence_from_another_commit(
-    monkeypatch, tmp_path
-):
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     receipt_path = _candidate_tree(tmp_path)
     monkeypatch.setattr(candidate, "REPO_ROOT", tmp_path)
     evidence_path = tmp_path / "parity" / "evidence" / "holdout.npz"

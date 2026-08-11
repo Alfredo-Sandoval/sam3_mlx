@@ -1,25 +1,28 @@
+from pathlib import Path
+
 import mlx.core as mx
 import numpy as np
+from numpy.typing import NDArray
 
-from sam3_mlx.eval.coco_writer import PredictionDumper
+from sam3_mlx.eval.coco_writer import PredictionDumper, Predictions
 from sam3_mlx.eval.postprocessors import PostProcessImage
+from sam3_mlx.mlx_runtime import evaluate_boundary
 
 UPSTREAM_EVAL_POSTPROCESSORS_SOURCE_COMMIT = "2814fa619404a722d03e9a012e083e4f293a4e53"
 
 
-def _to_numpy(value):
+def _to_numpy(value: object) -> NDArray[np.float32]:
     if isinstance(value, mx.array):
-        mx.eval(value)
-    return np.asarray(value)
+        evaluate_boundary(value)
+    return np.asarray(value, dtype=np.float32)
 
 
-def _sigmoid(value):
-    value = np.asarray(value, dtype=np.float32)
-    return 1.0 / (1.0 + np.exp(-value))
+def _sigmoid(value: float) -> float:
+    return float(1.0 / (1.0 + np.exp(-np.float32(value))))
 
 
 class _UnusedPostprocessor:
-    def process_results(self, *args, **kwargs):
+    def process_results(self, *args: object, **kwargs: object) -> Predictions:
         del args, kwargs
         return {}
 
@@ -61,25 +64,25 @@ def test_postprocess_image_scales_boxes_and_applies_forced_labels():
 
     assert len(results) == 2
     np.testing.assert_allclose(
-        results[0]["boxes"],
+        _to_numpy(results[0]["boxes"]),
         np.array([[80.0, 30.0, 120.0, 70.0], [0.0, 0.0, 100.0, 50.0]]),
         rtol=0,
         atol=1e-5,
     )
     np.testing.assert_allclose(
-        results[1]["boxes"],
+        _to_numpy(results[1]["boxes"]),
         np.array([[0.0, 0.0, 80.0, 50.0], [50.0, 0.0, 70.0, 25.0]]),
         rtol=0,
         atol=1e-5,
     )
     np.testing.assert_allclose(
-        results[0]["scores"],
+        _to_numpy(results[0]["scores"]),
         np.array([_sigmoid(2.0), _sigmoid(3.0)]),
         rtol=0,
         atol=1e-6,
     )
     np.testing.assert_allclose(
-        results[1]["scores"],
+        _to_numpy(results[1]["scores"]),
         np.array([_sigmoid(4.0), _sigmoid(1.0)]),
         rtol=0,
         atol=1e-6,
@@ -110,13 +113,13 @@ def test_postprocess_image_detection_threshold_is_strictly_greater_than_threshol
     )[0]
 
     np.testing.assert_allclose(
-        result["boxes"],
+        _to_numpy(result["boxes"]),
         np.array([[8.0, 4.0, 12.0, 6.0]]),
         rtol=0,
         atol=1e-6,
     )
     np.testing.assert_allclose(
-        result["scores"],
+        _to_numpy(result["scores"]),
         np.array([_sigmoid(2.0)]),
         rtol=0,
         atol=1e-6,
@@ -149,7 +152,7 @@ def test_postprocess_image_resizes_masks_with_mlx_interpolation_contract():
     assert result["scores"] is None
     assert result["labels"] is None
     np.testing.assert_array_equal(
-        result["masks"],
+        _to_numpy(result["masks"]),
         np.array(
             [
                 [
@@ -243,7 +246,7 @@ def test_postprocess_image_rle_output_is_compressed_and_filtered_by_detection_ke
     assert result["masks_rle"] == [{"size": [2, 3], "counts": "132"}]
     assert "masks" not in result
     np.testing.assert_allclose(
-        result["boxes"],
+        _to_numpy(result["boxes"]),
         np.array([[1.2, 0.8, 1.8, 1.2]]),
         rtol=0,
         atol=1e-6,
@@ -251,8 +254,8 @@ def test_postprocess_image_rle_output_is_compressed_and_filtered_by_detection_ke
 
 
 def test_prediction_dumper_prepares_typed_detection_and_segmentation_records(
-    tmp_path,
-):
+    tmp_path: Path,
+) -> None:
     dumper = PredictionDumper(
         dump_dir=str(tmp_path),
         postprocessor=_UnusedPostprocessor(),

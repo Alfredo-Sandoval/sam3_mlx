@@ -3,11 +3,7 @@ import numpy as np
 import pytest
 
 from sam3_mlx.model.data_misc import interpolate
-
-
-def _to_numpy(value):
-    mx.eval(value)
-    return np.asarray(value)
+from tests._mlx_runtime import to_numpy
 
 
 def test_interpolate_antialias_bilinear_matches_torch_downsample():
@@ -34,7 +30,7 @@ def test_interpolate_antialias_bilinear_matches_torch_downsample():
         antialias=True,
     )
 
-    np.testing.assert_allclose(_to_numpy(observed), expected, rtol=0.0, atol=5e-7)
+    np.testing.assert_allclose(to_numpy(observed), expected, rtol=0.0, atol=5e-7)
 
 
 def test_interpolate_antialias_bilinear_rejects_singleton_downsample_grid():
@@ -56,10 +52,10 @@ def test_interpolate_bicubic_does_not_silently_become_linear():
     input_np = peak.reshape(1, 1, 8, 8)
     input_mx = mx.array(input_np, dtype=mx.float32)
 
-    bilinear = _to_numpy(
+    bilinear = to_numpy(
         interpolate(input_mx, size=(16, 16), mode="bilinear", align_corners=False)
     )
-    bicubic = _to_numpy(
+    bicubic = to_numpy(
         interpolate(input_mx, size=(16, 16), mode="bicubic", align_corners=False)
     )
 
@@ -89,7 +85,7 @@ def test_interpolate_bicubic_matches_literal_upstream_reference():
         mode="bicubic",
         align_corners=False,
     )
-    np.testing.assert_allclose(_to_numpy(observed), expected, rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(to_numpy(observed), expected, rtol=0.0, atol=1e-7)
 
 
 def test_interpolate_empty_accepts_int_size_and_tuple_scale_factor():
