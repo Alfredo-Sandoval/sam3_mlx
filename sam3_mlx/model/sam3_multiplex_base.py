@@ -44,6 +44,7 @@ BoolArray: TypeAlias = NDArray[np.bool_]
 FloatArray: TypeAlias = NDArray[np.float32]
 FeatureCache: TypeAlias = dict[str | int, object]
 TrackerState: TypeAlias = dict[str, object]
+TrackerObjectId: TypeAlias = int | str
 MetadataValue = TypeVar("MetadataValue")
 
 
@@ -262,7 +263,7 @@ def _require_text_forward(detector: object) -> _TextForwardCall:
     return cast(_TextForwardCall, method)
 
 
-def _require_propagate_call(tracker: object) -> _PropagateCall:
+def require_propagate_call(tracker: object) -> _PropagateCall:
     method: object = getattr(tracker, "propagate_in_video", None)
     if not callable(method):
         raise_unsupported_multiplex_runtime(
@@ -2558,12 +2559,12 @@ class Sam3MultiplexBase(Sam3VideoBase):
         frame_idx: int,
         reverse: bool,
         run_mem_encoder: bool = True,
-    ) -> tuple[list[int], list[mx.array], list[mx.array]]:
-        obj_ids_local: list[int] = []
+    ) -> tuple[list[TrackerObjectId], list[mx.array], list[mx.array]]:
+        obj_ids_local: list[TrackerObjectId] = []
         low_res_masks_local: list[mx.array] = []
         sam2_scores_local: list[mx.array] = []
         seen_obj_ids: set[int] = set()
-        propagate = _require_propagate_call(self.tracker)
+        propagate = require_propagate_call(self.tracker)
 
         for sam2_state in tracker_states_local:
             _, state_obj_ids = _tracker_state_layout(sam2_state)

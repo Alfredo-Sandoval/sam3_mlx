@@ -36,7 +36,9 @@ from sam3_mlx.model.sam3_multiplex_base import (
     FeatureCache,
     MaskletConfirmationStatus,
     Sam3MultiplexBase,
+    TrackerObjectId,
     TrackerState,
+    require_propagate_call,
     text_outputs_for_batch,
 )
 from sam3_mlx.model.sam3_tracker_base import NO_OBJ_SCORE
@@ -262,6 +264,24 @@ def _tracker_prompt_result(
     ):
         raise TypeError("tracker prompt video_res_masks must be an array or None")
     return frame_idx, obj_ids, low_res_masks, cast(TrackerArray | None, video_res_masks)
+
+
+def _tracker_object_ids(value: object) -> list[TrackerObjectId]:
+    if _is_mlx_array(value):
+        raw_ids = cast(list[object], _array_to_numpy(value).reshape(-1).tolist())
+    elif isinstance(value, np.ndarray):
+        raw_ids = cast(list[object], value.reshape(-1).tolist())
+    elif isinstance(value, Sequence) and not isinstance(value, str):
+        raw_ids = list(cast(Sequence[object], value))
+    else:
+        raise TypeError("tracker propagation obj_ids must be a sequence or array")
+    object_ids: list[TrackerObjectId] = []
+    for obj_id in raw_ids:
+        if isinstance(obj_id, str):
+            object_ids.append(obj_id)
+        else:
+            object_ids.append(_integer_value(obj_id, name="tracker propagation obj_id"))
+    return object_ids
 
 
 def _int_keyed_object_dict(value: object, *, name: str) -> dict[int, object]:
@@ -3161,7 +3181,7 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
         self,
         inference_state: Any,
         obj_id: Any,
-        frame_idx: int | None,
+        frame_idx: int | None = 0,
         strict: bool = False,
         is_user_action: bool = False,
     ) -> Any:
@@ -3248,29 +3268,17 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
     def _convert_low_res_mask_to_video_res(
         self,
         low_res_mask: Any,
-        inference_state: dict[str, Any],
+        *,
+        orig_vid_height: int,
+        orig_vid_width: int,
     ) -> Any:
         if low_res_mask is None:
             return None
-
-        low_res_mask_mx = (
-            low_res_mask if _is_mlx_array(low_res_mask) else mx.array(low_res_mask)
+        return super()._convert_low_res_mask_to_video_res(
+            low_res_mask,
+            orig_vid_height=orig_vid_height,
+            orig_vid_width=orig_vid_width,
         )
-        if low_res_mask_mx.ndim != 2:
-            raise ValueError(
-                f"low_res_mask must have shape (H, W), got {low_res_mask_mx.shape}."
-            )
-        mask_4d = low_res_mask_mx[None, None, :, :].astype(mx.float32)
-        video_res_mask = interpolate(
-            mask_4d,
-            size=(
-                int(inference_state["orig_height"]),
-                int(inference_state["orig_width"]),
-            ),
-            mode="bilinear",
-            align_corners=False,
-        )
-        return video_res_mask[0] > 0.0
 
     def _gather_obj_id_to_mask_across_gpus(
         self,
@@ -3291,9 +3299,18 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
                 f"with {len(obj_ids_per_gpu)} entries."
             )
 
-        h_mask = w_mask = int(self.tracker.low_res_mask_size)
-        low_res_masks_local = []
-        for obj_id in obj_ids_per_gpu[self.rank]:
+        low_res_mask_size: object = getattr(
+            self.tracker,
+            "low_res_mask_size",
+            None,
+        )
+        h_mask = w_mask = _integer_value(
+            low_res_mask_size,
+            name="tracker.low_res_mask_size",
+        )
+        low_res_masks_local: list[mx.array] = []
+        local_obj_ids = _tracker_object_ids(obj_ids_per_gpu[self.rank])
+        for obj_id in local_obj_ids:
             if obj_id in obj_id_to_mask_local:
                 low_res_mask = obj_id_to_mask_local[obj_id]
                 low_res_mask_mx = (
@@ -3319,18 +3336,19 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
 
     def _propogate_tracker_one_frame_local_gpu(
         self,
-        tracker_states_local: list[dict[str, Any]],
+        tracker_states_local: Sequence[dict[str, object]],
         frame_idx: int,
         reverse: bool,
         run_mem_encoder: bool = True,
-    ) -> tuple[list[Any], list[Any], list[Any]]:
-        obj_ids_local: list[Any] = []
-        low_res_masks_local: list[Any] = []
-        sam2_scores_local: list[Any] = []
-        seen_obj_ids: set[Any] = set()
+    ) -> tuple[list[TrackerObjectId], list[mx.array], list[mx.array]]:
+        obj_ids_local: list[TrackerObjectId] = []
+        low_res_masks_local: list[mx.array] = []
+        sam2_scores_local: list[mx.array] = []
+        seen_obj_ids: set[TrackerObjectId] = set()
+        propagate = require_propagate_call(self.tracker)
 
         for sam2_state in tracker_states_local:
-            frame_results = self.tracker.propagate_in_video(
+            frame_results = propagate(
                 sam2_state,
                 start_frame_idx=frame_idx,
                 max_frame_num_to_track=0,
@@ -3346,25 +3364,13 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
                     _state_video_res_masks,
                     state_sam2_scores,
                 ) = result
-                if int(result_frame_idx) != int(frame_idx):
+                if result_frame_idx != frame_idx:
                     raise ValueError(
                         "Tracker partial propagation returned frame_idx="
                         f"{result_frame_idx}, expected {frame_idx}."
                     )
 
-                if _is_mlx_array(state_obj_ids):
-                    state_obj_ids_list = (
-                        _array_to_numpy(
-                            state_obj_ids,
-                            dtype=np.int64,
-                        )
-                        .reshape(-1)
-                        .tolist()
-                    )
-                elif isinstance(state_obj_ids, np.ndarray):
-                    state_obj_ids_list = state_obj_ids.reshape(-1).tolist()
-                else:
-                    state_obj_ids_list = list(state_obj_ids)
+                state_obj_ids_list = _tracker_object_ids(state_obj_ids)
 
                 state_low_res_masks_mx = (
                     state_low_res_masks
@@ -3407,7 +3413,7 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
                     low_res_masks_local.append(low_res_mask.astype(mx.float32))
                     sam2_score = state_sam2_scores_mx[obj_idx]
                     if int(np.prod(sam2_score.shape)) == 1:
-                        sam2_score = sam2_score.reshape(())
+                        sam2_score = mx.reshape(sam2_score, ())
                     sam2_scores_local.append(sam2_score)
 
         return obj_ids_local, low_res_masks_local, sam2_scores_local
@@ -3438,12 +3444,19 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
         ]
 
         obj_ids_on_state = list(sam2_state.get("obj_id_to_idx", {}).keys())
+        clear_points: object = getattr(
+            self.tracker,
+            "clear_all_points_in_frame",
+            None,
+        )
+        if not callable(clear_points):
+            raise TypeError("tracker.clear_all_points_in_frame must be callable")
         for frame_idx in frame_indices_to_clear:
             for obj_id_to_clear in obj_ids_on_state:
-                self.tracker.clear_all_points_in_frame(
+                cast(_ClearPointsCall, clear_points)(
                     sam2_state,
                     frame_idx,
-                    obj_id_to_clear,
+                    _integer_value(obj_id_to_clear, name="tracker state obj_id"),
                     need_output=False,
                 )
 
@@ -3524,8 +3537,15 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
             inference_state,
             obj_ids,
         )
+        preflight: object = getattr(
+            self.tracker,
+            "propagate_in_video_preflight",
+            None,
+        )
+        if not callable(preflight):
+            raise TypeError("tracker.propagate_in_video_preflight must be callable")
         for sam2_state in tracker_states_local:
-            self.tracker.propagate_in_video_preflight(
+            cast(_PreflightCall, preflight)(
                 sam2_state,
                 run_mem_encoder=True,
             )
@@ -3560,7 +3580,8 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
             refined_obj_id_to_mask = {
                 obj_id: self._convert_low_res_mask_to_video_res(
                     refined_mask_low_res,
-                    inference_state,
+                    orig_vid_height=int(inference_state["orig_height"]),
+                    orig_vid_width=int(inference_state["orig_width"]),
                 )
                 for obj_id, (_, refined_mask_low_res) in refined_obj_data.items()
             }

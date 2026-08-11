@@ -2322,7 +2322,8 @@ def test_multiplex_tracking_interactivity_helper_primitives_match_official_state
 
     converted = tracking._convert_low_res_mask_to_video_res(
         mx.ones((1, 1), dtype=mx.float32),
-        state,
+        orig_vid_height=state["orig_height"],
+        orig_vid_width=state["orig_width"],
     )
     assert tuple(converted.shape) == (1, 3, 4)
     assert converted.dtype == mx.bool_
@@ -2330,11 +2331,19 @@ def test_multiplex_tracking_interactivity_helper_primitives_match_official_state
         _to_numpy(converted),
         np.ones((1, 3, 4), dtype=bool),
     )
-    assert tracking._convert_low_res_mask_to_video_res(None, state) is None
+    assert (
+        tracking._convert_low_res_mask_to_video_res(
+            None,
+            orig_vid_height=state["orig_height"],
+            orig_vid_width=state["orig_width"],
+        )
+        is None
+    )
     with pytest.raises(ValueError, match="low_res_mask must have shape"):
         tracking._convert_low_res_mask_to_video_res(
             mx.ones((1, 1, 1), dtype=mx.float32),
-            state,
+            orig_vid_height=state["orig_height"],
+            orig_vid_width=state["orig_width"],
         )
 
 
