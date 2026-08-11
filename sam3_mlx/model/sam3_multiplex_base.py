@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from enum import Enum
 import math
 import os
@@ -72,6 +72,28 @@ class _TextForwardCall(Protocol):
     ) -> Mapping[str, TrackerArray]: ...
 
 
+PropagationResult: TypeAlias = tuple[
+    int,
+    object,
+    TrackerArray,
+    object,
+    TrackerArray,
+]
+
+
+class _PropagateCall(Protocol):
+    def __call__(
+        self,
+        inference_state: dict[str, object],
+        *,
+        start_frame_idx: int,
+        max_frame_num_to_track: int,
+        reverse: bool,
+        run_mem_encoder: bool,
+        propagate_preflight: bool,
+    ) -> Iterable[PropagationResult]: ...
+
+
 def _require_multiplex_controller(tracker: object) -> _MultiplexControllerView:
     controller: object = getattr(tracker, "multiplex_controller", None)
     allowed_bucket_capacity: object = getattr(
@@ -107,6 +129,15 @@ def _require_text_forward(detector: object) -> _TextForwardCall:
             "Sam3MultiplexBase detector.backbone.forward_text"
         )
     return cast(_TextForwardCall, method)
+
+
+def _require_propagate_call(tracker: object) -> _PropagateCall:
+    method: object = getattr(tracker, "propagate_in_video", None)
+    if not callable(method):
+        raise_unsupported_multiplex_runtime(
+            "Sam3MultiplexBase tracker.propagate_in_video"
+        )
+    return cast(_PropagateCall, method)
 
 
 def _is_mlx_array(value: object) -> TypeGuard[mx.array]:
@@ -2166,19 +2197,30 @@ class Sam3MultiplexBase(Sam3VideoBase):
 
     @staticmethod
     def _ensure_empty_packed_current_output(
-        sam2_state: Any,
+        sam2_state: object,
         frame_idx: int,
     ) -> None:
         if not isinstance(sam2_state, dict):
             return
-        multiplex_state = sam2_state.get("multiplex_state")
+        state = cast(dict[object, object], sam2_state)
+        multiplex_state = state.get("multiplex_state")
         if multiplex_state is None:
             return
-        if int(getattr(multiplex_state, "total_valid_entries", -1)) != 0:
+        total_valid_entries: object = getattr(
+            multiplex_state, "total_valid_entries", -1
+        )
+        if not isinstance(total_valid_entries, int) or total_valid_entries != 0:
             return
-        output_dict = sam2_state.setdefault("output_dict", {})
-        cond_outputs = output_dict.setdefault("cond_frame_outputs", {})
-        non_cond_outputs = output_dict.setdefault("non_cond_frame_outputs", {})
+        output_value = state.setdefault("output_dict", {})
+        if not isinstance(output_value, dict):
+            raise TypeError("tracker output_dict must be a dictionary")
+        output_dict = cast(dict[object, object], output_value)
+        cond_value = output_dict.setdefault("cond_frame_outputs", {})
+        non_cond_value = output_dict.setdefault("non_cond_frame_outputs", {})
+        if not isinstance(cond_value, dict) or not isinstance(non_cond_value, dict):
+            raise TypeError("tracker frame outputs must be dictionaries")
+        cond_outputs = cast(dict[object, object], cond_value)
+        non_cond_outputs = cast(dict[object, object], non_cond_value)
         if frame_idx in cond_outputs or frame_idx in non_cond_outputs:
             return
         cond_outputs[frame_idx] = {"conditioning_objects": set()}
@@ -2302,20 +2344,22 @@ class Sam3MultiplexBase(Sam3VideoBase):
 
     def _propogate_tracker_one_frame_local_gpu(
         self,
-        tracker_states_local: list[dict[str, Any]],
+        tracker_states_local: Sequence[dict[str, object]],
         frame_idx: int,
         reverse: bool,
         run_mem_encoder: bool = True,
-    ) -> tuple[list[Any], list[Any], list[Any]]:
-        obj_ids_local: list[Any] = []
-        low_res_masks_local: list[Any] = []
-        sam2_scores_local: list[Any] = []
-        seen_obj_ids: set[Any] = set()
+    ) -> tuple[list[int], list[mx.array], list[mx.array]]:
+        obj_ids_local: list[int] = []
+        low_res_masks_local: list[mx.array] = []
+        sam2_scores_local: list[mx.array] = []
+        seen_obj_ids: set[int] = set()
+        propagate = _require_propagate_call(self.tracker)
 
         for sam2_state in tracker_states_local:
-            if len(sam2_state.get("obj_ids", [])) == 0:
+            _, state_obj_ids = _tracker_state_layout(sam2_state)
+            if state_obj_ids.size == 0:
                 continue
-            frame_results = self.tracker.propagate_in_video(
+            frame_results = propagate(
                 sam2_state,
                 start_frame_idx=frame_idx,
                 max_frame_num_to_track=0,
@@ -2337,19 +2381,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
                         f"{result_frame_idx}, expected {frame_idx}."
                     )
 
-                if _is_mlx_array(state_obj_ids):
-                    state_obj_ids_list = (
-                        _array_to_numpy(
-                            state_obj_ids,
-                            dtype=np.int64,
-                        )
-                        .reshape(-1)
-                        .tolist()
-                    )
-                elif isinstance(state_obj_ids, np.ndarray):
-                    state_obj_ids_list = state_obj_ids.reshape(-1).tolist()
-                else:
-                    state_obj_ids_list = list(state_obj_ids)
+                state_obj_ids_list = _int_array(state_obj_ids).reshape(-1).tolist()
 
                 state_low_res_masks_mx = (
                     state_low_res_masks
