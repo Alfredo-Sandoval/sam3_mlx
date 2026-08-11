@@ -122,9 +122,7 @@ class SimpleMaskDownSampler(nn.Module):
         )
 
     def forward(self, x: mx.array) -> mx.array:
-        if self.interpol_size is not None and self.interpol_size != tuple(
-            x.shape[-2:]
-        ):
+        if self.interpol_size is not None and self.interpol_size != tuple(x.shape[-2:]):
             x = interpolate(
                 x.astype(mx.float32),
                 size=self.interpol_size,

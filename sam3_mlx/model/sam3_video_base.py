@@ -138,6 +138,10 @@ def _frame_size(frame: object) -> tuple[int, int]:
 
 
 def _dimension(value: object) -> int:
+    if isinstance(value, bool):
+        raise TypeError(
+            f"frame dimensions must be integers, got {type(value).__name__}"
+        )
     if isinstance(value, int):
         return value
     if isinstance(value, np.integer):
@@ -389,16 +393,19 @@ def _associate_det_trk_compilable(
             (det_masks_binary.shape[0], trk_masks_binary.shape[0]), dtype=bool
         )
         return _restore_association_result(
-            cast(NumpyAssociationResult, (
-                trk_is_unmatched,
-                trk_is_nonempty,
-                is_new_det,
-                det_to_max_iou_trk_idx,
-                det_is_high_conf,
-                det_is_high_iou,
-                det_keep_np,
-                im_mask,
-            )),
+            cast(
+                NumpyAssociationResult,
+                (
+                    trk_is_unmatched,
+                    trk_is_nonempty,
+                    is_new_det,
+                    det_to_max_iou_trk_idx,
+                    det_is_high_conf,
+                    det_is_high_iou,
+                    det_keep_np,
+                    im_mask,
+                ),
+            ),
             det_masks,
         )
 
@@ -437,16 +444,19 @@ def _associate_det_trk_compilable(
     im_mask = intersection_metric >= iou_threshold
 
     return _restore_association_result(
-        cast(NumpyAssociationResult, (
-            trk_is_unmatched,
-            trk_is_nonempty,
-            is_new_det,
-            det_to_max_iou_trk_idx,
-            det_is_high_conf,
-            det_is_high_iou,
-            det_keep_np,
-            im_mask,
-        )),
+        cast(
+            NumpyAssociationResult,
+            (
+                trk_is_unmatched,
+                trk_is_nonempty,
+                is_new_det,
+                det_to_max_iou_trk_idx,
+                det_is_high_conf,
+                det_is_high_iou,
+                det_keep_np,
+                im_mask,
+            ),
+        ),
         det_masks,
     )
 
@@ -541,9 +551,7 @@ class Sam3VideoBase(nn.Module):
             detail="Torch distributed CPU process groups are not used in sam3_mlx.",
         )
 
-    def broadcast_python_obj_cpu(
-        self, *args: object, **kwargs: object
-    ) -> NoReturn:
+    def broadcast_python_obj_cpu(self, *args: object, **kwargs: object) -> NoReturn:
         del args, kwargs
         _raise_video_base_unsupported(
             "sam3_mlx.model.sam3_video_base.Sam3VideoBase.broadcast_python_obj_cpu",

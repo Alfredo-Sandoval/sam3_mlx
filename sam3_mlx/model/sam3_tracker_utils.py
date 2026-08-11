@@ -48,9 +48,7 @@ TRACKER_CPU_BOUNDARIES = {
 }
 
 
-def _to_host_tracker_input(
-    value: TrackerArray, *, copy: bool = False
-) -> NumpyArray:
+def _to_host_tracker_input(value: TrackerArray, *, copy: bool = False) -> NumpyArray:
     """Synchronize and export tracker tensors at an explicit CPU cleanup boundary."""
 
     return cast(NumpyArray, to_numpy(value, copy=copy))
@@ -118,9 +116,7 @@ def sample_box_points(
             max_dx = mx.minimum(bbox_w * noise, noise_bound_arr)
             max_dy = mx.minimum(bbox_h * noise, noise_bound_arr)
             box_noise = 2 * mx.random.uniform(shape=(bsz, 1, 4)) - 1
-            box_noise = box_noise * mx.stack(
-                [max_dx, max_dy, max_dx, max_dy], axis=-1
-            )
+            box_noise = box_noise * mx.stack([max_dx, max_dy, max_dx, max_dy], axis=-1)
             img_bounds = (
                 mx.array([width, height, width, height], dtype=box_coords.dtype) - 1
             )

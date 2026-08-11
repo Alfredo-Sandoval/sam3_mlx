@@ -109,7 +109,9 @@ def _validate_oracle_archive(
         bindings = metadata.get("bindings")
         if not isinstance(bindings, dict):
             raise ValueError("Oracle metadata is missing complete cache bindings.")
-        validate_exact_mapping(bindings, expected_bindings, label="oracle cache bindings")
+        validate_exact_mapping(
+            bindings, expected_bindings, label="oracle cache bindings"
+        )
         expected_cache_key = canonical_json_sha256(expected_bindings)
         if metadata.get("cache_key") != expected_cache_key:
             raise ValueError(
@@ -248,9 +250,7 @@ def main() -> None:
     specs = _case_specs(image, args.profile)
     observed_names = tuple(spec["name"] for spec in specs)
     if observed_names != EXPECTED_CASE_NAMES[args.profile]:
-        raise SystemExit(
-            f"Case matrix drifted for {args.profile}: {observed_names}."
-        )
+        raise SystemExit(f"Case matrix drifted for {args.profile}: {observed_names}.")
 
     oracle_runner_sha256 = sha256_path(HARDENED_ORACLE)
     with tempfile.TemporaryDirectory(prefix="sam3-mlx-parity-v2-") as temp_dir:

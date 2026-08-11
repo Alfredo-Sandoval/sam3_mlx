@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from numbers import Integral
 from typing import Any, cast
 
 import mlx.core as mx
@@ -85,9 +86,20 @@ def _init_multiplex_demo_state(
     images: Any = None,
     cached_features: object | None = None,
 ) -> dict[str, Any]:
-    if int(video_height) <= 0 or int(video_width) <= 0:
+    if (
+        isinstance(video_height, bool)
+        or isinstance(video_width, bool)
+        or not isinstance(video_height, Integral)
+        or not isinstance(video_width, Integral)
+        or video_height <= 0
+        or video_width <= 0
+    ):
         raise ValueError("video_height and video_width must be positive integers.")
-    if int(num_frames) <= 0:
+    if (
+        isinstance(num_frames, bool)
+        or not isinstance(num_frames, Integral)
+        or num_frames <= 0
+    ):
         raise ValueError("num_frames must be a positive integer.")
     if cached_features is None:
         cached_features = {}

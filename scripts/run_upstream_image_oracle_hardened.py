@@ -122,8 +122,7 @@ def _validate_official_checkout(checkout: Path) -> str:
     ).stdout
     if status.strip():
         raise ValueError(
-            "Official checkout must be clean; git status reported:\n"
-            f"{status.rstrip()}"
+            f"Official checkout must be clean; git status reported:\n{status.rstrip()}"
         )
     submodules = subprocess.run(
         ["git", "submodule", "status", "--recursive"],

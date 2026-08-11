@@ -7,48 +7,54 @@ submatrix are exported to host memory for selection.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, TypeGuard, TypeVar, cast
 
 import numpy as np
+import numpy.typing as npt
+from numpy.typing import DTypeLike
 
 from sam3_mlx.perflib.masks_ops import mask_iou
 
+if TYPE_CHECKING:
+    import mlx.core as mx
 
-def _is_mlx_array(value: Any) -> bool:
+
+BoolArray = npt.NDArray[np.bool_]
+FloatArray = npt.NDArray[np.float32]
+IndexArray = npt.NDArray[np.int64]
+ArrayT = TypeVar("ArrayT", BoolArray, IndexArray)
+
+
+def _is_mlx_array(value: object) -> TypeGuard["mx.array"]:
     return value.__class__.__module__.startswith("mlx.")
 
 
-def _mlx():
-    import mlx.core as mx
-
-    return mx
-
-
-def _from_numpy(value: np.ndarray, *templates):
+def _from_numpy(value: ArrayT, *templates: object) -> ArrayT | "mx.array":
     if any(_is_mlx_array(template) for template in templates):
-        mx = _mlx()
+        import mlx.core as mx
 
         return mx.array(value)
     return value
 
 
-def _as_mlx_array(value: Any):
-    mx = _mlx()
+def _as_mlx_array(value: object) -> "mx.array":
+    import mlx.core as mx
+
     if _is_mlx_array(value):
         return value
-    return mx.array(value)
+    return mx.array(cast(npt.NDArray[np.generic], value))
 
 
-def _host_array(value: Any, *, dtype=None) -> np.ndarray:
+def _host_array(value: object, *, dtype: DTypeLike) -> FloatArray:
     if _is_mlx_array(value):
         from sam3_mlx.mlx_runtime import to_numpy
 
         # host-postprocess-boundary: greedy NMS selection is still NumPy/Python.
-        return to_numpy(value, dtype=dtype, copy=False)
-    return np.asarray(value, dtype=dtype)
+        return cast(FloatArray, to_numpy(value, dtype=dtype, copy=False))
+    return cast(FloatArray, np.asarray(value, dtype=dtype))
 
 
-def _is_numpy_mask_dtype(dtype: np.dtype) -> bool:
+def _is_numpy_mask_dtype(dtype: np.dtype[np.generic]) -> bool:
     return (
         dtype == np.bool_
         or np.issubdtype(dtype, np.integer)
@@ -56,30 +62,33 @@ def _is_numpy_mask_dtype(dtype: np.dtype) -> bool:
     )
 
 
-def _is_mlx_mask_dtype(dtype) -> bool:
-    mx = _mlx()
-    return (
+def _is_mlx_mask_dtype(dtype: "mx.Dtype") -> bool:
+    import mlx.core as mx
+
+    return bool(
         dtype == mx.bool_
         or mx.issubdtype(dtype, mx.integer)
         or mx.issubdtype(dtype, mx.floating)
     )
 
 
-def _validate_mlx_masks(masks, name: str):
+def _validate_mlx_masks(masks: "mx.array", name: str) -> None:
     if masks.ndim != 3:
         raise ValueError(f"{name} must have shape (N, H, W), got {masks.shape}.")
     if not _is_mlx_mask_dtype(masks.dtype):
         raise TypeError(f"{name} must be boolean or numeric masks.")
 
 
-def _validate_numpy_masks(masks: np.ndarray, name: str) -> None:
+def _validate_numpy_masks(masks: npt.NDArray[np.generic], name: str) -> None:
     if masks.ndim != 3:
         raise ValueError(f"{name} must have shape (N, H, W), got {masks.shape}.")
     if not _is_numpy_mask_dtype(masks.dtype):
         raise TypeError(f"{name} must be boolean or numeric masks.")
 
 
-def generic_nms(ious, scores, iou_threshold=0.5):
+def generic_nms(
+    ious: object, scores: object, iou_threshold: float = 0.5
+) -> IndexArray | "mx.array":
     """Run greedy NMS on host arrays and return kept indices like ``scores``."""
 
     # host-postprocess-boundary: greedy NMS ordering is currently host-side.
@@ -98,13 +107,20 @@ def generic_nms(ious, scores, iou_threshold=0.5):
     return _from_numpy(np.asarray(kept, dtype=np.int64), scores)
 
 
-def generic_nms_cpu(ious, scores, iou_threshold=0.5):
+def generic_nms_cpu(
+    ious: object, scores: object, iou_threshold: float = 0.5
+) -> IndexArray | "mx.array":
     """Alias for the explicit host-side greedy NMS implementation."""
 
     return generic_nms(ious, scores, iou_threshold=iou_threshold)
 
 
-def nms_masks(pred_probs, pred_masks, prob_threshold, iou_threshold):
+def nms_masks(
+    pred_probs: object,
+    pred_masks: object,
+    prob_threshold: float,
+    iou_threshold: float,
+) -> BoolArray | "mx.array":
     """Run mask NMS and return a boolean keep mask."""
 
     if _is_mlx_array(pred_probs) or _is_mlx_array(pred_masks):
@@ -127,9 +143,15 @@ def nms_masks(pred_probs, pred_masks, prob_threshold, iou_threshold):
     return _from_numpy(keep, pred_probs)
 
 
-def _nms_masks_mlx(pred_probs, pred_masks, prob_threshold, iou_threshold):
-    mx = _mlx()
-    probs = _as_mlx_array(pred_probs).reshape(-1)
+def _nms_masks_mlx(
+    pred_probs: object,
+    pred_masks: object,
+    prob_threshold: float,
+    iou_threshold: float,
+) -> "mx.array":
+    import mlx.core as mx
+
+    probs = mx.reshape(_as_mlx_array(pred_probs), (-1,))
     masks = _as_mlx_array(pred_masks)
     _validate_mlx_masks(masks, "pred_masks")
     if probs.shape != (masks.shape[0],):

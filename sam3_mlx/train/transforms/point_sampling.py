@@ -36,6 +36,7 @@ CocoRle: TypeAlias = Mapping[str, object]
 MaskInput: TypeAlias = ArrayData
 BoxInput: TypeAlias = ArrayInput
 
+
 def _from_numpy(value: NDArray[np.generic], like: ArrayData) -> ArrayData:
     return restore_array(value, like, preserve_dtype=False)
 
@@ -176,9 +177,7 @@ def sample_points_from_rle(
     if normalize:
         height, width = mask.shape
         float_points = points.astype(np.float32, copy=False)
-        return float_points / np.array(
-            [width, height, 1.0], dtype=np.float32
-        )[None, :]
+        return float_points / np.array([width, height, 1.0], dtype=np.float32)[None, :]
     return points
 
 
@@ -199,9 +198,7 @@ def sample_points_from_mask(
     raise ValueError(f"Unknown point sampling mode {mode}.")
 
 
-def uniform_positive_sample(
-    mask: MaskInput, n_points: int
-) -> NDArray[np.generic]:
+def uniform_positive_sample(mask: MaskInput, n_points: int) -> NDArray[np.generic]:
     """Sample positive integer-pixel points uniformly from a binary mask."""
 
     mask_np = to_numpy(mask).astype(bool, copy=False)
@@ -214,9 +211,7 @@ def uniform_positive_sample(
     return np.concatenate([selected_points, labels], axis=1)
 
 
-def center_positive_sample(
-    mask: MaskInput, n_points: int
-) -> NDArray[np.generic]:
+def center_positive_sample(mask: MaskInput, n_points: int) -> NDArray[np.generic]:
     """Sample points farthest from mask edges and previously sampled points."""
 
     padded_mask = np.pad(to_numpy(mask).astype(np.uint8, copy=False), 1)
@@ -463,9 +458,7 @@ class RandomizeInputBbox:
             else:
                 raise TypeError(f"Unsupported image type: {type(img)!r}")
 
-            boxes = mx_ops(mx_array(query.input_bbox, dtype=mx.float32)).reshape(
-                -1, 4
-            )
+            boxes = mx_ops(mx_array(query.input_bbox, dtype=mx.float32)).reshape(-1, 4)
             if mx_shape(boxes)[0] == 0:
                 continue
             noised_boxes = [

@@ -125,13 +125,13 @@ class PositionEmbeddingSine(nn.Module):
         if cached is not None:
             return mx.repeat(cached[None], repeats=batch, axis=0)
 
-        y_embed = _array_methods(
-            mx.arange(1, height + 1, dtype=mx.float32)
-        ).reshape(1, -1, 1)
+        y_embed = _array_methods(mx.arange(1, height + 1, dtype=mx.float32)).reshape(
+            1, -1, 1
+        )
         y_embed = mx.broadcast_to(y_embed, (batch, height, width))
-        x_embed = _array_methods(
-            mx.arange(1, width + 1, dtype=mx.float32)
-        ).reshape(1, 1, -1)
+        x_embed = _array_methods(mx.arange(1, width + 1, dtype=mx.float32)).reshape(
+            1, 1, -1
+        )
         x_embed = mx.broadcast_to(x_embed, (batch, height, width))
 
         if self.normalize:

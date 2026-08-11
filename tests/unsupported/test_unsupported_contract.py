@@ -578,9 +578,11 @@ def test_video_inference_device_guard_raises_canonical_error():
             "TorchCodec",
         ),
         (
-            lambda: import_module("sam3_mlx.model.sam1_task_predictor")
-            .SAM3InteractiveImageModel()
-            .forward_image(mx.zeros((1, 3, 16, 16))),
+            lambda: (
+                import_module("sam3_mlx.model.sam1_task_predictor")
+                .SAM3InteractiveImageModel()
+                .forward_image(mx.zeros((1, 3, 16, 16)))
+            ),
             "image-interactivity",
             "forward_image",
             "attached",
@@ -611,23 +613,27 @@ def test_runtime_surface_guards_raise_canonical_error(
     ("call", "reason", "feature_fragment", "message"),
     [
         (
-            lambda: import_module("sam3_mlx.model.data_misc")
-            .NestedTensor(
-                mx.zeros((1, 1)),
-                None,
-            )
-            .to("cpu"),
+            lambda: (
+                import_module("sam3_mlx.model.data_misc")
+                .NestedTensor(
+                    mx.zeros((1, 1)),
+                    None,
+                )
+                .to("cpu")
+            ),
             "unsupported-device",
             "NestedTensor.to(device='cpu')",
             "explicit MLX device",
         ),
         (
-            lambda: import_module("sam3_mlx.model.data_misc")
-            .NestedTensor(
-                mx.zeros((1, 1)),
-                None,
-            )
-            .pin_memory("cpu"),
+            lambda: (
+                import_module("sam3_mlx.model.data_misc")
+                .NestedTensor(
+                    mx.zeros((1, 1)),
+                    None,
+                )
+                .pin_memory("cpu")
+            ),
             "training-loop",
             "NestedTensor.pin_memory(device='cpu')",
             "PyTorch CPU-pinning",

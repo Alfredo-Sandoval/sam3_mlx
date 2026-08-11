@@ -514,7 +514,9 @@ def test_video_predictor_remove_object_preserves_base_schema():
     }
 
     class _RemovalModel:
-        def remove_object(self, inference_state, obj_id, frame_idx=0, is_user_action=True):
+        def remove_object(
+            self, inference_state, obj_id, frame_idx=0, is_user_action=True
+        ):
             del inference_state, obj_id, is_user_action
             return frame_idx, sentinel_outputs
 

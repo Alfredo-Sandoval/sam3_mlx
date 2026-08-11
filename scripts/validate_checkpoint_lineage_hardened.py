@@ -123,7 +123,9 @@ def _validate_reproduction_manifest(
         if manifest.get(field) != value
     }
     if drift:
-        raise ValueError(f"Reproduction manifest does not match release contract: {drift}")
+        raise ValueError(
+            f"Reproduction manifest does not match release contract: {drift}"
+        )
 
     ignored_keys = manifest.get("ignored_keys")
     if not isinstance(ignored_keys, list) or any(
@@ -140,7 +142,9 @@ def _validate_reproduction_manifest(
 
     dtype_counts = manifest.get("dtype_counts")
     if not isinstance(dtype_counts, dict) or not dtype_counts:
-        raise ValueError("Reproduction manifest dtype_counts must be a non-empty object.")
+        raise ValueError(
+            "Reproduction manifest dtype_counts must be a non-empty object."
+        )
     if any(
         not isinstance(dtype_name, str)
         or not dtype_name

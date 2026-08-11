@@ -83,9 +83,7 @@ def _as_size_tuple(size: object) -> tuple[int, int]:
     return int(size_np[0]), int(size_np[1])
 
 
-def _resize_mask_block(
-    mask_block: NDArray[Any], size: tuple[int, int]
-) -> NDArray[Any]:
+def _resize_mask_block(mask_block: NDArray[Any], size: tuple[int, int]) -> NDArray[Any]:
     if mask_block.ndim == 3:
         mask_block = mask_block[:, None, :, :]
         squeeze_channel = True
@@ -269,8 +267,7 @@ class PostProcessImage:
             )
             if self.convert_mask_to_rle:
                 return [
-                    _rle_encode(resized_masks[i])
-                    for i in range(resized_masks.shape[0])
+                    _rle_encode(resized_masks[i]) for i in range(resized_masks.shape[0])
                 ]
             return [
                 _to_output_array(resized_masks[i], to_cpu=self.to_cpu)
@@ -357,10 +354,7 @@ class PostProcessImage:
         del kwargs
         loss_stages = getattr(find_stages, "loss_stages", None)
         if isinstance(loss_stages, Sequence):
-            stage_indices = [
-                int(index)
-                for index in cast(Sequence[int], loss_stages)
-            ]
+            stage_indices = [int(index) for index in cast(Sequence[int], loss_stages)]
             find_metadatas = [find_metadatas[index] for index in stage_indices]
         if len(find_stages) != len(find_metadatas):
             raise AssertionError("find_stages and find_metadatas length mismatch.")

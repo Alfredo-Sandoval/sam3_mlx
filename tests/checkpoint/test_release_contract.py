@@ -18,7 +18,9 @@ def test_release_contract_matches_default_hub_checkpoint_pin():
 
 
 def test_oracle_bindings_include_current_contract_digest():
-    contract_path = Path(__file__).resolve().parents[2] / "sam3_mlx" / "release_contract.py"
+    contract_path = (
+        Path(__file__).resolve().parents[2] / "sam3_mlx" / "release_contract.py"
+    )
 
     bindings = build_oracle_bindings(
         image_sha256="a" * 64,

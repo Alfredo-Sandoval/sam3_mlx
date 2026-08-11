@@ -69,9 +69,7 @@ def _inspect_wheel(wheel: Path) -> None:
         metadata = BytesParser().parsebytes(archive.read(metadata_name))
     missing = sorted(REQUIRED_WHEEL_MEMBERS - members)
     excluded = sorted(
-        member
-        for member in members
-        if member.startswith(EXCLUDED_PACKAGE_PREFIXES)
+        member for member in members if member.startswith(EXCLUDED_PACKAGE_PREFIXES)
     )
     if missing or excluded:
         raise RuntimeError(

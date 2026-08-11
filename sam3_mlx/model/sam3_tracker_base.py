@@ -849,9 +849,7 @@ class Sam3TrackerBase(nn.Module):
                 )
             )
             valid_indices: list[int] = []
-            t_pos_and_prevs: list[
-                tuple[int, TrackerStoredFrameOutput | None, bool]
-            ] = [
+            t_pos_and_prevs: list[tuple[int, TrackerStoredFrameOutput | None, bool]] = [
                 ((frame_idx - t) * tpos_sign_mul, out, True)
                 for t, out in selected_cond_outputs.items()
             ]

@@ -10,6 +10,12 @@ from sam3_mlx.model.decoder import (
     TransformerEncoderDecoupledCrossAttention,
     nn,
 )
+from sam3_mlx.model.model_misc import TransformerWrapper
+
+
+def test_transformer_wrapper_requires_decoder_num_queries():
+    with pytest.raises(AttributeError, match="num_queries"):
+        TransformerWrapper(encoder=None, decoder=object(), d_model=4)
 
 
 class _DummyCrossAttention:

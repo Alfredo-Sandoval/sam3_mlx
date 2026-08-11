@@ -204,9 +204,9 @@ class MaskDecoder(nn.Module):
         iou_token_out = hs[:, offset, :]
         mask_tokens_out = hs[:, offset + 1 : offset + 1 + self.num_mask_tokens, :]
 
-        src = _array_methods(
-            _array_methods(src).transpose(0, 2, 1)
-        ).reshape(batch_size, channels, height, width)
+        src = _array_methods(_array_methods(src).transpose(0, 2, 1)).reshape(
+            batch_size, channels, height, width
+        )
         upscaled_embedding = self._upscale(src, high_res_features)
 
         hyper_in = mx.stack(
@@ -217,13 +217,10 @@ class MaskDecoder(nn.Module):
             axis=1,
         )
         batch_size, channels, height, width = upscaled_embedding.shape
-        masks = (
-            hyper_in
-            @ _array_methods(upscaled_embedding).reshape(
-                batch_size,
-                channels,
-                height * width,
-            )
+        masks = hyper_in @ _array_methods(upscaled_embedding).reshape(
+            batch_size,
+            channels,
+            height * width,
         )
         masks = _array_methods(masks).reshape(batch_size, -1, height, width)
 
@@ -237,9 +234,7 @@ class MaskDecoder(nn.Module):
         return masks, iou_pred, mask_tokens_out, object_score_logits
 
     def _get_stability_scores(self, mask_logits: mx.array) -> mx.array:
-        mask_logits = _array_methods(mask_logits).reshape(
-            *mask_logits.shape[:-2], -1
-        )
+        mask_logits = _array_methods(mask_logits).reshape(*mask_logits.shape[:-2], -1)
         delta = self.dynamic_multimask_stability_delta
         area_i = mx.sum(mask_logits > delta, axis=-1).astype(mx.float32)
         area_u = mx.sum(mask_logits > -delta, axis=-1).astype(mx.float32)
@@ -255,8 +250,7 @@ class MaskDecoder(nn.Module):
         best_indices = mx.argmax(multimask_iou_scores, axis=-1)
         best_mask = cast(
             mx.array,
-            mx.arange(multimask_iou_scores.shape[1])[None, :]
-            == best_indices[:, None],
+            mx.arange(multimask_iou_scores.shape[1])[None, :] == best_indices[:, None],
         )
         best_iou_scores = mx.sum(
             mx.where(

@@ -270,9 +270,7 @@ def test_prediction_dumper_prepares_typed_detection_and_segmentation_records(
         {
             17: {
                 **common,
-                "masks": np.array(
-                    [[[True, False], [True, False]]], dtype=bool
-                ),
+                "masks": np.array([[[True, False], [True, False]]], dtype=bool),
             }
         },
         "segm",

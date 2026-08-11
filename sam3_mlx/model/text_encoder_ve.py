@@ -243,9 +243,7 @@ class TextTransformer(nn.Module):
             use_act_checkpoint=use_act_checkpoint,
         )
         self.ln_final = (
-            norm_layer(width)
-            if use_ln_post
-            else cast(ArrayModule, nn.Identity())
+            norm_layer(width) if use_ln_post else cast(ArrayModule, nn.Identity())
         )
         if no_causal_mask:
             self.attn_mask = None

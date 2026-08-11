@@ -180,6 +180,8 @@ def _require_materialized_video_frames(value: object) -> _MaterializedVideoFrame
 
 
 def _integer_value(value: object, *, name: str) -> int:
+    if isinstance(value, bool):
+        raise TypeError(f"{name} must be an integer")
     if isinstance(value, int):
         return value
     if isinstance(value, np.integer):
@@ -195,10 +197,14 @@ def _mapping_view(value: object, *, name: str) -> Mapping[object, object]:
 
 def _require_feature_cache(value: object) -> FeatureCache:
     if not isinstance(value, dict):
-        raise TypeError("feature_cache must be a dictionary with string or integer keys")
+        raise TypeError(
+            "feature_cache must be a dictionary with string or integer keys"
+        )
     mapping = cast(dict[object, object], value)
     if not all(isinstance(key, (str, int)) for key in mapping):
-        raise TypeError("feature_cache must be a dictionary with string or integer keys")
+        raise TypeError(
+            "feature_cache must be a dictionary with string or integer keys"
+        )
     return cast(FeatureCache, value)
 
 
@@ -287,8 +293,7 @@ def _tracker_object_ids(value: object) -> list[TrackerObjectId]:
 def _int_keyed_object_dict(value: object, *, name: str) -> dict[int, object]:
     source = _mapping_view(value, name=name)
     return {
-        _integer_value(key, name=f"{name} keys"): item
-        for key, item in source.items()
+        _integer_value(key, name=f"{name} keys"): item for key, item in source.items()
     }
 
 
@@ -378,9 +383,7 @@ def _mlx_to(data: Any, *args: Any, **kwargs: Any) -> Any:
     return data.astype(dtype) if dtype is not None else data
 
 
-def _array_to_numpy(
-    value: object, *, dtype: DTypeLike | None = None
-) -> NumpyArray:
+def _array_to_numpy(value: object, *, dtype: DTypeLike | None = None) -> NumpyArray:
     return cast(NumpyArray, to_numpy(value, dtype=dtype, copy=False))
 
 
@@ -2084,7 +2087,9 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
     ) -> dict[int, object]:
         del is_inference
         if not isinstance(input, BatchedDatapoint):
-            raise TypeError("Sam3MultiplexTracking.forward requires a BatchedDatapoint.")
+            raise TypeError(
+                "Sam3MultiplexTracking.forward requires a BatchedDatapoint."
+            )
         if input.raw_images is None:
             raise ValueError("Sam3MultiplexTracking.forward requires input.raw_images.")
         if not input.find_metadatas or input.find_metadatas[0] is None:
@@ -2404,7 +2409,10 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
                         "Packed singleton extraction requires pred_masks and "
                         f"object_score_logits for {storage_key} frame {output_frame_idx}."
                     )
-                if _first_axis_size(pred_masks, name="pred_masks") < obj_idx_in_source + 1:
+                if (
+                    _first_axis_size(pred_masks, name="pred_masks")
+                    < obj_idx_in_source + 1
+                ):
                     continue
                 singleton_frame_out: dict[str, object] = {
                     "pred_masks": _copy_first_axis_slice(
@@ -2458,9 +2466,7 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
                         source_frame_out["conditioning_objects"]
                     )
                     singleton_frame_out["conditioning_objects"] = (
-                        {0}
-                        if obj_idx_in_source in conditioning_objects
-                        else set()
+                        {0} if obj_idx_in_source in conditioning_objects else set()
                     )
                 singleton_consolidated_outputs[storage_key][output_frame_idx] = (
                     singleton_frame_out
@@ -2756,9 +2762,7 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
                         "Expected exactly one SAM2 state for obj_id "
                         f"{obj_id}, found {len(tracker_states)}."
                     )
-                if len(
-                    _object_id_sequence(tracker_states[0].get("obj_ids", []))
-                ) > 1:
+                if len(_object_id_sequence(tracker_states[0].get("obj_ids", []))) > 1:
                     self._extract_object_to_singleton_state(
                         inference_state,
                         obj_id,
@@ -3213,8 +3217,7 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
         return [
             state
             for state in tracker_states
-            if requested_obj_ids
-            & set(_object_id_sequence(state.get("obj_ids", [])))
+            if requested_obj_ids & set(_object_id_sequence(state.get("obj_ids", [])))
         ]
 
     def _lookup_existing_obj_idx(

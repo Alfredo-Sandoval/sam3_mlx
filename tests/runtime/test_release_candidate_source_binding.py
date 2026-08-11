@@ -80,5 +80,7 @@ def test_candidate_source_binding_rejects_raw_evidence_from_another_commit(
         mlx_outputs=[],
     )
 
-    with pytest.raises(candidate.SourceBindingError, match="raw evidence source_commit"):
+    with pytest.raises(
+        candidate.SourceBindingError, match="raw evidence source_commit"
+    ):
         candidate.audit_source_binding(receipt_path)

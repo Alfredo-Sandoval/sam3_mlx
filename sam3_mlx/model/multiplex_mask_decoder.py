@@ -281,7 +281,9 @@ class MultiplexMaskDecoder(nn.Module):
         if extra_per_object_embeddings is not None:
             if self.decode_mask_with_shared_tokens:
                 mask_tokens = mx.broadcast_to(
-                    _array_methods(cast(WeightedModule, self.mask_tokens).weight).reshape(
+                    _array_methods(
+                        cast(WeightedModule, self.mask_tokens).weight
+                    ).reshape(
                         1,
                         self.multiplex_count,
                         1,
@@ -296,7 +298,9 @@ class MultiplexMaskDecoder(nn.Module):
                 )
             else:
                 mask_tokens = mx.broadcast_to(
-                    _array_methods(cast(WeightedModule, self.mask_tokens).weight).reshape(
+                    _array_methods(
+                        cast(WeightedModule, self.mask_tokens).weight
+                    ).reshape(
                         1,
                         self.multiplex_count,
                         self.num_mask_output_per_object,
@@ -353,9 +357,7 @@ class MultiplexMaskDecoder(nn.Module):
                 f"{hs.shape=}, {start=}, {self.num_mask_tokens=}"
             )
 
-        src = _array_methods(
-            _array_methods(src).transpose(0, 2, 1)
-        ).reshape(b, c, h, w)
+        src = _array_methods(_array_methods(src).transpose(0, 2, 1)).reshape(b, c, h, w)
         upscaled_embedding = self._upscale(src, high_res_features)
 
         if self.decode_mask_with_shared_tokens:
@@ -389,10 +391,9 @@ class MultiplexMaskDecoder(nn.Module):
             hyper_in = mx.stack(hyper_in_list, axis=2)
 
         b, c, h, w = upscaled_embedding.shape
-        masks = (
-            _array_methods(hyper_in).reshape(b, -1, c)
-            @ _array_methods(upscaled_embedding).reshape(b, c, h * w)
-        )
+        masks = _array_methods(hyper_in).reshape(b, -1, c) @ _array_methods(
+            upscaled_embedding
+        ).reshape(b, c, h * w)
         masks = _array_methods(masks).reshape(
             b,
             self.multiplex_count,
@@ -409,13 +410,17 @@ class MultiplexMaskDecoder(nn.Module):
 
         if self.pred_obj_scores:
             if obj_score_token_out is None:
-                raise ValueError("object score tokens are required for score prediction")
+                raise ValueError(
+                    "object score tokens are required for score prediction"
+                )
             if (
                 self.decode_mask_attribute_with_shared_tokens
                 and not self.decode_mask_with_shared_tokens
             ):
                 object_score_logits = mx.sum(
-                    _array_methods(self.pred_obj_score_head(obj_score_token_out)).reshape(
+                    _array_methods(
+                        self.pred_obj_score_head(obj_score_token_out)
+                    ).reshape(
                         b,
                         self.multiplex_count,
                         self.num_mask_output_per_object,
@@ -458,9 +463,7 @@ class MultiplexMaskDecoder(nn.Module):
         return act2(dc2(upscaled) + feat_s0)
 
     def _get_stability_scores(self, mask_logits: mx.array) -> mx.array:
-        mask_logits = _array_methods(mask_logits).reshape(
-            *mask_logits.shape[:-2], -1
-        )
+        mask_logits = _array_methods(mask_logits).reshape(*mask_logits.shape[:-2], -1)
         stability_delta = self.dynamic_multimask_stability_delta
         area_i = mx.sum(mask_logits > stability_delta, axis=-1).astype(mx.float32)
         area_u = mx.sum(mask_logits > -stability_delta, axis=-1).astype(mx.float32)

@@ -68,7 +68,9 @@ def test_compare_case_matches_permuted_objects_by_mask_iou():
     assert case["status"] == "passed"
     assert case["mask_iou_min"] == 1.0
     assert case["mask_iou_mean"] == 1.0
-    assert [(item["official_index"], item["mlx_index"]) for item in case["matches"]] == [
+    assert [
+        (item["official_index"], item["mlx_index"]) for item in case["matches"]
+    ] == [
         (0, 1),
         (1, 0),
     ]

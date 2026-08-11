@@ -23,9 +23,7 @@ CocoResult = dict[str, object]
 
 
 class _Postprocessor(Protocol):
-    def process_results(
-        self, *args: object, **kwargs: object
-    ) -> Predictions: ...
+    def process_results(self, *args: object, **kwargs: object) -> Predictions: ...
 
 
 class _PredictionFileEvaluator(Protocol):
@@ -169,18 +167,14 @@ class PredictionDumper:
     def reset(self) -> None:
         self.dump: list[CocoResult] = []
 
-    def prepare(
-        self, predictions: Predictions, iou_type: str
-    ) -> list[CocoResult]:
+    def prepare(self, predictions: Predictions, iou_type: str) -> list[CocoResult]:
         if iou_type == "bbox":
             return self.prepare_for_coco_detection(predictions)
         if iou_type == "segm":
             return self.prepare_for_coco_segmentation(predictions)
         raise ValueError(f"Unknown iou type: {iou_type}")
 
-    def prepare_for_coco_detection(
-        self, predictions: Predictions
-    ) -> list[CocoResult]:
+    def prepare_for_coco_detection(self, predictions: Predictions) -> list[CocoResult]:
         coco_results: list[CocoResult] = []
         for original_id, prediction in predictions.items():
             if len(prediction) == 0:

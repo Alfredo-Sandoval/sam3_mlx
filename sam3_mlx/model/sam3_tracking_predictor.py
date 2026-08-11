@@ -54,13 +54,7 @@ from sam3_mlx.model.sam3_tracker_utils import fill_holes_in_mask_scores
 
 
 ArrayInput: TypeAlias = (
-    mx.array
-    | np.ndarray
-    | list[object]
-    | tuple[object, ...]
-    | bool
-    | int
-    | float
+    mx.array | np.ndarray | list[object] | tuple[object, ...] | bool | int | float
 )
 ObjectId: TypeAlias = object
 StorageKey: TypeAlias = Literal["cond_frame_outputs", "non_cond_frame_outputs"]
@@ -175,6 +169,20 @@ def _as_mlx_array(value: ArrayInput, *, dtype: mx.Dtype) -> mx.array:
     return mx.array(value, dtype=dtype)
 
 
+def _positive_integer(value: object, *, name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a positive integer.")
+    if isinstance(value, int):
+        normalized = value
+    elif isinstance(value, np.integer):
+        normalized = value.item()
+    else:
+        raise ValueError(f"{name} must be a positive integer.")
+    if normalized <= 0:
+        raise ValueError(f"{name} must be a positive integer.")
+    return normalized
+
+
 def _eval_tree(*values: object) -> None:
     arrays: list[mx.array] = []
 
@@ -203,9 +211,7 @@ def _copy_output_slice(value: mx.array, obj_slice: slice) -> mx.array: ...
 
 
 @overload
-def _copy_output_slice(
-    value: list[mx.array], obj_slice: slice
-) -> list[mx.array]: ...
+def _copy_output_slice(value: list[mx.array], obj_slice: slice) -> list[mx.array]: ...
 
 
 def _copy_output_slice(
@@ -481,8 +487,9 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
                 "video_height, video_width, and num_frames are required when "
                 "video_path and images are not provided."
             )
-        if int(num_frames) <= 0:
-            raise ValueError("num_frames must be a positive integer.")
+        video_height = _positive_integer(video_height, name="video_height")
+        video_width = _positive_integer(video_width, name="video_width")
+        num_frames = _positive_integer(num_frames, name="num_frames")
         typed_cached_features = _validate_cached_features(cached_features)
 
         inference_state = InferenceState(
@@ -490,9 +497,9 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
             offload_state_to_cpu=False,
             device=self.device,
             storage_device=self.device,
-            video_height=int(video_height),
-            video_width=int(video_width),
-            num_frames=int(num_frames),
+            video_height=video_height,
+            video_width=video_width,
+            num_frames=num_frames,
             point_inputs_per_obj={},
             mask_inputs_per_obj={},
             images=images,
@@ -518,9 +525,7 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         self.clear_all_points_in_video(inference_state)
         return inference_state
 
-    def _obj_id_to_idx(
-        self, inference_state: InferenceState, obj_id: ObjectId
-    ) -> int:
+    def _obj_id_to_idx(self, inference_state: InferenceState, obj_id: ObjectId) -> int:
         """Map a client object id to an MLX object slot."""
         obj_idx = inference_state["obj_id_to_idx"].get(obj_id)
         if obj_idx is not None:
@@ -548,9 +553,7 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         }
         return obj_idx
 
-    def _obj_idx_to_id(
-        self, inference_state: InferenceState, obj_idx: int
-    ) -> ObjectId:
+    def _obj_idx_to_id(self, inference_state: InferenceState, obj_idx: int) -> ObjectId:
         """Map model-side object index to client-side object id."""
         return inference_state["obj_idx_to_id"][obj_idx]
 
@@ -1713,9 +1716,7 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
             for time_idx in range(frame_idx_begin, frame_idx_end + 1):
                 non_cond_outputs.pop(time_idx, None)
 
-    def _suppress_shrinked_masks(
-        self, *args: mx.array, **kwargs: float
-    ) -> mx.array:
+    def _suppress_shrinked_masks(self, *args: mx.array, **kwargs: float) -> mx.array:
         pred_masks, new_pred_masks = args[:2]
         shrink_threshold = kwargs.pop("shrink_threshold", 0.3)
         if kwargs:

@@ -123,9 +123,7 @@ def test_checkpoint_audit_reports_loaded_missing_extra_and_shape_mismatch():
 
 
 def test_generated_checkpoint_allowlist_is_exact():
-    assert _is_generated_checkpoint_key(
-        "backbone.language_backbone.encoder.attn_mask"
-    )
+    assert _is_generated_checkpoint_key("backbone.language_backbone.encoder.attn_mask")
     assert not _is_generated_checkpoint_key("detector.attn_mask")
 
 

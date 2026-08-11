@@ -113,7 +113,10 @@ def test_async_image_frame_loader_close_stops_background_thread(tmp_path):
 
 
 def test_selected_frame_image_folder_uses_bounded_lazy_host_cache(tmp_path):
-    from sam3_mlx.model.io_utils import LazyImageFolderFrames, load_resource_as_video_frames
+    from sam3_mlx.model.io_utils import (
+        LazyImageFolderFrames,
+        load_resource_as_video_frames,
+    )
 
     for index in range(12):
         Image.new("RGB", (6, 4), (index, 0, 0)).save(tmp_path / f"{index:02d}.jpg")
@@ -139,14 +142,11 @@ def test_selected_frame_image_folder_uses_bounded_lazy_host_cache(tmp_path):
         frames[0]
 
 
-def test_selected_frame_video_file_uses_bounded_indexed_decoder(
-    tmp_path, monkeypatch
-):
+def test_selected_frame_video_file_uses_bounded_indexed_decoder(tmp_path, monkeypatch):
     from sam3_mlx.model.io_utils import LazyVideoFileFrames
 
     decoded = [
-        np.full((3, 4, 3), fill_value=index, dtype=np.uint8)
-        for index in range(12)
+        np.full((3, 4, 3), fill_value=index, dtype=np.uint8) for index in range(12)
     ]
 
     class _Capture:

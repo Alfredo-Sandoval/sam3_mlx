@@ -232,7 +232,11 @@ def _require_multiplex_controller(tracker: object) -> _MultiplexControllerView:
         controller, "allowed_bucket_capacity", None
     )
     training: object = getattr(controller, "training", None)
-    if not isinstance(allowed_bucket_capacity, int) or not isinstance(training, bool):
+    if (
+        isinstance(allowed_bucket_capacity, bool)
+        or not isinstance(allowed_bucket_capacity, int)
+        or not isinstance(training, bool)
+    ):
         raise TypeError(
             "multiplex trackers must expose a controller with integer "
             "allowed_bucket_capacity and boolean training attributes"
@@ -241,15 +245,14 @@ def _require_multiplex_controller(tracker: object) -> _MultiplexControllerView:
 
 
 def _is_bucket_state(value: object) -> TypeGuard[_BucketStateView]:
-    return isinstance(getattr(value, "num_buckets", None), int)
+    num_buckets: object = getattr(value, "num_buckets", None)
+    return not isinstance(num_buckets, bool) and isinstance(num_buckets, int)
 
 
 def _require_grounding_call(detector: object, method_name: str) -> _GroundingCall:
     method: object = getattr(detector, method_name, None)
     if not callable(method):
-        raise_unsupported_multiplex_runtime(
-            f"Sam3MultiplexBase detector.{method_name}"
-        )
+        raise_unsupported_multiplex_runtime(f"Sam3MultiplexBase detector.{method_name}")
     return cast(_GroundingCall, method)
 
 
@@ -286,6 +289,8 @@ def _optional_int_attribute(target: object, name: str) -> int | None:
     value: object = getattr(target, name, None)
     if value is None:
         return None
+    if isinstance(value, bool):
+        raise TypeError(f"{name} must be an integer when provided")
     if isinstance(value, int):
         return value
     if isinstance(value, np.integer):
@@ -374,9 +379,7 @@ def text_outputs_for_batch(
     return text_outputs
 
 
-def _array_to_numpy(
-    value: object, *, dtype: DTypeLike | None = None
-) -> NumpyArray:
+def _array_to_numpy(value: object, *, dtype: DTypeLike | None = None) -> NumpyArray:
     return cast(NumpyArray, to_numpy(value, dtype=dtype, copy=False))
 
 
@@ -417,9 +420,10 @@ def _copy_metadata_value(value: MetadataValue) -> MetadataValue:
         return cast(MetadataValue, copied)
     if isinstance(value, dict):
         source_dict = cast(dict[object, object], value)
-        return cast(MetadataValue, {
-            key: _copy_metadata_value(item) for key, item in source_dict.items()
-        })
+        return cast(
+            MetadataValue,
+            {key: _copy_metadata_value(item) for key, item in source_dict.items()},
+        )
     if isinstance(value, list):
         return cast(
             MetadataValue,
@@ -429,8 +433,7 @@ def _copy_metadata_value(value: MetadataValue) -> MetadataValue:
         return cast(
             MetadataValue,
             tuple(
-                _copy_metadata_value(item)
-                for item in cast(tuple[object, ...], value)
+                _copy_metadata_value(item) for item in cast(tuple[object, ...], value)
             ),
         )
     if isinstance(value, set):
@@ -751,9 +754,7 @@ class Sam3MultiplexTrackerPredictor(nn.Module):
         del args, kwargs
         raise_unsupported_multiplex_runtime("Sam3MultiplexTrackerPredictor.forward")
 
-    def add_output_per_object(
-        self, *args: object, **kwargs: object
-    ) -> object | None:
+    def add_output_per_object(self, *args: object, **kwargs: object) -> object | None:
         del args, kwargs
         raise_unsupported_multiplex_runtime(
             "Sam3MultiplexTrackerPredictor.add_output_per_object"
@@ -872,9 +873,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
         self._profile_save_dir = os.getenv("PROFILE_SAVE_DIR", "/tmp/profiling")
         self._profiling_enabled = os.getenv("ENABLE_PROFILING", "0").lower() == "1"
         multiplex_controller = (
-            _require_multiplex_controller(self.tracker)
-            if self.is_multiplex
-            else None
+            _require_multiplex_controller(self.tracker) if self.is_multiplex else None
         )
 
         if max_num_objects > 0:
@@ -999,9 +998,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
                 self._count_buckets_in_states(tracker_states_local)
             )
 
-    def _count_buckets_in_states(
-        self, tracker_states_local: Sequence[object]
-    ) -> int:
+    def _count_buckets_in_states(self, tracker_states_local: Sequence[object]) -> int:
         """Count dynamic multiplex buckets across local tracker states."""
         if not self.is_multiplex:
             return 0
@@ -2104,9 +2101,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
         # Match the official no-tracklet image-only startup path: image prompt
         # outputs are thresholded, not reduced by the video object limit, and
         # assigned object IDs after the detector keep-mask true-first partition.
-        keep_np = cast(
-            BoolArray, to_numpy(keep, dtype=bool, copy=False)
-        ).reshape(-1)
+        keep_np = cast(BoolArray, to_numpy(keep, dtype=bool, copy=False)).reshape(-1)
         detector_keep_np = cast(
             BoolArray,
             to_numpy(detector_keep, dtype=bool, copy=False),
@@ -3025,9 +3020,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
         det_boxes_bbox_iou = mx.take(det_boxes.astype(mx.float32), det_idx_mx, axis=0)
         det_scores_bbox_iou = mx.take(det_scores, det_idx_mx, axis=0)
         sam2_mask = mx.take(tracker_masks.astype(mx.float32), tracker_idx_mx, axis=0)
-        sam2_box_pixels = _reshape(
-            mask_to_box((sam2_mask > 0)[:, None, :, :]), -1, 4
-        )
+        sam2_box_pixels = _reshape(mask_to_box((sam2_mask > 0)[:, None, :, :]), -1, 4)
         mask_height, mask_width = sam2_mask.shape[-2:]
         sam2_box_normalized = sam2_box_pixels.astype(mx.float32) / mx.array(
             [mask_width, mask_height, mask_width, mask_height],
@@ -3039,9 +3032,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
             det_boxes_bbox_iou,
             sam2_box_normalized,
         )
-        iou_np = cast(
-            FloatArray, _array_to_numpy(iou, dtype=np.float32).reshape(-1)
-        )
+        iou_np = cast(FloatArray, _array_to_numpy(iou, dtype=np.float32).reshape(-1))
         score_np = cast(
             FloatArray,
             _array_to_numpy(det_scores_bbox_iou, dtype=np.float32).reshape(-1),
@@ -3092,8 +3083,8 @@ class Sam3MultiplexBase(Sam3VideoBase):
         hotstart_to_suppress = None
         hotstart_gpu_metadata_new = None
         warm_up_complete: object = getattr(self, "_warm_up_complete", None)
-        hotstart_planning_enabled = (
-            not hasattr(self, "_warm_up_complete") or bool(warm_up_complete)
+        hotstart_planning_enabled = not hasattr(self, "_warm_up_complete") or bool(
+            warm_up_complete
         )
         if self.is_multiplex and hotstart_planning_enabled:
             (
@@ -3431,9 +3422,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
             else:
                 sam2_state = _init_sam2_state(copy_backbone_out=True)
                 tracker_states_local.append(sam2_state)
-        elif tracker_states_local and _tracker_flag(
-            self.tracker, "per_obj_inference"
-        ):
+        elif tracker_states_local and _tracker_flag(self.tracker, "per_obj_inference"):
             sam2_state = tracker_states_local[0]
         else:
             sam2_state = _init_sam2_state(copy_backbone_out=bool(prev_sam2_state))
@@ -3501,7 +3490,8 @@ class Sam3MultiplexBase(Sam3VideoBase):
         obj_ids: object,
     ) -> None:
         if isinstance(obj_ids, set):
-            obj_ids_np = _int_array(list(cast(set[object], obj_ids))).reshape(-1)
+            set_values: list[object] = [value for value in cast(set[object], obj_ids)]
+            obj_ids_np = np.sort(_int_array(set_values)).reshape(-1)
         else:
             obj_ids_np = _int_array(obj_ids).reshape(-1)
         if obj_ids_np.size == 0:
@@ -3520,9 +3510,9 @@ class Sam3MultiplexBase(Sam3VideoBase):
                 )
             elif remove_object_value is not None:
                 remove_object = cast(_RemoveObjectCall, remove_object_value)
-                new_obj_ids = _int_array(
-                    sam2_state.get("obj_ids", [])
-                ).reshape(-1).tolist()
+                new_obj_ids = (
+                    _int_array(sam2_state.get("obj_ids", [])).reshape(-1).tolist()
+                )
                 for obj_id in obj_ids_np.tolist():
                     new_obj_ids, _ = remove_object(
                         sam2_state,
@@ -3647,8 +3637,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
             )
 
         expected_num_objects = sum(
-            len(_tracker_state_object_ids(state))
-            for state in sam2_inference_states
+            len(_tracker_state_object_ids(state)) for state in sam2_inference_states
         )
         if low_res_masks_mx.shape[0] != expected_num_objects:
             raise ValueError(
@@ -3765,9 +3754,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
                 storage_outputs_value = output_dict.get(storage_key, {})
                 if not isinstance(storage_outputs_value, Mapping):
                     raise TypeError(f"output_dict {storage_key} must be a mapping")
-                storage_outputs = cast(
-                    Mapping[object, object], storage_outputs_value
-                )
+                storage_outputs = cast(Mapping[object, object], storage_outputs_value)
                 if frame_idx not in storage_outputs:
                     continue
                 current_out_value = storage_outputs[frame_idx]
@@ -3804,9 +3791,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
         current_out: dict[str, object],
         local_object_score_logits: TrackerArray,
     ) -> None:
-        no_obj_ptr_linear: object = getattr(
-            self.tracker, "no_obj_ptr_linear", None
-        )
+        no_obj_ptr_linear: object = getattr(self.tracker, "no_obj_ptr_linear", None)
         if not callable(no_obj_ptr_linear):
             raise_unsupported_multiplex_runtime(
                 "Sam3MultiplexBase._tracker_update_memories(no_obj_ptr_linear)"
@@ -3884,9 +3869,9 @@ class Sam3MultiplexBase(Sam3VideoBase):
                 f"{newly_suppressed.shape[0]} logits for "
                 f"{existing_pointers.shape[0]} pointers."
             )
-        replacement_pointers_value: object = cast(
-            _MlxArrayCall, no_obj_ptr_linear
-        )(existing_pointers)
+        replacement_pointers_value: object = cast(_MlxArrayCall, no_obj_ptr_linear)(
+            existing_pointers
+        )
         if not _is_mlx_array(replacement_pointers_value):
             raise TypeError("tracker.no_obj_ptr_linear must return an MLX array")
         replacement_pointers = replacement_pointers_value
@@ -4011,7 +3996,9 @@ class Sam3MultiplexBase(Sam3VideoBase):
             )
             if not isinstance(last_occluded_by_id_value, Mapping):
                 raise TypeError("obj_id_to_last_occluded must be a mapping")
-            last_occluded_by_id = cast(Mapping[object, object], last_occluded_by_id_value)
+            last_occluded_by_id = cast(
+                Mapping[object, object], last_occluded_by_id_value
+            )
             last_occluded_np = np.array(
                 [
                     _int_scalar(last_occluded_by_id.get(int(obj_id), -1))
@@ -4832,14 +4819,10 @@ class Sam3MultiplexPredictorWrapper(Sam3MultiplexTrackerPredictor):
         del args, kwargs
         raise_unsupported_multiplex_runtime("Sam3MultiplexPredictorWrapper.forward")
 
-    def add_output_per_object(
-        self, *args: object, **kwargs: object
-    ) -> object | None:
+    def add_output_per_object(self, *args: object, **kwargs: object) -> object | None:
         if self.per_obj_inference:
             return None
-        method: object = getattr(
-            self._wrapped_model(), "_add_output_per_object", None
-        )
+        method: object = getattr(self._wrapped_model(), "_add_output_per_object", None)
         if callable(method):
             return cast(_ArbitraryCall, method)(*args, **kwargs)
         raise_unsupported_multiplex_runtime(

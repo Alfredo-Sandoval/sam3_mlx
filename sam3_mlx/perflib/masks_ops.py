@@ -6,53 +6,54 @@ overlaps on MLX until the caller explicitly exports results.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, TypeAlias, TypeGuard, cast, overload
 
 import numpy as np
+import numpy.typing as npt
+
+if TYPE_CHECKING:
+    import mlx.core as mx
 
 
-def _is_mlx_array(value: Any) -> bool:
+BoolArray = npt.NDArray[np.bool_]
+FloatArray = npt.NDArray[np.float32]
+if TYPE_CHECKING:
+    MaskResult: TypeAlias = FloatArray | mx.array
+else:
+    MaskResult: TypeAlias = object
+
+
+def _is_mlx_array(value: object) -> TypeGuard["mx.array"]:
     return value.__class__.__module__.startswith("mlx.")
 
 
-def _mlx():
-    import mlx.core as mx
-
-    return mx
-
-
-def _to_numpy(value) -> np.ndarray:
+def _to_numpy(value: object) -> npt.NDArray[np.generic]:
     if _is_mlx_array(value):
         from sam3_mlx.mlx_runtime import to_numpy
 
-        return to_numpy(value, copy=False)
-    return np.asarray(value)
+        return cast(npt.NDArray[np.generic], to_numpy(value, copy=False))
+    return cast(npt.NDArray[np.generic], np.asarray(value))
 
 
-def _from_numpy(value: np.ndarray, like):
-    if _is_mlx_array(like):
-        import mlx.core as mx
+def _as_mlx_array(value: object) -> "mx.array":
+    import mlx.core as mx
 
-        return mx.array(value)
-    return value
-
-
-def _as_mlx_array(value: Any):
-    mx = _mlx()
     if _is_mlx_array(value):
         return value
-    return mx.array(value)
+    return mx.array(cast(npt.NDArray[np.generic], value))
 
 
-def _masks_to_boxes_mlx(masks):
-    mx = _mlx()
+def _masks_to_boxes_mlx(masks: "mx.array") -> "mx.array":
+    import mlx.core as mx
+
     if masks.ndim != 3:
         raise ValueError(f"masks must have shape (N, H, W), got {masks.shape}.")
     if masks.size == 0:
         return mx.zeros((0, 4), dtype=mx.float32)
 
     _, height, width = masks.shape
-    mask = masks != 0
+    # MLX comparisons are array-valued here; its stub also models scalar bool.
+    mask = cast("mx.array", masks != 0)
     x = mx.arange(width, dtype=mx.float32)[None, :]
     y = mx.arange(height, dtype=mx.float32)[None, :]
     has_x = mx.any(mask, axis=1)
@@ -65,7 +66,7 @@ def _masks_to_boxes_mlx(masks):
     return mx.stack([x_min, y_min, x_max, y_max], axis=1).astype(mx.float32)
 
 
-def masks_to_boxes(masks, obj_ids: list[int]):
+def masks_to_boxes(masks: object, obj_ids: list[int]) -> MaskResult:
     """Compute upstream-style inclusive ``xyxy`` boxes for ``(N, H, W)`` masks."""
     if _is_mlx_array(masks):
         if masks.ndim != 3:
@@ -81,7 +82,7 @@ def masks_to_boxes(masks, obj_ids: list[int]):
         raise ValueError("masks and obj_ids must have the same length.")
 
     if masks_np.size == 0:
-        return _from_numpy(np.zeros((0, 4), dtype=np.float32), masks)
+        return np.zeros((0, 4), dtype=np.float32)
 
     num_masks, height, width = masks_np.shape
     y = np.arange(height, dtype=np.int64).reshape(1, height)
@@ -104,12 +105,12 @@ def masks_to_boxes(masks, obj_ids: list[int]):
     ).astype(np.float32, copy=False)
     if boxes.shape != (num_masks, 4):
         raise AssertionError(f"unexpected boxes shape {boxes.shape}")
-    return _from_numpy(boxes, masks)
+    return boxes
 
 
 def _ensure_numpy_bool_masks(
-    pred_masks, gt_masks, name: str
-) -> tuple[np.ndarray, np.ndarray]:
+    pred_masks: object, gt_masks: object, name: str
+) -> tuple[BoolArray, BoolArray]:
     pred = _to_numpy(pred_masks)
     gt = _to_numpy(gt_masks)
     if pred.ndim != 3 or gt.ndim != 3:
@@ -118,11 +119,14 @@ def _ensure_numpy_bool_masks(
         raise ValueError("pred_masks and gt_masks must have matching spatial shapes.")
     if pred.dtype != np.bool_ or gt.dtype != np.bool_:
         raise TypeError(f"{name} expects boolean masks.")
-    return pred, gt
+    return cast(BoolArray, pred), cast(BoolArray, gt)
 
 
-def _ensure_mlx_bool_masks(pred_masks, gt_masks, name: str):
-    mx = _mlx()
+def _ensure_mlx_bool_masks(
+    pred_masks: object, gt_masks: object, name: str
+) -> tuple["mx.array", "mx.array"]:
+    import mlx.core as mx
+
     pred = _as_mlx_array(pred_masks)
     gt = _as_mlx_array(gt_masks)
     if pred.ndim != 3 or gt.ndim != 3:
@@ -134,13 +138,16 @@ def _ensure_mlx_bool_masks(pred_masks, gt_masks, name: str):
     return pred, gt
 
 
-def _flatten_mlx_masks(masks):
+def _flatten_mlx_masks(masks: "mx.array") -> "mx.array":
+    import mlx.core as mx
+
     spatial_size = masks.shape[1] * masks.shape[2]
-    return masks.reshape(masks.shape[0], spatial_size).astype(_mlx().float32)
+    return mx.reshape(masks, (masks.shape[0], spatial_size)).astype(mx.float32)
 
 
-def _mask_iou_mlx(pred, gt):
-    mx = _mlx()
+def _mask_iou_mlx(pred: "mx.array", gt: "mx.array") -> "mx.array":
+    import mlx.core as mx
+
     pred_flat = _flatten_mlx_masks(pred)
     gt_flat = _flatten_mlx_masks(gt)
     intersection = pred_flat @ gt_flat.T
@@ -150,8 +157,9 @@ def _mask_iou_mlx(pred, gt):
     return intersection / mx.maximum(union, 1.0)
 
 
-def _mask_iom_mlx(pred, gt):
-    mx = _mlx()
+def _mask_iom_mlx(pred: "mx.array", gt: "mx.array") -> "mx.array":
+    import mlx.core as mx
+
     pred_flat = _flatten_mlx_masks(pred)
     gt_flat = _flatten_mlx_masks(gt)
     intersection = pred_flat @ gt_flat.T
@@ -162,7 +170,19 @@ def _mask_iom_mlx(pred, gt):
     return intersection / mx.maximum(min_area, 1.0)
 
 
-def mask_iou(pred_masks, gt_masks):
+@overload
+def mask_iou(pred_masks: "mx.array", gt_masks: object) -> "mx.array": ...
+
+
+@overload
+def mask_iou(pred_masks: object, gt_masks: "mx.array") -> "mx.array": ...
+
+
+@overload
+def mask_iou(pred_masks: object, gt_masks: object) -> MaskResult: ...
+
+
+def mask_iou(pred_masks: object, gt_masks: object) -> MaskResult:
     """Compute boolean mask IoU, preserving NumPy or MLX execution."""
 
     if _is_mlx_array(pred_masks) or _is_mlx_array(gt_masks):
@@ -177,10 +197,22 @@ def mask_iou(pred_masks, gt_masks):
     area_gt = gt_flat.sum(axis=1, dtype=np.float32)
     union = area_pred[:, None] + area_gt[None, :] - intersection
     out = intersection / np.clip(union, 1.0, None)
-    return _from_numpy(out.astype(np.float32, copy=False), pred_masks)
+    return out.astype(np.float32, copy=False)
 
 
-def mask_iom(pred_masks, gt_masks):
+@overload
+def mask_iom(pred_masks: "mx.array", gt_masks: object) -> "mx.array": ...
+
+
+@overload
+def mask_iom(pred_masks: object, gt_masks: "mx.array") -> "mx.array": ...
+
+
+@overload
+def mask_iom(pred_masks: object, gt_masks: object) -> MaskResult: ...
+
+
+def mask_iom(pred_masks: object, gt_masks: object) -> MaskResult:
     """Compute boolean mask IoM, preserving NumPy or MLX execution."""
 
     if _is_mlx_array(pred_masks) or _is_mlx_array(gt_masks):
@@ -196,4 +228,4 @@ def mask_iom(pred_masks, gt_masks):
         gt_flat.sum(axis=1, dtype=np.float32)[None, :],
     )
     out = intersection / np.clip(min_area, 1.0, None)
-    return _from_numpy(out.astype(np.float32, copy=False), pred_masks)
+    return out.astype(np.float32, copy=False)

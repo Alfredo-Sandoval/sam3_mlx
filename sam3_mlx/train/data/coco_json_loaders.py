@@ -140,9 +140,7 @@ def _parse_annotation(value: object) -> CocoAnnotation:
     annotation: CocoAnnotation = {
         "id": _int(item.get("id"), "COCO annotation id"),
         "image_id": _int(item.get("image_id"), "COCO annotation image_id"),
-        "category_id": _int(
-            item.get("category_id"), "COCO annotation category_id"
-        ),
+        "category_id": _int(item.get("category_id"), "COCO annotation category_id"),
         "bbox": _float_list(item.get("bbox"), "COCO annotation bbox"),
     }
     if "segmentation" in item:
