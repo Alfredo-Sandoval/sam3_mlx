@@ -13,9 +13,12 @@ returned as MLX ``int64`` arrays.
 
 from __future__ import annotations
 
-import numpy as np
 import mlx.core as mx
-import mlx.nn as nn
+import numpy as np
+from collections.abc import Mapping, Sequence
+from importlib import import_module
+from typing import Literal, Protocol, cast, overload
+from numpy.typing import DTypeLike, NDArray
 
 
 MLX_MATCHER_BASE_COMMIT = "e85b2531ccc93307a936e08656fb19b2c2f75baf"
@@ -25,17 +28,52 @@ TRAINING_MATCHER_CPU_BOUNDARY = (
 )
 
 
-def _to_numpy(value, dtype=None) -> np.ndarray:
+type NumpyArray = NDArray[np.generic]
+type FloatArray = NDArray[np.float64]
+type IntArray = NDArray[np.int64]
+type BoolArray = NDArray[np.bool_]
+type MatchPair = tuple[mx.array, mx.array]
+type MatchTriple = tuple[mx.array, mx.array, mx.array | None]
+type MatchResult = MatchPair | MatchTriple
+
+
+class _ForwardCall(Protocol):
+    def __call__(self, *args: object, **kwargs: object) -> MatchResult: ...
+
+
+class _MlxEval(Protocol):
+    def __call__(self, *values: object) -> None: ...
+
+
+_Module = cast(type[object], getattr(import_module("mlx.nn"), "Module"))
+
+
+@overload
+def _to_numpy(value: object, dtype: None = None) -> FloatArray: ...
+
+
+@overload
+def _to_numpy(value: object, dtype: type[np.int64]) -> IntArray: ...
+
+
+@overload
+def _to_numpy(value: object, dtype: type[bool]) -> BoolArray: ...
+
+
+def _to_numpy(value: object, dtype: DTypeLike | None = None) -> NumpyArray:
     if isinstance(value, np.ndarray):
-        array = value
+        array = cast(NumpyArray, value)
     else:
         if isinstance(value, mx.array):
-            mx.eval(value)
-        array = np.asarray(value)
-    return array.astype(dtype, copy=False) if dtype is not None else array
+            cast(_MlxEval, getattr(mx, "eval"))(value)
+        array = cast(NumpyArray, np.asarray(value))
+    return cast(
+        NumpyArray,
+        array.astype(dtype, copy=False) if dtype is not None else array,
+    )
 
 
-def _to_mx_int(values) -> mx.array:
+def _to_mx_int(values: object) -> mx.array:
     return mx.array(np.asarray(values, dtype=np.int64), dtype=mx.int64)
 
 
@@ -43,32 +81,37 @@ def _empty_int() -> mx.array:
     return mx.array([], dtype=mx.int64)
 
 
-def _concat_int(parts) -> np.ndarray:
-    parts = [np.asarray(part, dtype=np.int64).reshape(-1) for part in parts]
-    parts = [part for part in parts if part.size > 0]
-    if not parts:
+def _concat_int(parts: Sequence[object]) -> IntArray:
+    arrays = [
+        cast(IntArray, np.asarray(part, dtype=np.int64).reshape(-1)) for part in parts
+    ]
+    arrays = [part for part in arrays if part.size > 0]
+    if not arrays:
         return np.array([], dtype=np.int64)
-    return np.concatenate(parts).astype(np.int64, copy=False)
+    return np.concatenate(arrays).astype(np.int64, copy=False)
 
 
-def _sigmoid_np(x: np.ndarray) -> np.ndarray:
+def _sigmoid_np(x: FloatArray) -> FloatArray:
     x = np.asarray(x, dtype=np.float64)
-    return np.where(x >= 0, 1 / (1 + np.exp(-x)), np.exp(x) / (1 + np.exp(x)))
+    return cast(
+        FloatArray,
+        np.where(x >= 0, 1 / (1 + np.exp(-x)), np.exp(x) / (1 + np.exp(x))),
+    )
 
 
-def _softmax_np(x: np.ndarray, axis: int = -1) -> np.ndarray:
+def _softmax_np(x: FloatArray, axis: int = -1) -> FloatArray:
     x = np.asarray(x, dtype=np.float64)
     shifted = x - np.max(x, axis=axis, keepdims=True)
     exp = np.exp(shifted)
     return exp / np.sum(exp, axis=axis, keepdims=True)
 
 
-def _logsigmoid_np(x: np.ndarray) -> np.ndarray:
+def _logsigmoid_np(x: FloatArray) -> FloatArray:
     x = np.asarray(x, dtype=np.float64)
     return -np.logaddexp(0, -x)
 
 
-def _box_cxcywh_to_xyxy_np(boxes: np.ndarray) -> np.ndarray:
+def _box_cxcywh_to_xyxy_np(boxes: FloatArray) -> FloatArray:
     boxes = np.asarray(boxes, dtype=np.float64)
     x_c, y_c, w, h = np.moveaxis(boxes, -1, 0)
     return np.stack(
@@ -77,15 +120,15 @@ def _box_cxcywh_to_xyxy_np(boxes: np.ndarray) -> np.ndarray:
     )
 
 
-def _box_area_np(boxes: np.ndarray) -> np.ndarray:
+def _box_area_np(boxes: FloatArray) -> FloatArray:
     return np.clip(boxes[..., 2] - boxes[..., 0], 0, None) * np.clip(
         boxes[..., 3] - boxes[..., 1], 0, None
     )
 
 
 def _box_iou_np(
-    boxes1: np.ndarray, boxes2: np.ndarray
-) -> tuple[np.ndarray, np.ndarray]:
+    boxes1: FloatArray, boxes2: FloatArray
+) -> tuple[FloatArray, FloatArray]:
     area1 = _box_area_np(boxes1)
     area2 = _box_area_np(boxes2)
     lt = np.maximum(boxes1[..., :, None, :2], boxes2[..., None, :, :2])
@@ -96,7 +139,7 @@ def _box_iou_np(
     return inter / np.maximum(union, 1e-12), union
 
 
-def _generalized_box_iou_np(boxes1: np.ndarray, boxes2: np.ndarray) -> np.ndarray:
+def _generalized_box_iou_np(boxes1: FloatArray, boxes2: FloatArray) -> FloatArray:
     iou, union = _box_iou_np(boxes1, boxes2)
     lt = np.minimum(boxes1[..., :, None, :2], boxes2[..., None, :, :2])
     rb = np.maximum(boxes1[..., :, None, 2:], boxes2[..., None, :, 2:])
@@ -105,11 +148,11 @@ def _generalized_box_iou_np(boxes1: np.ndarray, boxes2: np.ndarray) -> np.ndarra
     return iou - (area - union) / np.maximum(area, 1e-12)
 
 
-def _l1_cost_np(boxes1: np.ndarray, boxes2: np.ndarray) -> np.ndarray:
+def _l1_cost_np(boxes1: FloatArray, boxes2: FloatArray) -> FloatArray:
     return np.abs(boxes1[..., :, None, :] - boxes2[..., None, :, :]).sum(axis=-1)
 
 
-def _hungarian_rows(cost: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _hungarian_rows(cost: FloatArray) -> tuple[IntArray, IntArray]:
     """Assign every row to a unique column for a matrix with rows <= columns."""
 
     n_rows, n_cols = cost.shape
@@ -164,7 +207,7 @@ def _hungarian_rows(cost: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return np.arange(n_rows, dtype=np.int64), row_to_col
 
 
-def _linear_sum_assignment(cost: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _linear_sum_assignment(cost: FloatArray) -> tuple[IntArray, IntArray]:
     cost = np.asarray(cost, dtype=np.float64)
     if cost.ndim != 2:
         raise ValueError(f"cost must be a 2-D matrix, got shape {cost.shape}")
@@ -181,12 +224,30 @@ def _linear_sum_assignment(cost: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return row_ind[order].astype(np.int64), col_ind[order].astype(np.int64)
 
 
+@overload
 def _do_matching(
-    cost,
+    cost: object,
+    repeats: int = 1,
+    return_tgt_indices: Literal[False] = False,
+    do_filtering: bool = False,
+) -> IntArray: ...
+
+
+@overload
+def _do_matching(
+    cost: object,
+    repeats: int,
+    return_tgt_indices: Literal[True],
+    do_filtering: bool = False,
+) -> tuple[IntArray, IntArray]: ...
+
+
+def _do_matching(
+    cost: object,
     repeats: int = 1,
     return_tgt_indices: bool = False,
     do_filtering: bool = False,
-):
+) -> IntArray | tuple[IntArray, IntArray]:
     cost = np.asarray(cost, dtype=np.float64)
     if cost.ndim != 2:
         raise ValueError(f"cost must be a 2-D matrix, got shape {cost.shape}")
@@ -207,38 +268,71 @@ def _do_matching(
     return src_idx[order].astype(np.int64)
 
 
-def _num_boxes_np(batched_targets) -> np.ndarray:
-    return _to_numpy(batched_targets["num_boxes"], dtype=np.int64).reshape(-1)
+def _num_boxes_np(batched_targets: Mapping[str, object]) -> IntArray:
+    return cast(
+        IntArray,
+        _to_numpy(batched_targets["num_boxes"], dtype=np.int64).reshape(-1),
+    )
 
 
-def _split_flat_costs(cost: np.ndarray, num_boxes: np.ndarray) -> list[np.ndarray]:
+def _split_flat_costs(cost: FloatArray, num_boxes: IntArray) -> list[FloatArray]:
     split_at = np.cumsum(num_boxes)[:-1]
-    return [chunk[i] for i, chunk in enumerate(np.split(cost, split_at, axis=-1))]
+    return [
+        cast(FloatArray, chunk[i])
+        for i, chunk in enumerate(np.split(cost, split_at, axis=-1))
+    ]
 
 
-def _batch_indices(indices, batch_ids=None) -> np.ndarray:
-    parts = []
+def _batch_indices(indices: Sequence[object], batch_ids: object = None) -> IntArray:
+    parts: list[IntArray] = []
+    batch_array = (
+        None
+        if batch_ids is None
+        else cast(IntArray, np.asarray(batch_ids, dtype=np.int64).reshape(-1))
+    )
     for i, src in enumerate(indices):
-        src = np.asarray(src, dtype=np.int64).reshape(-1)
+        src = cast(IntArray, np.asarray(src, dtype=np.int64).reshape(-1))
         if src.size == 0:
             continue
-        batch_id = i if batch_ids is None else int(batch_ids[i])
+        batch_id = i if batch_array is None else int(batch_array[i])
         parts.append(np.full(src.shape, batch_id, dtype=np.int64))
     return _concat_int(parts)
 
 
-def _offset_target_indices(tgt_indices, num_boxes: np.ndarray) -> np.ndarray:
-    parts = []
+def _offset_target_indices(
+    tgt_indices: Sequence[object], num_boxes: IntArray
+) -> IntArray:
+    parts: list[IntArray] = []
     offset = 0
     for indices, count in zip(tgt_indices, num_boxes):
-        indices = np.asarray(indices, dtype=np.int64).reshape(-1)
+        indices = cast(IntArray, np.asarray(indices, dtype=np.int64).reshape(-1))
         if indices.size > 0:
             parts.append(indices + offset)
         offset += int(count)
     return _concat_int(parts)
 
 
-def _return_indices(indices, tgt_indices=None, batch_ids=None):
+@overload
+def _return_indices(
+    indices: Sequence[object],
+    tgt_indices: None = None,
+    batch_ids: object = None,
+) -> MatchPair: ...
+
+
+@overload
+def _return_indices(
+    indices: Sequence[object],
+    tgt_indices: object,
+    batch_ids: object = None,
+) -> tuple[mx.array, mx.array, mx.array]: ...
+
+
+def _return_indices(
+    indices: Sequence[object],
+    tgt_indices: object = None,
+    batch_ids: object = None,
+) -> MatchPair | tuple[mx.array, mx.array, mx.array]:
     batch_idx = _to_mx_int(_batch_indices(indices, batch_ids=batch_ids))
     src_idx = _to_mx_int(_concat_int(indices))
     if tgt_indices is None:
@@ -246,9 +340,10 @@ def _return_indices(indices, tgt_indices=None, batch_ids=None):
     return batch_idx, src_idx, _to_mx_int(tgt_indices)
 
 
-class _MatcherModule(nn.Module):
-    def __call__(self, *args, **kwargs):
-        return self.forward(*args, **kwargs)
+class _MatcherModule(_Module):
+    def __call__(self, *args: object, **kwargs: object) -> MatchResult:
+        forward = getattr(self, "forward")
+        return cast(_ForwardCall, forward)(*args, **kwargs)
 
 
 class HungarianMatcher(_MatcherModule):
@@ -262,7 +357,7 @@ class HungarianMatcher(_MatcherModule):
         focal_loss: bool = False,
         focal_alpha: float = 0.25,
         focal_gamma: float = 2,
-    ):
+    ) -> None:
         super().__init__()
         if cost_class == 0 and cost_bbox == 0 and cost_giou == 0:
             raise AssertionError("all costs cant be 0")
@@ -273,7 +368,11 @@ class HungarianMatcher(_MatcherModule):
         self.focal_alpha = focal_alpha
         self.focal_gamma = focal_gamma
 
-    def forward(self, outputs, batched_targets):
+    def forward(
+        self,
+        outputs: Mapping[str, object],
+        batched_targets: Mapping[str, object],
+    ) -> MatchPair:
         pred_logits = _to_numpy(outputs["pred_logits"])
         pred_boxes = _to_numpy(outputs["pred_boxes"])
         batch_size, num_queries = pred_logits.shape[:2]
@@ -338,7 +437,7 @@ class BinaryHungarianMatcher(_MatcherModule):
         cost_class: float = 1,
         cost_bbox: float = 1,
         cost_giou: float = 1,
-    ):
+    ) -> None:
         super().__init__()
         if cost_class == 0 and cost_bbox == 0 and cost_giou == 0:
             raise AssertionError("all costs cant be 0")
@@ -346,7 +445,13 @@ class BinaryHungarianMatcher(_MatcherModule):
         self.cost_bbox = cost_bbox
         self.cost_giou = cost_giou
 
-    def forward(self, outputs, batched_targets, repeats=0, repeat_batch=1):
+    def forward(
+        self,
+        outputs: Mapping[str, object],
+        batched_targets: Mapping[str, object],
+        repeats: int = 0,
+        repeat_batch: int = 1,
+    ) -> MatchTriple:
         if repeat_batch != 1:
             raise NotImplementedError("please use BinaryHungarianMatcherV2 instead")
 
@@ -407,7 +512,7 @@ class BinaryFocalHungarianMatcher(_MatcherModule):
         alpha: float = 0.25,
         gamma: float = 2.0,
         stable: bool = False,
-    ):
+    ) -> None:
         super().__init__()
         if cost_class == 0 and cost_bbox == 0 and cost_giou == 0:
             raise AssertionError("all costs cant be 0")
@@ -418,7 +523,13 @@ class BinaryFocalHungarianMatcher(_MatcherModule):
         self.gamma = gamma
         self.stable = stable
 
-    def forward(self, outputs, batched_targets, repeats=1, repeat_batch=1):
+    def forward(
+        self,
+        outputs: Mapping[str, object],
+        batched_targets: Mapping[str, object],
+        repeats: int = 1,
+        repeat_batch: int = 1,
+    ) -> MatchTriple:
         if repeat_batch != 1:
             raise NotImplementedError("please use BinaryHungarianMatcherV2 instead")
 
@@ -474,14 +585,14 @@ class BinaryFocalHungarianMatcher(_MatcherModule):
 
 
 def _binary_focal_cost(
-    out_score: np.ndarray,
-    out_prob: np.ndarray,
+    out_score: FloatArray,
+    out_prob: FloatArray,
     cost_shape: tuple[int, ...],
-    cost_giou: np.ndarray,
+    cost_giou: FloatArray,
     alpha: float,
     gamma: float,
     stable: bool,
-) -> np.ndarray:
+) -> FloatArray:
     if stable:
         rescaled_giou = (-cost_giou + 1) / 2
         prob = np.clip(out_prob[:, None] * rescaled_giou, 1e-8, 1 - 1e-8)
@@ -511,7 +622,7 @@ class BinaryHungarianMatcherV2(_MatcherModule):
         gamma: float = 2.0,
         stable: bool = False,
         remove_samples_with_0_gt: bool = True,
-    ):
+    ) -> None:
         super().__init__()
         if cost_class == 0 and cost_bbox == 0 and cost_giou == 0:
             raise AssertionError("all costs cant be 0")
@@ -526,13 +637,13 @@ class BinaryHungarianMatcherV2(_MatcherModule):
 
     def forward(
         self,
-        outputs,
-        batched_targets,
-        repeats=1,
-        repeat_batch=1,
-        out_is_valid=None,
-        target_is_valid_padded=None,
-    ):
+        outputs: Mapping[str, object],
+        batched_targets: Mapping[str, object],
+        repeats: int = 1,
+        repeat_batch: int = 1,
+        out_is_valid: object = None,
+        target_is_valid_padded: object = None,
+    ) -> MatchTriple:
         pred_logits = _to_numpy(outputs["pred_logits"])
         pred_boxes = _to_numpy(outputs["pred_boxes"])
         _, num_queries = pred_logits.shape[:2]
@@ -655,7 +766,7 @@ class BinaryOneToManyMatcher(_MatcherModule):
         alpha: float = 0.3,
         threshold: float = 0.4,
         topk: int = 6,
-    ):
+    ) -> None:
         super().__init__()
         self.alpha = alpha
         self.threshold = threshold
@@ -663,13 +774,13 @@ class BinaryOneToManyMatcher(_MatcherModule):
 
     def forward(
         self,
-        outputs,
-        batched_targets,
-        repeats=1,
-        repeat_batch=1,
-        out_is_valid=None,
-        target_is_valid_padded=None,
-    ):
+        outputs: Mapping[str, object],
+        batched_targets: Mapping[str, object],
+        repeats: int = 1,
+        repeat_batch: int = 1,
+        out_is_valid: object = None,
+        target_is_valid_padded: object = None,
+    ) -> tuple[mx.array, mx.array, mx.array]:
         if repeats > 1 or repeat_batch > 1:
             raise AssertionError("BinaryOneToManyMatcher expects repeats <= 1.")
 

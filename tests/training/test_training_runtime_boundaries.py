@@ -7,6 +7,7 @@ import pytest
 from sam3_mlx.mlx_runtime import to_numpy
 from sam3_mlx.train import matcher
 from sam3_mlx.train.loss import loss_fns
+from sam3_mlx.train.loss.sam3_loss import DummyLoss, Sam3LossWrapper
 
 
 class _TargetArraysProbe(loss_fns.IABCEMdetr):
@@ -34,6 +35,24 @@ class _OverrideTargetArraysProbe(loss_fns.IABCEMdetr):
         self.override_called = True
         zeros = mx.zeros(src_logits.shape, dtype=mx.float32)
         return zeros, zeros
+
+
+class _ConstantLoss:
+    def __call__(
+        self,
+        *,
+        outputs: object,
+        targets: object,
+        indices: object,
+        num_boxes: mx.array,
+        is_aux: bool,
+    ) -> loss_fns.LossDict:
+        del outputs, targets, indices, num_boxes
+        scale = 2.0 if is_aux else 1.0
+        return {
+            loss_fns.CORE_LOSS_KEY: mx.array(scale, dtype=mx.float32),
+            "loss_probe": mx.array(scale * 3.0, dtype=mx.float32),
+        }
 
 
 def test_segment_miou_keeps_valid_count_branch_on_mlx(
@@ -284,6 +303,49 @@ def test_training_matcher_cpu_boundary_is_named_and_returns_mlx_indices() -> Non
     np.testing.assert_array_equal(to_numpy(batch_idx), np.array([0], dtype=np.int64))
     np.testing.assert_array_equal(to_numpy(src_idx), np.array([1], dtype=np.int64))
     assert tgt_idx is None
+
+
+def test_sam3_loss_wrapper_accumulates_primary_and_auxiliary_outputs() -> None:
+    wrapper = Sam3LossWrapper([_ConstantLoss()])
+    outputs: dict[str, object] = {
+        "indices": (
+            mx.array([0], dtype=mx.int64),
+            mx.array([0], dtype=mx.int64),
+        ),
+        "aux_outputs": [
+            {
+                "indices": (
+                    mx.array([0], dtype=mx.int64),
+                    mx.array([0], dtype=mx.int64),
+                )
+            }
+        ],
+    }
+
+    losses = wrapper.compute_loss(outputs, {"num_boxes": mx.array([1], dtype=mx.int64)})
+
+    np.testing.assert_array_equal(to_numpy(losses[loss_fns.CORE_LOSS_KEY]), 3.0)
+    np.testing.assert_array_equal(to_numpy(losses["loss_probe"]), 3.0)
+    np.testing.assert_array_equal(to_numpy(losses["loss_probe_aux_0"]), 6.0)
+
+
+def test_sam3_loss_wrapper_rejects_malformed_auxiliary_outputs() -> None:
+    wrapper = Sam3LossWrapper([_ConstantLoss()])
+    outputs: dict[str, object] = {
+        "indices": (mx.array([], dtype=mx.int64), mx.array([], dtype=mx.int64)),
+        "aux_outputs": {"indices": ()},
+    }
+
+    with pytest.raises(TypeError, match="aux_outputs must be a list"):
+        wrapper.compute_loss(outputs, {"num_boxes": mx.array([0], dtype=mx.int64)})
+
+
+def test_dummy_loss_accumulate_preserves_existing_core_loss() -> None:
+    dummy = DummyLoss()
+    existing = mx.array(4.0, dtype=mx.float32)
+    losses = {loss_fns.CORE_LOSS_KEY: existing}
+
+    assert dummy.accumulate(losses)[loss_fns.CORE_LOSS_KEY] is existing
 
 
 def test_remaining_training_loss_cpu_boundary_is_documented_by_name() -> None:
