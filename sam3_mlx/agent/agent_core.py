@@ -4,11 +4,19 @@ from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Callable
+from typing import SupportsFloat, cast
 
 from PIL import Image
 
+from sam3_mlx.agent.contracts import (
+    AgentInferenceResult,
+    AgentOutput,
+    GenerateRequest,
+    Message,
+    SegmentService,
+)
 from sam3_mlx.agent.client_llm import send_generate_request
 from sam3_mlx.agent.client_sam3 import call_sam_service
 from sam3_mlx.agent.viz import visualize
@@ -27,25 +35,25 @@ def _read_system_prompt(filename: str) -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
-def _read_json(path: str | Path) -> Any:
+def _read_json(path: str | Path) -> object:
     with Path(path).open("r", encoding="utf-8") as handle:
         return json.load(handle)
 
 
-def _write_json(path: str | Path, value: Any) -> None:
+def _write_json(path: str | Path, value: object) -> None:
     with Path(path).open("w", encoding="utf-8") as handle:
         json.dump(value, handle, indent=4)
 
 
 def _call_segment_service(
-    service: Callable[..., str],
+    service: object,
     *,
     image_path: str,
     text_prompt: str,
     output_folder_path: str,
 ) -> str:
     try:
-        return service(
+        return cast(SegmentService, service)(
             image_path=image_path,
             text_prompt=text_prompt,
             output_folder_path=output_folder_path,
@@ -59,16 +67,85 @@ def _call_segment_service(
         ) from exc
 
 
-def save_debug_messages(messages_list, debug, debug_folder_path, debug_jsonl_path):
+def _json_object(value: object, name: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise TypeError(f"{name} must be a JSON object.")
+    mapping = cast(dict[object, object], value)
+    if not all(isinstance(key, str) for key in mapping):
+        raise TypeError(f"{name} must use string keys.")
+    return cast(dict[str, object], mapping)
+
+
+def _object_list(value: object, name: str) -> list[object]:
+    if not isinstance(value, list):
+        raise TypeError(f"{name} must be a list.")
+    return cast(list[object], value)
+
+
+def _string_value(value: object, name: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string.")
+    return value
+
+
+def _int_value(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer.")
+    return value
+
+
+def _float_rows(value: object, name: str) -> list[list[float]]:
+    rows = _object_list(value, name)
+    result: list[list[float]] = []
+    for index, row in enumerate(rows):
+        values = _object_list(row, f"{name}[{index}]")
+        result.append([float(cast(SupportsFloat, item)) for item in values])
+    return result
+
+
+def _float_list(value: object, name: str) -> list[float]:
+    return [float(cast(SupportsFloat, item)) for item in _object_list(value, name)]
+
+
+def _agent_output(value: object, name: str = "agent output") -> AgentOutput:
+    output = _json_object(value, name)
+    result: AgentOutput = {
+        "orig_img_h": _int_value(output["orig_img_h"], f"{name}.orig_img_h"),
+        "orig_img_w": _int_value(output["orig_img_w"], f"{name}.orig_img_w"),
+        "pred_boxes": _float_rows(output["pred_boxes"], f"{name}.pred_boxes"),
+        "pred_masks": _object_list(output["pred_masks"], f"{name}.pred_masks"),
+        "pred_scores": _float_list(output["pred_scores"], f"{name}.pred_scores"),
+    }
+    if "original_image_path" in output:
+        result["original_image_path"] = _string_value(
+            output["original_image_path"], f"{name}.original_image_path"
+        )
+    if "output_image_path" in output:
+        result["output_image_path"] = _string_value(
+            output["output_image_path"], f"{name}.output_image_path"
+        )
+    return result
+
+
+def save_debug_messages(
+    messages_list: Sequence[Message],
+    debug: bool,
+    debug_folder_path: str | Path | None,
+    debug_jsonl_path: str | Path | None,
+) -> None:
     """Save messages to a debug JSONL-like file if debug is enabled."""
-    if debug and debug_jsonl_path:
+    if debug and debug_jsonl_path and debug_folder_path:
         Path(debug_folder_path).mkdir(parents=True, exist_ok=True)
         with Path(debug_jsonl_path).open("w", encoding="utf-8") as handle:
             for msg in messages_list:
                 handle.write(json.dumps(msg, indent=4) + "\n")
 
 
-def cleanup_debug_files(debug, debug_folder_path, debug_jsonl_path):
+def cleanup_debug_files(
+    debug: bool,
+    debug_folder_path: str | Path | None,
+    debug_jsonl_path: str | Path | None,
+) -> None:
     """Clean up debug files when a run successfully returns."""
     if not (debug and debug_folder_path):
         return
@@ -80,7 +157,7 @@ def cleanup_debug_files(debug, debug_folder_path, debug_jsonl_path):
         debug_folder.rmdir()
 
 
-def count_images(messages):
+def count_images(messages: Sequence[Message]) -> int:
     """Count image content items in a message history."""
     total = 0
     for message in messages:
@@ -88,33 +165,34 @@ def count_images(messages):
             total += sum(
                 1
                 for content_item in message["content"]
-                if isinstance(content_item, dict)
-                and content_item.get("type") == "image"
+                if content_item.get("type") == "image"
             )
     return total
 
 
 def _prune_messages_for_next_round(
-    messages_list,
-    used_text_prompts,
-    latest_sam3_text_prompt,
-    img_path,
-    initial_text_prompt,
-):
+    messages_list: Sequence[Message],
+    used_text_prompts: set[str],
+    latest_sam3_text_prompt: str,
+    img_path: str,
+    initial_text_prompt: str,
+) -> list[Message]:
     """Return the official pruned message subset used between agent rounds."""
     if len(messages_list) >= 10:
         raise AssertionError("There should not be more than 10 messages in history")
 
-    part1 = copy.deepcopy(messages_list[:2])
+    part1 = list(copy.deepcopy(messages_list[:2]))
     part2_start_idx = None
     for idx in range(len(messages_list) - 1, 1, -1):
         msg = messages_list[idx]
         if msg.get("role") != "assistant" or "content" not in msg:
             continue
-        for content in msg["content"]:
+        content_items = msg["content"]
+        if not isinstance(content_items, list):
+            continue
+        for content in content_items:
             if (
-                isinstance(content, dict)
-                and content.get("type") == "text"
+                content.get("type") == "text"
                 and "<tool>" in content.get("text", "")
                 and "segment_phrase" in content.get("text", "")
             ):
@@ -123,7 +201,7 @@ def _prune_messages_for_next_round(
         if part2_start_idx is not None:
             break
 
-    part2 = messages_list[part2_start_idx:] if part2_start_idx is not None else []
+    part2 = list(messages_list[part2_start_idx:]) if part2_start_idx is not None else []
     previously_used = (
         [p for p in used_text_prompts if p != latest_sam3_text_prompt]
         if latest_sam3_text_prompt
@@ -156,11 +234,11 @@ def agent_inference(
     img_path: str,
     initial_text_prompt: str,
     debug: bool = False,
-    send_generate_request=send_generate_request,
-    call_sam_service=call_sam_service,
+    send_generate_request: GenerateRequest = send_generate_request,
+    call_sam_service: object = call_sam_service,
     max_generations: int = 100,
-    output_dir="../../sam3_agent_out",
-):
+    output_dir: str | Path = "../../sam3_agent_out",
+) -> AgentInferenceResult:
     """
     Run the official single-image SAM3 agent loop with MLX-local SAM calls.
 
@@ -169,6 +247,8 @@ def agent_inference(
     injectable so callers can bind a local MLX processor while retaining the
     official tool-call protocol.
     """
+    if isinstance(max_generations, bool):
+        raise TypeError("max_generations must be an integer, not bool.")
     output_root = Path(output_dir)
     sam_output_dir = output_root / "sam_out"
     error_save_dir = output_root / "none_out"
@@ -194,7 +274,7 @@ def agent_inference(
         "system_prompt_iterative_checking.txt"
     )
 
-    messages = [
+    messages: list[Message] = [
         {"role": "system", "content": system_prompt},
         {
             "role": "user",
@@ -226,13 +306,16 @@ def agent_inference(
             .replace(r"}}}", r"}}")
         )
         try:
-            tool_call = json.loads(tool_call_json_str)
+            tool_call = _json_object(
+                json.loads(tool_call_json_str), "generated tool call"
+            )
         except json.JSONDecodeError as exc:
             raise ValueError(
                 f"Invalid JSON in tool call: {tool_call_json_str}"
             ) from exc
 
-        tool_name = tool_call["name"]
+        tool_name = _string_value(tool_call["name"], "tool call name")
+        parameters = _json_object(tool_call["parameters"], "tool call parameters")
         if path_to_latest_output_json == "" and tool_name not in {
             "segment_phrase",
             "report_no_mask",
@@ -242,10 +325,12 @@ def agent_inference(
             )
 
         if tool_name == "segment_phrase":
-            if list(tool_call["parameters"].keys()) != ["text_prompt"]:
+            if list(parameters) != ["text_prompt"]:
                 raise ValueError("segment_phrase expects exactly text_prompt")
 
-            current_text_prompt = tool_call["parameters"]["text_prompt"]
+            current_text_prompt = _string_value(
+                parameters["text_prompt"], "segment_phrase text_prompt"
+            )
             if current_text_prompt in used_text_prompts:
                 duplicate_prompt_message = (
                     f"You have previously used '{current_text_prompt}' as your "
@@ -277,8 +362,13 @@ def agent_inference(
                     text_prompt=current_text_prompt,
                     output_folder_path=str(sam_output_dir),
                 )
-                sam3_outputs = _read_json(path_to_latest_output_json)
-                sam3_output_image_path = sam3_outputs["output_image_path"]
+                sam3_outputs = _agent_output(
+                    _read_json(path_to_latest_output_json), "SAM3 service output"
+                )
+                sam3_output_image_path = _string_value(
+                    sam3_outputs.get("output_image_path"),
+                    "SAM3 service output.output_image_path",
+                )
                 num_masks = len(sam3_outputs["pred_boxes"])
 
                 messages.append(
@@ -328,7 +418,12 @@ def agent_inference(
         elif tool_name == "examine_each_mask":
             if latest_sam3_text_prompt == "":
                 raise AssertionError("examine_each_mask requires a prior SAM3 prompt")
-            if messages[-1]["content"][1]["type"] != "image":
+            latest_content = messages[-1]["content"]
+            if (
+                not isinstance(latest_content, list)
+                or len(latest_content) < 2
+                or latest_content[1]["type"] != "image"
+            ):
                 raise AssertionError("Second content element should be an image")
             messages.pop()
             messages.append(
@@ -348,7 +443,9 @@ def agent_inference(
                 }
             )
 
-            current_outputs = _read_json(path_to_latest_output_json)
+            current_outputs = _agent_output(
+                _read_json(path_to_latest_output_json), "current SAM3 output"
+            )
             num_masks = len(current_outputs["pred_masks"])
             masks_to_keep: list[int] = []
             prompt_safe = latest_sam3_text_prompt.replace("/", "_")
@@ -367,7 +464,7 @@ def agent_inference(
                 image_w_zoomed_in_mask_i.save(image_w_zoomed_in_mask_i_path)
                 image_w_mask_i.save(image_w_mask_i_path)
 
-                iterative_checking_messages = [
+                iterative_checking_messages: list[Message] = [
                     {"role": "system", "content": iterative_checking_system_prompt},
                     {
                         "role": "user",
@@ -427,8 +524,11 @@ def agent_inference(
                         "Expected 'Accept' or 'Reject'."
                     )
 
-            updated_outputs = {
-                "original_image_path": current_outputs["original_image_path"],
+            updated_outputs: AgentOutput = {
+                "original_image_path": _string_value(
+                    current_outputs.get("original_image_path"),
+                    "current SAM3 output.original_image_path",
+                ),
                 "orig_img_h": current_outputs["orig_img_h"],
                 "orig_img_w": current_outputs["orig_img_w"],
                 "pred_boxes": [current_outputs["pred_boxes"][i] for i in masks_to_keep],
@@ -516,21 +616,30 @@ def agent_inference(
             _write_json(path_to_latest_output_json, updated_outputs)
 
         elif tool_name == "select_masks_and_return":
-            current_outputs = _read_json(path_to_latest_output_json)
-            if list(tool_call["parameters"].keys()) != ["final_answer_masks"]:
+            current_outputs = _agent_output(
+                _read_json(path_to_latest_output_json), "current SAM3 output"
+            )
+            if list(parameters) != ["final_answer_masks"]:
                 raise ValueError(
                     "select_masks_and_return expects exactly final_answer_masks"
                 )
             available_masks = set(range(1, len(current_outputs["pred_masks"]) + 1))
+            requested_masks = _object_list(
+                parameters["final_answer_masks"], "final_answer_masks"
+            )
             masks_to_keep = sorted(
                 {
-                    i
-                    for i in tool_call["parameters"]["final_answer_masks"]
-                    if i in available_masks
+                    index
+                    for value in requested_masks
+                    if (index := _int_value(value, "final answer mask index"))
+                    in available_masks
                 }
             )
-            final_outputs = {
-                "original_image_path": current_outputs["original_image_path"],
+            final_outputs: AgentOutput = {
+                "original_image_path": _string_value(
+                    current_outputs.get("original_image_path"),
+                    "current SAM3 output.original_image_path",
+                ),
                 "orig_img_h": current_outputs["orig_img_h"],
                 "orig_img_w": current_outputs["orig_img_w"],
                 "pred_boxes": [
@@ -557,7 +666,7 @@ def agent_inference(
             with Image.open(img_path) as image:
                 width, height = image.size
                 rendered_final_output = image.convert("RGB").copy()
-            final_outputs = {
+            final_outputs: AgentOutput = {
                 "original_image_path": img_path,
                 "orig_img_h": height,
                 "orig_img_w": width,
@@ -578,13 +687,10 @@ def agent_inference(
             raise ValueError(f"Unknown tool call: {tool_name}")
 
         for message in messages:
-            if message["role"] == "assistant" and "content" in message:
-                for content in message["content"]:
-                    if (
-                        isinstance(content, dict)
-                        and content.get("type") == "text"
-                        and "text" in content
-                    ):
+            message_content = message["content"]
+            if message["role"] == "assistant" and isinstance(message_content, list):
+                for content in message_content:
+                    if content.get("type") == "text" and "text" in content:
                         content["text"] = (
                             content["text"].split("</tool>", 1)[0] + "</tool>\n\n"
                         )

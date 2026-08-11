@@ -1,6 +1,13 @@
+from collections.abc import Sequence
+from pathlib import Path
+
 import numpy as np
 import pytest
+from PIL import Image
 
+from sam3_mlx.agent.agent_core import agent_inference
+from sam3_mlx.agent.client_llm import send_generate_request
+from sam3_mlx.agent.contracts import Message
 from sam3_mlx.agent.helpers.keypoints import Keypoints
 from sam3_mlx.agent.helpers.masks import BitMasks, ROIMasks
 from sam3_mlx.agent.helpers.rle import rle_decode, rle_encode
@@ -49,3 +56,47 @@ def test_agent_color_helpers_keep_palette_contract() -> None:
     assert color.as_rgb() == (0, 255, 127)
     assert rgb_to_hex(color.as_rgb()) == "#00ff7f"
     assert ColorPalette([color]).by_idx(3) is color
+
+
+class _NoMaskGenerator:
+    def __call__(self, messages: Sequence[Message]) -> str:
+        assert messages[0]["role"] == "system"
+        return '<tool>{"name":"report_no_mask","parameters":{}}</tool>'
+
+
+def test_agent_inference_report_no_mask_stays_offline(tmp_path: Path) -> None:
+    image_path = tmp_path / "input.png"
+    Image.new("RGB", (5, 3), "white").save(image_path)
+
+    messages, output, rendered = agent_inference(
+        str(image_path),
+        "missing object",
+        send_generate_request=_NoMaskGenerator(),
+        call_sam_service=object(),
+        output_dir=tmp_path / "output",
+    )
+
+    assert messages[-1]["role"] == "assistant"
+    assert output["orig_img_h"] == 3
+    assert output["orig_img_w"] == 5
+    assert output["pred_masks"] == []
+    assert rendered.size == (5, 3)
+
+
+def test_agent_integer_limits_reject_booleans_before_external_calls(
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "input.png"
+    Image.new("RGB", (1, 1), "white").save(image_path)
+
+    with pytest.raises(TypeError, match="max_generations"):
+        agent_inference(
+            str(image_path),
+            "object",
+            send_generate_request=_NoMaskGenerator(),
+            call_sam_service=object(),
+            max_generations=True,
+            output_dir=tmp_path / "output",
+        )
+    with pytest.raises(TypeError, match="max_tokens"):
+        send_generate_request([], max_tokens=True)

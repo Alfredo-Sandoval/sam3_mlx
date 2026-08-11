@@ -3,20 +3,22 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 from sam3_mlx.agent.agent_core import agent_inference
+from sam3_mlx.agent.contracts import GenerateRequest
 
 
 def run_single_image_inference(
-    image_path,
-    text_prompt,
-    llm_config,
-    send_generate_request,
-    call_sam_service,
-    output_dir="agent_output",
-    debug=False,
-):
+    image_path: str | Path,
+    text_prompt: str,
+    llm_config: Mapping[str, object],
+    send_generate_request: GenerateRequest,
+    call_sam_service: object,
+    output_dir: str | Path = "agent_output",
+    debug: bool = False,
+) -> str | None:
     """Run official-shaped SAM3 agent inference on a single image.
 
     The orchestration mirrors the official SAM3 agent inference at upstream
@@ -31,6 +33,8 @@ def run_single_image_inference(
     output_path.mkdir(parents=True, exist_ok=True)
 
     llm_name = llm_config["name"]
+    if not isinstance(llm_name, str):
+        raise TypeError("llm_config['name'] must be a string.")
     prompt_for_filename = text_prompt.replace("/", "_").replace(" ", "_")
     base_filename = f"{image_path.stem}_{prompt_for_filename}_agent_{llm_name}"
     output_json_path = output_path / f"{base_filename}_pred.json"

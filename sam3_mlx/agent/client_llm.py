@@ -7,11 +7,41 @@ import json
 import os
 import urllib.error
 import urllib.request
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Optional
+from typing import Protocol, cast
+
+from sam3_mlx.agent.contracts import ContentPart, JsonValue, Message
 
 
-def get_image_base64_and_mime(image_path):
+class _ChatClient(Protocol):
+    def chat(self, *, messages: object, sampling_params: object) -> object: ...
+
+
+class _GeneratedText(Protocol):
+    text: str
+
+
+class _RequestOutput(Protocol):
+    outputs: Sequence[_GeneratedText]
+
+
+def _content_part_json(part: ContentPart) -> dict[str, JsonValue]:
+    result: dict[str, JsonValue] = {"type": part["type"]}
+    if "text" in part:
+        result["text"] = part["text"]
+    if "image" in part:
+        result["image"] = part["image"]
+    return result
+
+
+def _message_content_json(content: str | list[ContentPart]) -> JsonValue:
+    if isinstance(content, str):
+        return content
+    return [_content_part_json(part) for part in content]
+
+
+def get_image_base64_and_mime(image_path: str | Path) -> tuple[str, str]:
     """Convert an image file to a base64 string and MIME type."""
     path = Path(image_path)
     ext = path.suffix.lower()
@@ -28,21 +58,24 @@ def get_image_base64_and_mime(image_path):
 
 
 def _process_messages_for_openai(
-    messages: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
+    messages: Sequence[Message],
+) -> list[dict[str, JsonValue]]:
     """Translate official SAM3 image message parts into OpenAI image_url parts."""
-    processed_messages: list[dict[str, Any]] = []
+    processed_messages: list[dict[str, JsonValue]] = []
     for message in messages:
-        processed_message = dict(message)
+        processed_message: dict[str, JsonValue] = {"role": message["role"]}
         content = message.get("content")
         if message.get("role") != "user" or not isinstance(content, list):
+            processed_message["content"] = _message_content_json(content)
             processed_messages.append(processed_message)
             continue
 
-        processed_content: list[Any] = []
+        processed_content: list[JsonValue] = []
         for part in content:
-            if isinstance(part, dict) and part.get("type") == "image":
-                image_path = part["image"]
+            if part.get("type") == "image":
+                image_path = part.get("image")
+                if not isinstance(image_path, str):
+                    raise TypeError("Image message parts must contain a string path.")
                 base64_image, mime_type = get_image_base64_and_mime(image_path)
                 processed_content.append(
                     {
@@ -54,7 +87,7 @@ def _process_messages_for_openai(
                     }
                 )
             else:
-                processed_content.append(part)
+                processed_content.append(_content_part_json(part))
         processed_message["content"] = processed_content
         processed_messages.append(processed_message)
     return processed_messages
@@ -67,21 +100,32 @@ def _chat_completions_url(server_url: str | None) -> str:
     return f"{base_url.rstrip('/')}/chat/completions"
 
 
-def _extract_response_text(response_payload: dict[str, Any]) -> Optional[str]:
-    choices = response_payload.get("choices")
-    if not choices:
+def _extract_response_text(response_payload: object) -> str | None:
+    if not isinstance(response_payload, dict):
+        raise TypeError("LLM response payload must be a JSON object.")
+    payload = cast(dict[str, object], response_payload)
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
         return None
-    message = choices[0].get("message", {})
-    return message.get("content")
+    first = cast(list[object], choices)[0]
+    if not isinstance(first, dict):
+        raise TypeError("LLM response choices must contain JSON objects.")
+    message = cast(dict[str, object], first).get("message")
+    if not isinstance(message, dict):
+        return None
+    content = cast(dict[str, object], message).get("content")
+    if content is not None and not isinstance(content, str):
+        raise TypeError("LLM response message content must be a string or null.")
+    return content
 
 
 def send_generate_request(
-    messages,
-    server_url=None,
-    model="meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
-    api_key=None,
-    max_tokens=4096,
-):
+    messages: Sequence[Message],
+    server_url: str | None = None,
+    model: str = "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+    api_key: str | None = None,
+    max_tokens: int = 4096,
+) -> str | None:
     """
     Send an OpenAI-compatible chat completion request.
 
@@ -91,6 +135,8 @@ def send_generate_request(
     OpenAI-compatible server root such as ``http://127.0.0.1:8000/v1``. If it is
     omitted, ``OPENAI_BASE_URL`` is used and then the public OpenAI API root.
     """
+    if isinstance(max_tokens, bool):
+        raise TypeError("max_tokens must be an integer, not bool.")
     processed_messages = _process_messages_for_openai(list(messages))
     payload = {
         "model": model,
@@ -123,19 +169,22 @@ def send_generate_request(
 
 
 def send_direct_request(
-    llm: Any,
-    messages: list[dict[str, Any]],
-    sampling_params: Any,
-) -> Optional[str]:
+    llm: _ChatClient,
+    messages: Sequence[Message],
+    sampling_params: object,
+) -> str | None:
     """Run the official-shaped direct vLLM chat path with processed image parts."""
     processed_messages = _process_messages_for_openai(messages)
-    outputs = llm.chat(
+    outputs_value = llm.chat(
         messages=processed_messages,
         sampling_params=sampling_params,
     )
-    if not outputs:
+    if not isinstance(outputs_value, Sequence) or not outputs_value:
         return None
-    try:
-        return outputs[0].outputs[0].text
-    except (AttributeError, IndexError) as exc:
-        raise RuntimeError(f"Unexpected direct LLM output format: {outputs!r}") from exc
+    first = cast(Sequence[object], outputs_value)[0]
+    if not hasattr(first, "outputs"):
+        raise RuntimeError(f"Unexpected direct LLM output format: {outputs_value!r}")
+    outputs = cast(_RequestOutput, first).outputs
+    if not outputs:
+        raise RuntimeError(f"Unexpected direct LLM output format: {outputs_value!r}")
+    return outputs[0].text
