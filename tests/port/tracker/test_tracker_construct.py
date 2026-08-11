@@ -13,8 +13,8 @@ from sam3_mlx.model.sam3_tracker_base import Sam3TrackerBase, concat_points
 from sam3_mlx.model.sam3_tracking_predictor import Sam3TrackerPredictor
 from sam3_mlx.model_builder import (
     build_tracker,
-    _create_tracker_maskmem_backbone,
-    _create_tracker_transformer,
+    create_tracker_maskmem_backbone,
+    create_tracker_transformer,
 )
 
 # kwargs mirror the official build_tracker(...) call at upstream commit
@@ -40,8 +40,8 @@ _TRACKER_KWARGS = dict(
 
 @pytest.fixture(scope="module")
 def tracker_base():
-    maskmem_backbone = _create_tracker_maskmem_backbone()
-    transformer = _create_tracker_transformer()
+    maskmem_backbone = create_tracker_maskmem_backbone()
+    transformer = create_tracker_transformer()
     return Sam3TrackerBase(
         backbone=None,
         transformer=transformer,
@@ -51,12 +51,12 @@ def tracker_base():
 
 
 def test_component_builders_match_official_shape():
-    transformer = _create_tracker_transformer()
+    transformer = create_tracker_transformer()
     # the tracker memory-attention transformer is encoder-only
     assert transformer.decoder is None
     assert transformer.d_model == 256
 
-    maskmem_backbone = _create_tracker_maskmem_backbone()
+    maskmem_backbone = create_tracker_maskmem_backbone()
     # out_dim=64 introduces channel compression -> mem_dim must read back as 64
     assert maskmem_backbone.out_proj.weight.shape[0] == 64
 

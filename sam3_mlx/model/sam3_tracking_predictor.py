@@ -16,8 +16,22 @@ Tracker port status:
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator, Sequence
 from collections import OrderedDict
-from typing import Any, cast
+from pathlib import Path
+from typing import (
+    Literal,
+    NoReturn,
+    NotRequired,
+    Required,
+    TypeAlias,
+    TypeVar,
+    TypedDict,
+    TypeGuard,
+    Unpack,
+    cast,
+    overload,
+)
 
 import mlx.core as mx
 import numpy as np
@@ -27,15 +41,116 @@ from sam3_mlx.mlx_runtime import evaluate_boundary
 from sam3_mlx.model.data_misc import interpolate
 from sam3_mlx.model.io_utils import load_resource_as_video_frames
 from sam3_mlx.model.sam3_tracker_base import (
+    BackboneFeatureOutput,
     NO_OBJ_SCORE,
     PointInputs,
     Sam3TrackerBase,
+    TrackerOutputState,
+    TrackerBaseOptions,
+    TrackerStoredFrameOutput,
     concat_points,
 )
 from sam3_mlx.model.sam3_tracker_utils import fill_holes_in_mask_scores
 
 
-def _unsupported_tracking_predictor(method: str, *, detail: str | None = None):
+ArrayInput: TypeAlias = (
+    mx.array
+    | np.ndarray
+    | list[object]
+    | tuple[object, ...]
+    | bool
+    | int
+    | float
+)
+ObjectId: TypeAlias = object
+StorageKey: TypeAlias = Literal["cond_frame_outputs", "non_cond_frame_outputs"]
+ImageFrames: TypeAlias = mx.array | list[ArrayInput] | tuple[ArrayInput, ...]
+
+
+class _TrackerBackboneWrapper(TypedDict):
+    tracker_backbone_out: BackboneFeatureOutput
+
+
+CachedBackboneOutput: TypeAlias = BackboneFeatureOutput | _TrackerBackboneWrapper
+CachedFeature: TypeAlias = (
+    tuple[mx.array, CachedBackboneOutput]
+    | tuple[
+        mx.array,
+        CachedBackboneOutput,
+        list[mx.array],
+        list[mx.array],
+        list[tuple[int, int]],
+    ]
+)
+
+
+class _TemporaryFrameOutput(TypedDict):
+    pred_masks: Required[mx.array | None]
+    pred_masks_video_res: NotRequired[mx.array]
+    obj_ptr: Required[mx.array]
+    object_score_logits: Required[mx.array]
+    iou_score: NotRequired[mx.array]
+    eff_iou_score: NotRequired[mx.array]
+    maskmem_features: Required[mx.array | None]
+    maskmem_pos_enc: Required[list[mx.array] | None]
+
+
+class _TemporaryOutputState(TypedDict):
+    cond_frame_outputs: dict[int, _TemporaryFrameOutput]
+    non_cond_frame_outputs: dict[int, _TemporaryFrameOutput]
+
+
+class _VideoConsolidatedOutput(TypedDict):
+    pred_masks_video_res: mx.array
+    obj_ptr: mx.array
+    object_score_logits: mx.array
+    iou_score: NotRequired[mx.array]
+    eff_iou_score: NotRequired[mx.array]
+    maskmem_features: None
+    maskmem_pos_enc: None
+
+
+class _FrameTrackingInfo(TypedDict):
+    reverse: bool
+
+
+class _ConsolidatedFrameIndices(TypedDict):
+    cond_frame_outputs: set[int]
+    non_cond_frame_outputs: set[int]
+
+
+class _ModelConstants(TypedDict, total=False):
+    maskmem_pos_enc: list[mx.array]
+
+
+class InferenceState(TypedDict):
+    offload_video_to_cpu: bool
+    offload_state_to_cpu: bool
+    device: str
+    storage_device: str
+    video_height: int
+    video_width: int
+    num_frames: int
+    point_inputs_per_obj: dict[int, dict[int, PointInputs]]
+    mask_inputs_per_obj: dict[int, dict[int, mx.array]]
+    images: ImageFrames | None
+    cached_features: dict[int, CachedFeature]
+    constants: _ModelConstants
+    obj_id_to_idx: OrderedDict[ObjectId, int]
+    obj_idx_to_id: OrderedDict[int, ObjectId]
+    obj_ids: list[ObjectId]
+    output_dict: TrackerOutputState
+    first_ann_frame_idx: int | None
+    output_dict_per_obj: dict[int, TrackerOutputState]
+    temp_output_dict_per_obj: dict[int, _TemporaryOutputState]
+    consolidated_frame_inds: _ConsolidatedFrameIndices
+    tracking_has_started: bool
+    frames_already_tracked: dict[int, _FrameTrackingInfo]
+
+
+def _unsupported_tracking_predictor(
+    method: str, *, detail: str | None = None
+) -> NoReturn:
     raise_unsupported(
         f"sam3_mlx.model.sam3_tracking_predictor.Sam3TrackerPredictor.{method}",
         reason="video-tracker",
@@ -50,27 +165,27 @@ def _unsupported_tracking_predictor(method: str, *, detail: str | None = None):
     )
 
 
-def _is_mlx_array(value: Any) -> bool:
+def _is_mlx_array(value: object) -> TypeGuard[mx.array]:
     return type(value).__module__.startswith("mlx.")
 
 
-def _as_mlx_array(value: Any, *, dtype) -> mx.array:
+def _as_mlx_array(value: ArrayInput, *, dtype: mx.Dtype) -> mx.array:
     if _is_mlx_array(value):
         return value.astype(dtype)
     return mx.array(value, dtype=dtype)
 
 
-def _eval_tree(*values: Any) -> None:
+def _eval_tree(*values: object) -> None:
     arrays: list[mx.array] = []
 
-    def visit(value: Any) -> None:
+    def visit(value: object) -> None:
         if _is_mlx_array(value):
             arrays.append(value)
         elif isinstance(value, dict):
-            for child in value.values():
+            for child in cast(dict[object, object], value).values():
                 visit(child)
         elif isinstance(value, (list, tuple)):
-            for child in value:
+            for child in cast(Sequence[object], value):
                 visit(child)
 
     for value in values:
@@ -79,7 +194,24 @@ def _eval_tree(*values: Any) -> None:
         evaluate_boundary(*arrays)
 
 
-def _copy_output_slice(value: Any, obj_slice: slice) -> Any:
+@overload
+def _copy_output_slice(value: None, obj_slice: slice) -> None: ...
+
+
+@overload
+def _copy_output_slice(value: mx.array, obj_slice: slice) -> mx.array: ...
+
+
+@overload
+def _copy_output_slice(
+    value: list[mx.array], obj_slice: slice
+) -> list[mx.array]: ...
+
+
+def _copy_output_slice(
+    value: mx.array | list[mx.array] | None,
+    obj_slice: slice,
+) -> mx.array | list[mx.array] | None:
     if value is None:
         return None
     if isinstance(value, list):
@@ -87,21 +219,38 @@ def _copy_output_slice(value: Any, obj_slice: slice) -> Any:
     return value[obj_slice]
 
 
-def _coerce_obj_id_list(obj_ids: Any) -> list[Any]:
+def _coerce_obj_id_list(obj_ids: object) -> list[ObjectId]:
     if isinstance(obj_ids, (str, bytes)):
         return [obj_ids]
     if _is_mlx_array(obj_ids):
         evaluate_boundary(obj_ids)
-        return np.asarray(obj_ids).reshape(-1).tolist()
+        return cast(list[ObjectId], np.asarray(obj_ids).reshape(-1).tolist())
     if isinstance(obj_ids, np.ndarray):
-        return obj_ids.reshape(-1).tolist()
+        return cast(list[ObjectId], obj_ids.reshape(-1).tolist())
     try:
-        return list(obj_ids)
+        return list(cast(Iterable[object], obj_ids))
     except TypeError:
         return [obj_ids]
 
 
-def _take_output_indices(value: Any, obj_indices: list[int]) -> Any:
+@overload
+def _take_output_indices(value: None, obj_indices: list[int]) -> None: ...
+
+
+@overload
+def _take_output_indices(value: mx.array, obj_indices: list[int]) -> mx.array: ...
+
+
+@overload
+def _take_output_indices(
+    value: list[mx.array], obj_indices: list[int]
+) -> list[mx.array]: ...
+
+
+def _take_output_indices(
+    value: mx.array | list[mx.array] | None,
+    obj_indices: list[int],
+) -> mx.array | list[mx.array] | None:
     if value is None:
         return None
     index = mx.array(obj_indices, dtype=mx.int64)
@@ -110,7 +259,40 @@ def _take_output_indices(value: Any, obj_indices: list[int]) -> Any:
     return mx.take(value, index, axis=0)
 
 
-def _broadcast_batch(value: Any, batch_size: int) -> Any:
+def _has_stored_pred_masks(
+    output: _TemporaryFrameOutput,
+) -> TypeGuard[TrackerStoredFrameOutput]:
+    return output["pred_masks"] is not None
+
+
+_ValueT = TypeVar("_ValueT")
+
+
+def _remap_integer_keys(
+    container: dict[int, _ValueT],
+    old_to_new: dict[int, int],
+    retained_old_keys: list[int],
+) -> None:
+    new_values = {
+        old_to_new[old_key]: container[old_key]
+        for old_key in retained_old_keys
+        if old_key in container
+    }
+    container.clear()
+    container.update(new_values)
+
+
+def _validate_cached_features(
+    cached_features: object | None,
+) -> dict[int, CachedFeature]:
+    if cached_features is None:
+        return {}
+    if not isinstance(cached_features, dict):
+        raise TypeError("cached_features must be a dict keyed by frame index.")
+    return cast(dict[int, CachedFeature], cached_features)
+
+
+def _broadcast_batch(value: mx.array, batch_size: int) -> mx.array:
     if value.shape[0] == batch_size:
         return value
     if value.shape[0] != 1:
@@ -121,9 +303,9 @@ def _broadcast_batch(value: Any, batch_size: int) -> Any:
 
 
 def _broadcast_backbone_out(
-    backbone_out: dict[str, Any],
+    backbone_out: BackboneFeatureOutput,
     batch_size: int,
-) -> dict[str, Any]:
+) -> BackboneFeatureOutput:
     expanded = backbone_out.copy()
     expanded["backbone_fpn"] = [
         _broadcast_batch(feature, batch_size)
@@ -135,8 +317,10 @@ def _broadcast_backbone_out(
     return expanded
 
 
-def _broadcast_flat_features(features: list[Any], batch_size: int) -> list[Any]:
-    expanded = []
+def _broadcast_flat_features(
+    features: list[mx.array], batch_size: int
+) -> list[mx.array]:
+    expanded: list[mx.array] = []
     for feature in features:
         if feature.shape[1] == batch_size:
             expanded.append(feature)
@@ -166,27 +350,27 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
 
     def __init__(
         self,
-        backbone=None,
-        transformer=None,
-        maskmem_backbone=None,
-        clear_non_cond_mem_around_input=False,
-        clear_non_cond_mem_for_multi_obj=False,
-        fill_hole_area=0,
-        always_start_from_first_ann_frame=False,
-        max_point_num_in_prompt_enc=16,
-        non_overlap_masks_for_output=True,
-        **kwargs,
-    ):
+        backbone: object | None = None,
+        transformer: object | None = None,
+        maskmem_backbone: object | None = None,
+        clear_non_cond_mem_around_input: bool = False,
+        clear_non_cond_mem_for_multi_obj: bool = False,
+        fill_hole_area: int = 0,
+        always_start_from_first_ann_frame: bool = False,
+        max_point_num_in_prompt_enc: int = 16,
+        non_overlap_masks_for_output: bool = True,
+        **kwargs: Unpack[TrackerBaseOptions],
+    ) -> None:
         if transformer is None or maskmem_backbone is None:
             from sam3_mlx.model_builder import (
-                _create_tracker_maskmem_backbone,
-                _create_tracker_transformer,
+                create_tracker_maskmem_backbone,
+                create_tracker_transformer,
             )
 
             if transformer is None:
-                transformer = _create_tracker_transformer()
+                transformer = create_tracker_transformer()
             if maskmem_backbone is None:
-                maskmem_backbone = _create_tracker_maskmem_backbone()
+                maskmem_backbone = create_tracker_maskmem_backbone()
 
         if clear_non_cond_mem_for_multi_obj and not clear_non_cond_mem_around_input:
             _unsupported_tracking_predictor(
@@ -213,16 +397,16 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
 
     def init_state(
         self,
-        video_height=None,
-        video_width=None,
-        num_frames=None,
-        video_path=None,
-        images=None,
-        cached_features=None,
-        offload_video_to_cpu=False,
-        offload_state_to_cpu=False,
-        async_loading_frames=False,
-    ):
+        video_height: int | None = None,
+        video_width: int | None = None,
+        num_frames: int | None = None,
+        video_path: str | Path | None = None,
+        images: ImageFrames | None = None,
+        cached_features: dict[int, CachedFeature] | None = None,
+        offload_video_to_cpu: bool = False,
+        offload_state_to_cpu: bool = False,
+        async_loading_frames: bool = False,
+    ) -> InferenceState:
         """Initialize a cached-feature inference state."""
         if offload_video_to_cpu or offload_state_to_cpu:
             _unsupported_tracking_predictor(
@@ -299,44 +483,44 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
             )
         if int(num_frames) <= 0:
             raise ValueError("num_frames must be a positive integer.")
-        if cached_features is None:
-            cached_features = {}
-        if not isinstance(cached_features, dict):
-            raise TypeError("cached_features must be a dict keyed by frame index.")
+        typed_cached_features = _validate_cached_features(cached_features)
 
-        inference_state: dict[str, Any] = {}
-        inference_state["offload_video_to_cpu"] = False
-        inference_state["offload_state_to_cpu"] = False
-        inference_state["device"] = self.device
-        inference_state["storage_device"] = self.device
-        inference_state["video_height"] = int(video_height)
-        inference_state["video_width"] = int(video_width)
-        inference_state["num_frames"] = int(num_frames)
-        inference_state["point_inputs_per_obj"] = {}
-        inference_state["mask_inputs_per_obj"] = {}
-        inference_state["images"] = images
-        inference_state["cached_features"] = cached_features
-        inference_state["constants"] = {}
-        inference_state["obj_id_to_idx"] = OrderedDict()
-        inference_state["obj_idx_to_id"] = OrderedDict()
-        inference_state["obj_ids"] = []
-        inference_state["output_dict"] = {
-            "cond_frame_outputs": {},
-            "non_cond_frame_outputs": {},
-        }
-        inference_state["first_ann_frame_idx"] = None
-        inference_state["output_dict_per_obj"] = {}
-        inference_state["temp_output_dict_per_obj"] = {}
-        inference_state["consolidated_frame_inds"] = {
-            "cond_frame_outputs": set(),
-            "non_cond_frame_outputs": set(),
-        }
-        inference_state["tracking_has_started"] = False
-        inference_state["frames_already_tracked"] = {}
+        inference_state = InferenceState(
+            offload_video_to_cpu=False,
+            offload_state_to_cpu=False,
+            device=self.device,
+            storage_device=self.device,
+            video_height=int(video_height),
+            video_width=int(video_width),
+            num_frames=int(num_frames),
+            point_inputs_per_obj={},
+            mask_inputs_per_obj={},
+            images=images,
+            cached_features=typed_cached_features,
+            constants={},
+            obj_id_to_idx=OrderedDict(),
+            obj_idx_to_id=OrderedDict(),
+            obj_ids=[],
+            output_dict={
+                "cond_frame_outputs": {},
+                "non_cond_frame_outputs": {},
+            },
+            first_ann_frame_idx=None,
+            output_dict_per_obj={},
+            temp_output_dict_per_obj={},
+            consolidated_frame_inds={
+                "cond_frame_outputs": set(),
+                "non_cond_frame_outputs": set(),
+            },
+            tracking_has_started=False,
+            frames_already_tracked={},
+        )
         self.clear_all_points_in_video(inference_state)
         return inference_state
 
-    def _obj_id_to_idx(self, inference_state, obj_id):
+    def _obj_id_to_idx(
+        self, inference_state: InferenceState, obj_id: ObjectId
+    ) -> int:
         """Map a client object id to an MLX object slot."""
         obj_idx = inference_state["obj_id_to_idx"].get(obj_id)
         if obj_idx is not None:
@@ -364,27 +548,29 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         }
         return obj_idx
 
-    def _obj_idx_to_id(self, inference_state, obj_idx):
+    def _obj_idx_to_id(
+        self, inference_state: InferenceState, obj_idx: int
+    ) -> ObjectId:
         """Map model-side object index to client-side object id."""
         return inference_state["obj_idx_to_id"][obj_idx]
 
-    def _get_obj_num(self, inference_state):
+    def _get_obj_num(self, inference_state: InferenceState) -> int:
         """Get the number of active object ids in the session."""
         return len(inference_state["obj_idx_to_id"])
 
     def add_new_points_or_box(
         self,
-        inference_state,
-        frame_idx,
-        obj_id,
-        points=None,
-        labels=None,
-        clear_old_points=True,
-        rel_coordinates=True,
-        use_prev_mem_frame=False,
-        normalize_coords=True,
-        box=None,
-    ):
+        inference_state: InferenceState,
+        frame_idx: int,
+        obj_id: ObjectId,
+        points: ArrayInput | None = None,
+        labels: ArrayInput | None = None,
+        clear_old_points: bool = True,
+        rel_coordinates: bool = True,
+        use_prev_mem_frame: bool = False,
+        normalize_coords: bool = True,
+        box: ArrayInput | None = None,
+    ) -> tuple[int, list[ObjectId], None, mx.array]:
         """Add point or box prompts for the single supported object."""
         del normalize_coords  # retained for upstream signature compatibility
         frame_idx = int(frame_idx)
@@ -436,7 +622,7 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
             box = _as_mlx_array(box, dtype=mx.float32)
             if rel_coordinates:
                 box = box * self.image_size
-            box_coords = box.reshape(1, 2, 2)
+            box_coords = mx.reshape(box, (1, 2, 2))
             box_labels = mx.array([[2, 3]], dtype=mx.int32)
             points = mx.concat([box_coords, points], axis=1)
             labels = mx.concat([box_labels, labels], axis=1)
@@ -444,10 +630,7 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         if clear_old_points:
             point_inputs = None
         else:
-            point_inputs = cast(
-                PointInputs | None,
-                point_inputs_per_frame.get(frame_idx),
-            )
+            point_inputs = point_inputs_per_frame.get(frame_idx)
         point_inputs = concat_points(point_inputs, points, labels)
 
         point_inputs_per_frame[frame_idx] = point_inputs
@@ -523,12 +706,12 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
 
     def add_new_mask(
         self,
-        inference_state,
-        frame_idx,
-        obj_id,
-        mask,
-        add_mask_to_memory=False,
-    ):
+        inference_state: InferenceState,
+        frame_idx: int,
+        obj_id: ObjectId,
+        mask: ArrayInput,
+        add_mask_to_memory: bool = False,
+    ) -> tuple[int, list[ObjectId], None, mx.array]:
         """Add a binary mask prompt for the single supported object."""
         del add_mask_to_memory  # official keeps this future-facing flag unused here
         frame_idx = int(frame_idx)
@@ -625,10 +808,35 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         )
         return frame_idx, obj_ids, None, video_res_masks
 
-    def add_new_points(self, *args, **kwargs):
-        return self.add_new_points_or_box(*args, **kwargs)
+    def add_new_points(
+        self,
+        inference_state: InferenceState,
+        frame_idx: int,
+        obj_id: ObjectId,
+        points: ArrayInput | None = None,
+        labels: ArrayInput | None = None,
+        clear_old_points: bool = True,
+        rel_coordinates: bool = True,
+        use_prev_mem_frame: bool = False,
+        normalize_coords: bool = True,
+        box: ArrayInput | None = None,
+    ) -> tuple[int, list[ObjectId], None, mx.array]:
+        return self.add_new_points_or_box(
+            inference_state=inference_state,
+            frame_idx=frame_idx,
+            obj_id=obj_id,
+            points=points,
+            labels=labels,
+            clear_old_points=clear_old_points,
+            rel_coordinates=rel_coordinates,
+            use_prev_mem_frame=use_prev_mem_frame,
+            normalize_coords=normalize_coords,
+            box=box,
+        )
 
-    def _get_orig_video_res_output(self, inference_state, any_res_masks):
+    def _get_orig_video_res_output(
+        self, inference_state: InferenceState, any_res_masks: mx.array
+    ) -> tuple[mx.array, mx.array]:
         """Resize mask logits to the original video resolution."""
         video_h = inference_state["video_height"]
         video_w = inference_state["video_width"]
@@ -651,14 +859,34 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         _eval_tree(any_res_masks, video_res_masks)
         return any_res_masks, video_res_masks
 
+    @overload
     def _consolidate_temp_output_across_obj(
         self,
-        inference_state,
-        frame_idx,
-        is_cond,
-        run_mem_encoder,
-        consolidate_at_video_res=False,
-    ):
+        inference_state: InferenceState,
+        frame_idx: int,
+        is_cond: bool,
+        run_mem_encoder: bool,
+        consolidate_at_video_res: Literal[False] = False,
+    ) -> TrackerStoredFrameOutput: ...
+
+    @overload
+    def _consolidate_temp_output_across_obj(
+        self,
+        inference_state: InferenceState,
+        frame_idx: int,
+        is_cond: bool,
+        run_mem_encoder: bool,
+        consolidate_at_video_res: Literal[True],
+    ) -> _VideoConsolidatedOutput: ...
+
+    def _consolidate_temp_output_across_obj(
+        self,
+        inference_state: InferenceState,
+        frame_idx: int,
+        is_cond: bool,
+        run_mem_encoder: bool,
+        consolidate_at_video_res: bool = False,
+    ) -> TrackerStoredFrameOutput | _VideoConsolidatedOutput:
         """Consolidate per-object temporary outputs into one batched output."""
         batch_size = self._get_obj_num(inference_state)
         storage_key = "cond_frame_outputs" if is_cond else "non_cond_frame_outputs"
@@ -670,12 +898,12 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
             consolidated_h = consolidated_w = self.low_res_mask_size
             consolidated_mask_key = "pred_masks"
 
-        pred_masks = []
-        obj_ptrs = []
-        object_scores = []
-        iou_scores = []
-        eff_iou_scores = []
-        empty_mask_ptr = None
+        pred_masks: list[mx.array] = []
+        obj_ptrs: list[mx.array] = []
+        object_scores: list[mx.array] = []
+        iou_scores: list[mx.array] = []
+        eff_iou_scores: list[mx.array] = []
+        empty_mask_ptr: mx.array | None = None
         for obj_idx in range(batch_size):
             obj_temp_output_dict = inference_state["temp_output_dict_per_obj"][obj_idx]
             obj_output_dict = inference_state["output_dict_per_obj"][obj_idx]
@@ -729,17 +957,33 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
             obj_ptrs.append(out["obj_ptr"])
             object_scores.append(out["object_score_logits"])
             if self.use_memory_selection:
+                if "iou_score" not in out:
+                    raise RuntimeError(
+                        "Memory-selection output is missing its IoU score."
+                    )
                 iou_scores.append(out["iou_score"])
                 if "eff_iou_score" in out:
                     eff_iou_scores.append(out["eff_iou_score"])
 
-        consolidated_out = {
-            "maskmem_features": None,
-            "maskmem_pos_enc": None,
-            consolidated_mask_key: mx.concat(pred_masks, axis=0),
-            "obj_ptr": mx.concat(obj_ptrs, axis=0),
-            "object_score_logits": mx.concat(object_scores, axis=0),
-        }
+        consolidated_masks = mx.concat(pred_masks, axis=0)
+        if consolidate_at_video_res:
+            consolidated_out: TrackerStoredFrameOutput | _VideoConsolidatedOutput = (
+                _VideoConsolidatedOutput(
+                    maskmem_features=None,
+                    maskmem_pos_enc=None,
+                    pred_masks_video_res=consolidated_masks,
+                    obj_ptr=mx.concat(obj_ptrs, axis=0),
+                    object_score_logits=mx.concat(object_scores, axis=0),
+                )
+            )
+        else:
+            consolidated_out = TrackerStoredFrameOutput(
+                maskmem_features=None,
+                maskmem_pos_enc=None,
+                pred_masks=consolidated_masks,
+                obj_ptr=mx.concat(obj_ptrs, axis=0),
+                object_score_logits=mx.concat(object_scores, axis=0),
+            )
         if self.use_memory_selection:
             consolidated_out["iou_score"] = mx.concat(iou_scores, axis=0)
             if len(eff_iou_scores) == batch_size:
@@ -748,8 +992,12 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         if run_mem_encoder:
             if consolidated_mask_key != "pred_masks":
                 raise AssertionError("memory encoder cannot run at video resolution")
+            if "pred_masks" not in consolidated_out:
+                raise AssertionError("memory encoder requires low-resolution masks")
+            stored_consolidated_out = consolidated_out
+            pred_masks_for_memory = stored_consolidated_out["pred_masks"]
             high_res_masks = interpolate(
-                consolidated_out["pred_masks"].astype(mx.float32),
+                pred_masks_for_memory.astype(mx.float32),
                 size=(self.image_size, self.image_size),
                 mode="bilinear",
                 align_corners=False,
@@ -760,16 +1008,18 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
                 frame_idx=frame_idx,
                 batch_size=batch_size,
                 high_res_masks=high_res_masks,
-                object_score_logits=consolidated_out["object_score_logits"],
+                object_score_logits=stored_consolidated_out["object_score_logits"],
                 is_mask_from_pts=True,
             )
-            consolidated_out["maskmem_features"] = maskmem_features
-            consolidated_out["maskmem_pos_enc"] = maskmem_pos_enc
+            stored_consolidated_out["maskmem_features"] = maskmem_features
+            stored_consolidated_out["maskmem_pos_enc"] = maskmem_pos_enc
 
         _eval_tree(consolidated_out)
         return consolidated_out
 
-    def _get_empty_mask_ptr(self, inference_state, frame_idx):
+    def _get_empty_mask_ptr(
+        self, inference_state: InferenceState, frame_idx: int
+    ) -> mx.array:
         batch_size = 1
         mask_inputs = mx.zeros(
             (batch_size, 1, self.image_size, self.image_size),
@@ -802,7 +1052,9 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         )
         return current_out["obj_ptr"]
 
-    def propagate_in_video_preflight(self, inference_state, run_mem_encoder=True):
+    def propagate_in_video_preflight(
+        self, inference_state: InferenceState, run_mem_encoder: bool = True
+    ) -> None:
         """Merge temporary prompt outputs into committed tracking state."""
         batch_size = self._get_obj_num(inference_state)
         if batch_size == 0:
@@ -870,8 +1122,12 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
             )
 
     def _get_processing_order(
-        self, inference_state, start_frame_idx, max_frame_num_to_track, reverse
-    ):
+        self,
+        inference_state: InferenceState,
+        start_frame_idx: int | None,
+        max_frame_num_to_track: int | None,
+        reverse: bool,
+    ) -> range | list[int]:
         """Return the official frame processing order for propagation."""
         num_frames = inference_state["num_frames"]
         if self.always_start_from_first_ann_frame:
@@ -890,9 +1146,9 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
 
     def _select_propagation_output_obj_ids(
         self,
-        inference_state: dict[str, Any],
-        obj_ids: Any,
-    ) -> tuple[list[Any], list[int] | None]:
+        inference_state: InferenceState,
+        obj_ids: object | None,
+    ) -> tuple[list[ObjectId], list[int] | None]:
         if obj_ids is None:
             return list(inference_state["obj_ids"]), None
 
@@ -900,8 +1156,8 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         if not requested_obj_ids:
             raise ValueError("obj_ids must contain at least one object id.")
 
-        duplicates = []
-        seen = []
+        duplicates: list[ObjectId] = []
+        seen: list[ObjectId] = []
         for obj_id in requested_obj_ids:
             if obj_id in seen:
                 duplicates.append(obj_id)
@@ -925,15 +1181,15 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
 
     def propagate_in_video(
         self,
-        inference_state,
-        start_frame_idx=None,
-        max_frame_num_to_track=None,
-        reverse=False,
-        tqdm_disable=False,
-        obj_ids=None,
-        run_mem_encoder=True,
-        propagate_preflight=False,
-    ):
+        inference_state: InferenceState,
+        start_frame_idx: int | None = None,
+        max_frame_num_to_track: int | None = None,
+        reverse: bool = False,
+        tqdm_disable: bool = False,
+        obj_ids: object | None = None,
+        run_mem_encoder: bool = True,
+        propagate_preflight: bool = False,
+    ) -> Iterator[tuple[int, list[ObjectId], mx.array, mx.array, mx.array]]:
         """Propagate prompted objects across cached video features."""
         del tqdm_disable  # no progress-bar dependency in the MLX runtime package
         if propagate_preflight:
@@ -986,6 +1242,10 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
                     reverse=reverse,
                     run_mem_encoder=run_mem_encoder,
                 )
+                if not _has_stored_pred_masks(current_out):
+                    raise RuntimeError(
+                        "Propagation inference returned no low-resolution masks."
+                    )
                 obj_scores = current_out["object_score_logits"]
                 output_dict[storage_key][frame_idx] = current_out
 
@@ -1007,31 +1267,43 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
             yield frame_idx, output_obj_ids, low_res_masks, video_res_masks, obj_scores
 
     def _add_output_per_object(
-        self, inference_state, frame_idx, current_out, storage_key
-    ):
+        self,
+        inference_state: InferenceState,
+        frame_idx: int,
+        current_out: TrackerStoredFrameOutput,
+        storage_key: StorageKey,
+    ) -> None:
         """Store per-object slices of a consolidated frame output."""
         for obj_idx, obj_output_dict in inference_state["output_dict_per_obj"].items():
             obj_slice = slice(obj_idx, obj_idx + 1)
-            obj_out = {
-                "maskmem_features": _copy_output_slice(
+            obj_out = TrackerStoredFrameOutput(
+                maskmem_features=_copy_output_slice(
                     current_out["maskmem_features"], obj_slice
                 ),
-                "maskmem_pos_enc": _copy_output_slice(
+                maskmem_pos_enc=_copy_output_slice(
                     current_out["maskmem_pos_enc"], obj_slice
                 ),
-                "pred_masks": current_out["pred_masks"][obj_slice],
-                "obj_ptr": current_out["obj_ptr"][obj_slice],
-                "object_score_logits": current_out["object_score_logits"][obj_slice],
-            }
+                pred_masks=current_out["pred_masks"][obj_slice],
+                obj_ptr=current_out["obj_ptr"][obj_slice],
+                object_score_logits=current_out["object_score_logits"][obj_slice],
+            )
             if self.use_memory_selection:
+                if "iou_score" not in current_out:
+                    raise RuntimeError(
+                        "Memory-selection output is missing its IoU score."
+                    )
                 obj_out["iou_score"] = current_out["iou_score"][obj_slice]
                 if "eff_iou_score" in current_out:
                     obj_out["eff_iou_score"] = current_out["eff_iou_score"][obj_slice]
             obj_output_dict[storage_key][frame_idx] = obj_out
 
     def clear_all_points_in_frame(
-        self, inference_state, frame_idx, obj_id, need_output=True
-    ):
+        self,
+        inference_state: InferenceState,
+        frame_idx: int,
+        obj_id: ObjectId,
+        need_output: bool = True,
+    ) -> tuple[int, list[ObjectId], None, mx.array] | None:
         """Remove point or mask input for one object on one frame."""
         obj_idx = self._obj_id_to_idx(inference_state, obj_id)
         inference_state["point_inputs_per_obj"][obj_idx].pop(frame_idx, None)
@@ -1085,7 +1357,7 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         )
         return frame_idx, obj_ids, None, video_res_masks
 
-    def clear_all_points_in_video(self, inference_state):
+    def clear_all_points_in_video(self, inference_state: InferenceState) -> None:
         """Remove all prompt inputs and outputs from the inference state."""
         self._reset_tracking_results(inference_state)
         inference_state["obj_id_to_idx"].clear()
@@ -1096,7 +1368,7 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         inference_state["output_dict_per_obj"].clear()
         inference_state["temp_output_dict_per_obj"].clear()
 
-    def _reset_tracking_results(self, inference_state):
+    def _reset_tracking_results(self, inference_state: InferenceState) -> None:
         """Reset prompts and tracking outputs while preserving object ids."""
         for value in inference_state["point_inputs_per_obj"].values():
             value.clear()
@@ -1116,7 +1388,18 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         inference_state["frames_already_tracked"].clear()
         inference_state["first_ann_frame_idx"] = None
 
-    def _get_image_feature(self, inference_state, frame_idx, batch_size):
+    def _get_image_feature(
+        self,
+        inference_state: InferenceState,
+        frame_idx: int,
+        batch_size: int,
+    ) -> tuple[
+        mx.array,
+        BackboneFeatureOutput,
+        list[mx.array],
+        list[mx.array],
+        list[tuple[int, int]],
+    ]:
         """Retrieve or compute MLX visual features for one frame."""
         cached = inference_state["cached_features"].get(frame_idx)
         if cached is None:
@@ -1141,7 +1424,7 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
             inference_state["cached_features"][frame_idx] = (image, backbone_out)
             cached = (image, backbone_out)
 
-        if isinstance(cached, tuple) and len(cached) == 5:
+        if len(cached) == 5:
             image, backbone_out, vision_feats, vision_pos_embeds, feat_sizes = cached
             image = _broadcast_batch(image, batch_size)
             if "tracker_backbone_out" in backbone_out:
@@ -1151,7 +1434,7 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
             vision_pos_embeds = _broadcast_flat_features(vision_pos_embeds, batch_size)
             _eval_tree(image, vision_feats, vision_pos_embeds)
             return image, backbone_out, vision_feats, vision_pos_embeds, feat_sizes
-        if not (isinstance(cached, tuple) and len(cached) == 2):
+        if len(cached) != 2:
             raise TypeError(
                 "cached_features values must be (image, backbone_out) or "
                 "(image, backbone_out, vision_feats, vision_pos_embeds, feat_sizes)."
@@ -1170,18 +1453,18 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
 
     def _run_single_frame_inference(
         self,
-        inference_state,
-        output_dict,
-        frame_idx,
-        batch_size,
-        is_init_cond_frame,
-        point_inputs,
-        mask_inputs,
-        reverse,
-        run_mem_encoder,
-        prev_sam_mask_logits=None,
-        use_prev_mem_frame=True,
-    ):
+        inference_state: InferenceState,
+        output_dict: TrackerOutputState,
+        frame_idx: int,
+        batch_size: int,
+        is_init_cond_frame: bool,
+        point_inputs: PointInputs | None,
+        mask_inputs: mx.array | None,
+        reverse: bool,
+        run_mem_encoder: bool,
+        prev_sam_mask_logits: mx.array | None = None,
+        use_prev_mem_frame: bool = True,
+    ) -> tuple[_TemporaryFrameOutput, mx.array]:
         """Run ``track_step`` for one cached frame and compact its output."""
         (
             image,
@@ -1210,13 +1493,13 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         )
 
         pred_masks = current_out["pred_masks"]
-        compact_current_out = {
-            "maskmem_features": current_out["maskmem_features"],
-            "maskmem_pos_enc": self._get_maskmem_pos_enc(inference_state, current_out),
-            "pred_masks": pred_masks,
-            "obj_ptr": current_out["obj_ptr"],
-            "object_score_logits": current_out["object_score_logits"],
-        }
+        compact_current_out = _TemporaryFrameOutput(
+            maskmem_features=current_out["maskmem_features"],
+            maskmem_pos_enc=self._get_maskmem_pos_enc(inference_state, current_out),
+            pred_masks=pred_masks,
+            obj_ptr=current_out["obj_ptr"],
+            object_score_logits=current_out["object_score_logits"],
+        )
         if self.use_memory_selection:
             if "iou_score" not in current_out or "eff_iou_score" not in current_out:
                 raise RuntimeError(
@@ -1229,13 +1512,13 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
 
     def _run_memory_encoder(
         self,
-        inference_state,
-        frame_idx,
-        batch_size,
-        high_res_masks,
-        object_score_logits,
-        is_mask_from_pts,
-    ):
+        inference_state: InferenceState,
+        frame_idx: int,
+        batch_size: int,
+        high_res_masks: mx.array,
+        object_score_logits: mx.array,
+        is_mask_from_pts: bool,
+    ) -> tuple[mx.array, list[mx.array] | None]:
         """Run the ported memory encoder for a consolidated prompt frame."""
         image, _, current_vision_feats, _, feat_sizes = self._get_image_feature(
             inference_state, frame_idx, batch_size
@@ -1254,15 +1537,20 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         _eval_tree(maskmem_features, maskmem_pos_enc)
         return maskmem_features, maskmem_pos_enc
 
-    def _get_maskmem_pos_enc(self, inference_state, current_out):
+    def _get_maskmem_pos_enc(
+        self,
+        inference_state: InferenceState,
+        current_out: (
+            _TemporaryFrameOutput
+            | TrackerStoredFrameOutput
+            | dict[str, list[mx.array] | None]
+        ),
+    ) -> list[mx.array] | None:
         """Cache one copy of mask memory positional encoding per session."""
         model_constants = inference_state["constants"]
         out_maskmem_pos_enc = current_out["maskmem_pos_enc"]
         if out_maskmem_pos_enc is None:
             return None
-        if not isinstance(out_maskmem_pos_enc, list):
-            raise TypeError("maskmem_pos_enc must be a list or None.")
-
         if "maskmem_pos_enc" not in model_constants:
             model_constants["maskmem_pos_enc"] = [
                 mx.array(x[0:1]) for x in out_maskmem_pos_enc
@@ -1274,10 +1562,16 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
             for x in maskmem_pos_enc
         ]
 
-    def remove_object(self, inference_state, obj_id, strict=False, need_output=True):
+    def remove_object(
+        self,
+        inference_state: InferenceState,
+        obj_id: ObjectId,
+        strict: bool = False,
+        need_output: bool = True,
+    ) -> tuple[list[ObjectId], list[tuple[int, mx.array]]]:
         """Remove one object id from the predictor state."""
         old_obj_idx_to_rm = inference_state["obj_id_to_idx"].get(obj_id)
-        updated_frames = []
+        updated_frames: list[tuple[int, mx.array]] = []
         if old_obj_idx_to_rm is None:
             if not strict:
                 return inference_state["obj_ids"], updated_frames
@@ -1289,7 +1583,7 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
             self.clear_all_points_in_video(inference_state)
             return inference_state["obj_ids"], updated_frames
 
-        obj_input_frames_inds = set()
+        obj_input_frames_inds: set[int] = set()
         obj_input_frames_inds.update(
             inference_state["point_inputs_per_obj"][old_obj_idx_to_rm]
         )
@@ -1316,46 +1610,58 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         inference_state["obj_idx_to_id"] = OrderedDict(zip(new_obj_inds, new_obj_ids))
         inference_state["obj_ids"] = new_obj_ids
 
-        def map_keys(container):
-            new_values = {
-                old_idx_to_new_idx[old_idx]: container[old_idx]
-                for old_idx in remain_old_obj_inds
-                if old_idx in container
-            }
-            container.clear()
-            container.update(new_values)
+        _remap_integer_keys(
+            inference_state["point_inputs_per_obj"],
+            old_idx_to_new_idx,
+            remain_old_obj_inds,
+        )
+        _remap_integer_keys(
+            inference_state["mask_inputs_per_obj"],
+            old_idx_to_new_idx,
+            remain_old_obj_inds,
+        )
+        _remap_integer_keys(
+            inference_state["output_dict_per_obj"],
+            old_idx_to_new_idx,
+            remain_old_obj_inds,
+        )
+        _remap_integer_keys(
+            inference_state["temp_output_dict_per_obj"],
+            old_idx_to_new_idx,
+            remain_old_obj_inds,
+        )
 
-        map_keys(inference_state["point_inputs_per_obj"])
-        map_keys(inference_state["mask_inputs_per_obj"])
-        map_keys(inference_state["output_dict_per_obj"])
-        map_keys(inference_state["temp_output_dict_per_obj"])
-
-        remain_indices = mx.array(remain_old_obj_inds, dtype=mx.int64)
-
-        def take_remaining(value):
-            if value is None:
-                return None
-            if isinstance(value, list):
-                return [mx.take(x, remain_indices, axis=0) for x in value]
-            return mx.take(value, remain_indices, axis=0)
-
-        def slice_state(output_dict, storage_key):
+        def slice_state(
+            output_dict: TrackerOutputState, storage_key: StorageKey
+        ) -> None:
             for frame_idx, out in output_dict[storage_key].items():
-                out["maskmem_features"] = take_remaining(out["maskmem_features"])
-                out["maskmem_pos_enc"] = take_remaining(out["maskmem_pos_enc"])
+                out["maskmem_features"] = _take_output_indices(
+                    out["maskmem_features"], remain_old_obj_inds
+                )
+                out["maskmem_pos_enc"] = _take_output_indices(
+                    out["maskmem_pos_enc"], remain_old_obj_inds
+                )
                 out["maskmem_pos_enc"] = self._get_maskmem_pos_enc(
                     inference_state,
                     out,
                 )
-                out["pred_masks"] = take_remaining(out["pred_masks"])
-                if "pred_masks_video_res" in out:
-                    out["pred_masks_video_res"] = take_remaining(
-                        out["pred_masks_video_res"]
-                    )
-                out["obj_ptr"] = take_remaining(out["obj_ptr"])
-                out["object_score_logits"] = take_remaining(out["object_score_logits"])
+                out["pred_masks"] = _take_output_indices(
+                    out["pred_masks"], remain_old_obj_inds
+                )
+                out["obj_ptr"] = _take_output_indices(
+                    out["obj_ptr"], remain_old_obj_inds
+                )
+                out["object_score_logits"] = _take_output_indices(
+                    out["object_score_logits"], remain_old_obj_inds
+                )
                 if self.use_memory_selection:
-                    out["iou_score"] = take_remaining(out["iou_score"])
+                    if "iou_score" not in out:
+                        raise RuntimeError(
+                            "Memory-selection output is missing its IoU score."
+                        )
+                    out["iou_score"] = _take_output_indices(
+                        out["iou_score"], remain_old_obj_inds
+                    )
                     out["eff_iou_score"] = self.cal_mem_score(
                         out["object_score_logits"],
                         out["iou_score"],
@@ -1392,7 +1698,9 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
 
         return inference_state["obj_ids"], updated_frames
 
-    def _clear_non_cond_mem_around_input(self, inference_state, frame_idx):
+    def _clear_non_cond_mem_around_input(
+        self, inference_state: InferenceState, frame_idx: int
+    ) -> None:
         """Clear nearby non-conditioning memories after a corrective input."""
         radius = self.memory_temporal_stride_for_eval * self.num_maskmem
         frame_idx_begin = int(frame_idx) - radius
@@ -1405,7 +1713,9 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
             for time_idx in range(frame_idx_begin, frame_idx_end + 1):
                 non_cond_outputs.pop(time_idx, None)
 
-    def _suppress_shrinked_masks(self, *args, **kwargs):
+    def _suppress_shrinked_masks(
+        self, *args: mx.array, **kwargs: float
+    ) -> mx.array:
         pred_masks, new_pred_masks = args[:2]
         shrink_threshold = kwargs.pop("shrink_threshold", 0.3)
         if kwargs:
@@ -1422,7 +1732,9 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
             mx.minimum(pred_masks, mx.array(-10.0, dtype=pred_masks.dtype)),
         )
 
-    def _suppress_object_pw_area_shrinkage(self, *args, **kwargs):
+    def _suppress_object_pw_area_shrinkage(
+        self, *args: mx.array, **kwargs: object
+    ) -> mx.array:
         if kwargs:
             names = ", ".join(sorted(kwargs))
             raise TypeError(
@@ -1437,7 +1749,9 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
             pixel_level_non_overlapping_masks,
         )
 
-    def _apply_object_wise_non_overlapping_constraints(self, *args, **kwargs):
+    def _apply_object_wise_non_overlapping_constraints(
+        self, *args: mx.array, **kwargs: float
+    ) -> mx.array:
         pred_masks, obj_scores = args[:2]
         background_value = kwargs.pop("background_value", -10.0)
         if kwargs:

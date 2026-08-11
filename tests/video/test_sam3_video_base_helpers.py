@@ -49,12 +49,12 @@ def test_sam3_video_base_constructor_preserves_hotstart_threshold_assertions():
 def test_sam3_video_base_object_limit_helpers_match_upstream_ordering_contract():
     base = Sam3VideoBase(detector=object(), tracker=object())
 
-    kept = base._drop_new_det_with_obj_limit(
+    kept = base.drop_new_det_with_obj_limit(
         new_det_fa_inds=np.array([0, 1, 2, 3]),
         det_scores_np=np.array([0.1, 0.9, 0.4, 0.8]),
         num_to_keep=2,
     )
-    gpu_ids = base._assign_new_det_to_gpus(
+    gpu_ids = base.assign_new_det_to_gpus(
         new_det_num=5,
         prev_workload_per_gpu=np.array([2, 0, 1]),
     )

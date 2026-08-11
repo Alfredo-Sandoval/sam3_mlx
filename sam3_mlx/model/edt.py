@@ -9,7 +9,7 @@ same binary EDT contract with NumPy and returns an MLX array for MLX inputs.
 
 from __future__ import annotations
 
-from typing import Never, cast
+from typing import Never, TypeGuard, cast, overload
 
 import mlx.core as mx
 import numpy as np
@@ -22,7 +22,7 @@ from sam3_mlx.mlx_runtime import to_numpy
 _INF = 1.0e18
 
 
-def _is_mlx_array(value: object) -> bool:
+def _is_mlx_array(value: object) -> TypeGuard[mx.array]:
     return type(value).__module__.startswith("mlx.")
 
 
@@ -107,7 +107,15 @@ def edt_mlx(data: object) -> mx.array:
     return mx.array(edt_numpy(data), dtype=mx.float32)
 
 
-def edt_triton(data: object) -> mx.array | NDArray[np.float32]:
+@overload
+def edt_triton(data: mx.array) -> mx.array: ...
+
+
+@overload
+def edt_triton(data: NDArray[np.generic]) -> NDArray[np.float32]: ...
+
+
+def edt_triton(data: mx.array | NDArray[np.generic]) -> mx.array | NDArray[np.float32]:
     """
     Compatibility wrapper for upstream ``edt_triton``.
 

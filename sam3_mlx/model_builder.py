@@ -613,7 +613,7 @@ def _create_sam3_model(
     )
 
 
-def _create_tracker_maskmem_backbone() -> SimpleMaskEncoder:
+def create_tracker_maskmem_backbone() -> SimpleMaskEncoder:
     """Create the SAM3 Tracker memory encoder (SimpleMaskEncoder)."""
     position_encoding = PositionEmbeddingSine(
         num_pos_feats=64,
@@ -641,7 +641,7 @@ def _create_tracker_maskmem_backbone() -> SimpleMaskEncoder:
     )
 
 
-def _create_tracker_transformer() -> TransformerWrapper:
+def create_tracker_transformer() -> TransformerWrapper:
     """Create the SAM3 Tracker memory-attention transformer (encoder-only)."""
     self_attention = RoPEAttention(
         embedding_dim=256,
@@ -715,8 +715,8 @@ def build_tracker(
             alternative="build_tracker(..., with_backbone=False, checkpoint_path=...)",
         )
 
-    maskmem_backbone = _create_tracker_maskmem_backbone()
-    transformer = _create_tracker_transformer()
+    maskmem_backbone = create_tracker_maskmem_backbone()
+    transformer = create_tracker_transformer()
     backbone = None
     if with_backbone:
         vision_backbone = _create_vision_backbone(

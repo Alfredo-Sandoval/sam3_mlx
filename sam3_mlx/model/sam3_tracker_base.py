@@ -57,17 +57,20 @@ class _NumpyPointInputs(TypedDict):
     point_labels: np.ndarray
 
 
-class TrackerFrameOutput(TypedDict):
+class TrackerStoredFrameOutput(TypedDict):
     pred_masks: Required[mx.array]
-    pred_masks_high_res: Required[mx.array]
     obj_ptr: Required[mx.array]
     object_score_logits: Required[mx.array]
     iou_score: NotRequired[mx.array]
-    eff_iou_score: NotRequired[mx.array | int | float]
+    eff_iou_score: NotRequired[mx.array]
     maskmem_features: Required[mx.array | None]
     maskmem_pos_enc: Required[list[mx.array] | None]
     point_inputs: NotRequired[PointInputs | None]
     mask_inputs: NotRequired[mx.array | None]
+
+
+class TrackerFrameOutput(TrackerStoredFrameOutput):
+    pred_masks_high_res: Required[mx.array]
 
 
 class _TrackerFrameOutputPartial(TypedDict, total=False):
@@ -76,7 +79,7 @@ class _TrackerFrameOutputPartial(TypedDict, total=False):
     obj_ptr: mx.array
     object_score_logits: mx.array
     iou_score: mx.array
-    eff_iou_score: mx.array | int | float
+    eff_iou_score: mx.array
     maskmem_features: mx.array | None
     maskmem_pos_enc: list[mx.array] | None
     point_inputs: PointInputs | None
@@ -92,8 +95,8 @@ class _MemoryFrameOutput(TypedDict):
 
 
 class TrackerOutputState(TypedDict):
-    cond_frame_outputs: dict[int, TrackerFrameOutput]
-    non_cond_frame_outputs: dict[int, TrackerFrameOutput]
+    cond_frame_outputs: dict[int, TrackerStoredFrameOutput]
+    non_cond_frame_outputs: dict[int, TrackerStoredFrameOutput]
 
 
 class BackboneFeatureOutput(TypedDict):
@@ -126,6 +129,28 @@ class SamMaskDecoderExtraArgs(TypedDict, total=False):
     dynamic_multimask_via_stability: bool
     dynamic_multimask_stability_delta: float
     dynamic_multimask_stability_thresh: float
+
+
+class TrackerBaseOptions(TypedDict, total=False):
+    num_maskmem: int
+    image_size: int
+    backbone_stride: int
+    max_cond_frames_in_attn: int
+    keep_first_cond_frame: bool
+    multimask_output_in_sam: bool
+    multimask_min_pt_num: int
+    multimask_max_pt_num: int
+    multimask_output_for_tracking: bool
+    forward_backbone_per_frame_for_eval: bool
+    memory_temporal_stride_for_eval: int
+    offload_output_to_cpu_for_eval: bool
+    trim_past_non_cond_mem_for_eval: bool
+    non_overlap_masks_for_mem_enc: bool
+    max_obj_ptrs_in_encoder: int
+    sam_mask_decoder_extra_args: SamMaskDecoderExtraArgs | None
+    compile_all_components: bool
+    use_memory_selection: bool
+    mf_threshold: float
 
 
 class _WeightedArray(Protocol):
@@ -215,12 +240,12 @@ class _SelectClosestCondFrames(Protocol):
     def __call__(
         self,
         frame_idx: int,
-        cond_frame_outputs: Mapping[int, TrackerFrameOutput],
+        cond_frame_outputs: Mapping[int, TrackerStoredFrameOutput],
         max_cond_frame_num: int,
         keep_first_cond_frame: bool = False,
     ) -> tuple[
-        dict[int, TrackerFrameOutput],
-        dict[int, TrackerFrameOutput],
+        dict[int, TrackerStoredFrameOutput],
+        dict[int, TrackerStoredFrameOutput],
     ]: ...
 
 
@@ -381,7 +406,7 @@ class Sam3TrackerBase(nn.Module):
             self._compile_all_components()
 
     @property
-    def device(self):
+    def device(self) -> str:
         return "mlx"
 
     def _build_sam_heads(self) -> None:
@@ -828,7 +853,9 @@ class Sam3TrackerBase(nn.Module):
                 )
             )
             valid_indices: list[int] = []
-            t_pos_and_prevs: list[tuple[int, TrackerFrameOutput | None, bool]] = [
+            t_pos_and_prevs: list[
+                tuple[int, TrackerStoredFrameOutput | None, bool]
+            ] = [
                 ((frame_idx - t) * tpos_sign_mul, out, True)
                 for t, out in selected_cond_outputs.items()
             ]

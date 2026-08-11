@@ -15,8 +15,8 @@ import pytest
 
 from sam3_mlx.model.sam3_tracker_base import Sam3TrackerBase
 from sam3_mlx.model_builder import (
-    _create_tracker_maskmem_backbone,
-    _create_tracker_transformer,
+    create_tracker_maskmem_backbone,
+    create_tracker_transformer,
 )
 from tests._paths import PORT_TRACKER_FIXTURE_ROOT
 
@@ -28,8 +28,8 @@ IMAGE = 1008
 def base():
     model = Sam3TrackerBase(
         backbone=None,
-        transformer=_create_tracker_transformer(),
-        maskmem_backbone=_create_tracker_maskmem_backbone(),
+        transformer=create_tracker_transformer(),
+        maskmem_backbone=create_tracker_maskmem_backbone(),
         image_size=IMAGE,
         num_maskmem=7,
         backbone_stride=14,
@@ -116,8 +116,8 @@ def test_forward_sam_heads_accepts_no_point_prompt(base):
 def test_use_mask_as_output_direct_prompt_logits_and_empty_object_pointer():
     model = Sam3TrackerBase(
         backbone=None,
-        transformer=_create_tracker_transformer(),
-        maskmem_backbone=_create_tracker_maskmem_backbone(),
+        transformer=create_tracker_transformer(),
+        maskmem_backbone=create_tracker_maskmem_backbone(),
         image_size=28,
         num_maskmem=2,
         backbone_stride=14,

@@ -20,8 +20,8 @@ from mlx.utils import tree_flatten
 
 from sam3_mlx.model.sam3_tracker_base import Sam3TrackerBase
 from sam3_mlx.model_builder import (
-    _create_tracker_maskmem_backbone,
-    _create_tracker_transformer,
+    create_tracker_maskmem_backbone,
+    create_tracker_transformer,
 )
 from tests._paths import PORT_TRACKER_FIXTURE_ROOT
 
@@ -59,8 +59,8 @@ def official_state():
 def mlx_state():
     base = Sam3TrackerBase(
         backbone=None,
-        transformer=_create_tracker_transformer(),
-        maskmem_backbone=_create_tracker_maskmem_backbone(),
+        transformer=create_tracker_transformer(),
+        maskmem_backbone=create_tracker_maskmem_backbone(),
         image_size=1008,
         num_maskmem=7,
         backbone_stride=14,

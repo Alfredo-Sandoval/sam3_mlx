@@ -4,11 +4,12 @@ from collections import defaultdict
 from enum import Enum
 import math
 import os
-from typing import Any
+from typing import Any, TypeAlias, TypeGuard, TypeVar, cast
 
 import mlx.core as mx
-import mlx.nn as nn
+from mlx import nn
 import numpy as np
+from numpy.typing import DTypeLike, NDArray
 
 from sam3_mlx.mlx_runtime import to_numpy
 from sam3_mlx.perflib.masks_ops import mask_iou
@@ -25,22 +26,26 @@ from sam3_mlx.model.multiplex_utils import raise_unsupported_multiplex_runtime
 
 
 SAM3_COLLECTIVE_OP_TIMEOUT_SEC = 180
+NumpyArray: TypeAlias = NDArray[np.generic]
+MetadataValue = TypeVar("MetadataValue")
 
 
-def _is_mlx_array(value: Any) -> bool:
+def _is_mlx_array(value: object) -> TypeGuard[mx.array]:
     return value.__class__.__module__.startswith("mlx.")
 
 
-def _array_to_numpy(value: Any, *, dtype=None) -> np.ndarray:
-    return to_numpy(value, dtype=dtype, copy=False)
+def _array_to_numpy(
+    value: object, *, dtype: DTypeLike | None = None
+) -> NumpyArray:
+    return cast(NumpyArray, to_numpy(value, dtype=dtype, copy=False))
 
 
-def _score_to_float(value: Any) -> float:
+def _score_to_float(value: object) -> float:
     array = _array_to_numpy(value, dtype=np.float32)
     return float(array.reshape(-1)[0])
 
 
-def _is_floating_array(value: Any) -> bool:
+def _is_floating_array(value: object) -> bool:
     if _is_mlx_array(value):
         return value.dtype in {mx.float16, mx.float32, mx.bfloat16}
     dtype = getattr(value, "dtype", None)
@@ -49,22 +54,36 @@ def _is_floating_array(value: Any) -> bool:
     return np.issubdtype(dtype, np.floating)
 
 
-def _copy_metadata_value(value: Any) -> Any:
+def _copy_metadata_value(value: MetadataValue) -> MetadataValue:
     if isinstance(value, np.ndarray):
-        return value.copy()
+        return cast(MetadataValue, value.copy())
     if isinstance(value, defaultdict):
-        copied = defaultdict(value.default_factory)
-        for key, item in value.items():
+        source = cast(defaultdict[object, object], value)
+        default_factory = source.default_factory
+        copied: defaultdict[object, object] = defaultdict(default_factory)
+        for key, item in source.items():
             copied[key] = _copy_metadata_value(item)
-        return copied
+        return cast(MetadataValue, copied)
     if isinstance(value, dict):
-        return {key: _copy_metadata_value(item) for key, item in value.items()}
+        source_dict = cast(dict[object, object], value)
+        return cast(MetadataValue, {
+            key: _copy_metadata_value(item) for key, item in source_dict.items()
+        })
     if isinstance(value, list):
-        return [_copy_metadata_value(item) for item in value]
+        return cast(
+            MetadataValue,
+            [_copy_metadata_value(item) for item in cast(list[object], value)],
+        )
     if isinstance(value, tuple):
-        return tuple(_copy_metadata_value(item) for item in value)
+        return cast(
+            MetadataValue,
+            tuple(
+                _copy_metadata_value(item)
+                for item in cast(tuple[object, ...], value)
+            ),
+        )
     if isinstance(value, set):
-        return set(value)
+        return cast(MetadataValue, set(cast(set[object], value)))
     return value
 
 

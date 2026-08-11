@@ -212,13 +212,13 @@ def _map_interpolate_mode(mode: str) -> str:
 
 
 def interpolate(
-    input,
-    size=None,
-    scale_factor=None,
-    mode="nearest",
-    align_corners=None,
-    antialias=False,
-):
+    input: mx.array,
+    size: int | tuple[int, int] | None = None,
+    scale_factor: float | tuple[float, float] | None = None,
+    mode: str = "nearest",
+    align_corners: bool | None = None,
+    antialias: bool = False,
+) -> mx.array:
     mlx_mode = _map_interpolate_mode(mode)
     out_hw, final_scale = _resolve_output_size(
         input.shape[-2:],
