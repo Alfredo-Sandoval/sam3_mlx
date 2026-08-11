@@ -3,21 +3,25 @@
 from __future__ import annotations
 
 import json
+from importlib import import_module
 import os
 from pathlib import Path
+from collections.abc import Iterable
+from typing import Any, NoReturn, cast
 
 import numpy as np
+from numpy.typing import NDArray
 from PIL import Image, ImageColor, ImageDraw
 
 from sam3_mlx._unsupported import raise_unsupported
 from sam3_mlx.rle import rle_decode, rle_to_bbox
 
 
-def _require_matplotlib():
+def _require_matplotlib() -> tuple[Any, Any, Any]:
     try:
-        import matplotlib.patches as patches
-        import matplotlib.pyplot as plt
-        from matplotlib.colors import to_rgb
+        patches = import_module("matplotlib.patches")
+        plt = import_module("matplotlib.pyplot")
+        to_rgb = getattr(import_module("matplotlib.colors"), "to_rgb")
     except ImportError as exc:
         raise ImportError(
             "matplotlib is required for plotting helpers. Install the repo's viz extra."
@@ -25,7 +29,7 @@ def _require_matplotlib():
     return patches, plt, to_rgb
 
 
-def _as_rgb_float(color):
+def _as_rgb_float(color: Any) -> NDArray[Any]:
     if isinstance(color, str):
         return np.asarray(ImageColor.getrgb(color), dtype=np.float32) / 255.0
     arr = np.asarray(color, dtype=np.float32)
@@ -41,10 +45,11 @@ def _mask_to_box_xyxy(mask: np.ndarray) -> list[float]:
     return [float(xs.min()), float(ys.min()), float(xs.max() + 1), float(ys.max() + 1)]
 
 
-def generate_colors(n_colors=256, n_samples=5000):
+def generate_colors(n_colors: int = 256, n_samples: int = 5000) -> NDArray[Any]:
     """Generate deterministic bright RGB colors in ``[0, 1]``."""
+    del n_samples
     hues = np.linspace(0, 1, n_colors, endpoint=False)
-    colors = []
+    colors: list[tuple[float, float, float]] = []
     for hue in hues:
         sector = hue * 6.0
         c = 1.0
@@ -68,7 +73,7 @@ def generate_colors(n_colors=256, n_samples=5000):
 COLORS = generate_colors(n_colors=128, n_samples=5000)
 
 
-def show_img_tensor(img_batch, vis_img_idx=0):
+def show_img_tensor(img_batch: Any, vis_img_idx: int = 0) -> None:
     """Show an image batch item using matplotlib; accepts NumPy/MLX-like arrays."""
     _, plt, _ = _require_matplotlib()
     mean_img = np.array([0.5, 0.5, 0.5])
@@ -82,7 +87,11 @@ def show_img_tensor(img_batch, vis_img_idx=0):
     plt.imshow(np.clip(im_tensor, 0, 1))
 
 
-def draw_box_on_image(image, box, color=(0, 255, 0)):
+def draw_box_on_image(
+    image: Image.Image,
+    box: Any,
+    color: tuple[int, int, int] = (0, 255, 0),
+) -> Image.Image:
     """Draw an ``XYWH`` rectangle on a PIL image and return the image."""
     image = image.convert("RGB")
     draw = ImageDraw.Draw(image)
@@ -92,16 +101,16 @@ def draw_box_on_image(image, box, color=(0, 255, 0)):
 
 
 def plot_bbox(
-    img_height,
-    img_width,
-    box,
-    box_format="XYXY",
-    relative_coords=True,
-    color="r",
-    linestyle="solid",
-    text=None,
-    ax=None,
-):
+    img_height: int,
+    img_width: int,
+    box: Any,
+    box_format: str = "XYXY",
+    relative_coords: bool = True,
+    color: Any = "r",
+    linestyle: str = "solid",
+    text: str | None = None,
+    ax: Any = None,
+) -> None:
     patches, plt, _ = _require_matplotlib()
     box = np.asarray(box, dtype=float)
     if box_format == "XYXY":
@@ -147,7 +156,7 @@ def plot_bbox(
         )
 
 
-def plot_mask(mask, color="r", ax=None):
+def plot_mask(mask: Any, color: Any = "r", ax: Any = None) -> None:
     _, plt, to_rgb = _require_matplotlib()
     mask = np.asarray(mask)
     im_h, im_w = mask.shape
@@ -161,12 +170,13 @@ def plot_mask(mask, color="r", ax=None):
     ax.imshow(mask_img)
 
 
-def normalize_bbox(bbox_xywh, img_w, img_h):
+def normalize_bbox(bbox_xywh: Any, img_w: int, img_h: int) -> Any:
     """Normalize an ``XYWH`` or ``XYXY`` style 4-vector/array by image size."""
     if isinstance(bbox_xywh, list):
-        if len(bbox_xywh) != 4:
+        bbox_values = [float(value) for value in cast(list[Any], bbox_xywh)]
+        if len(bbox_values) != 4:
             raise AssertionError("bbox_xywh list must have 4 elements.")
-        normalized_bbox = bbox_xywh.copy()
+        normalized_bbox = bbox_values.copy()
         normalized_bbox[0] /= img_w
         normalized_bbox[1] /= img_h
         normalized_bbox[2] /= img_w
@@ -182,7 +192,12 @@ def normalize_bbox(bbox_xywh, img_w, img_h):
     return normalized_bbox
 
 
-def visualize_frame_output(frame_idx, video_frames, outputs, figsize=(12, 8)):
+def visualize_frame_output(
+    frame_idx: int,
+    video_frames: Any,
+    outputs: dict[str, Any],
+    figsize: tuple[int, int] = (12, 8),
+) -> None:
     _, plt, _ = _require_matplotlib()
     plt.figure(figsize=figsize)
     plt.title(f"frame {frame_idx}")
@@ -207,25 +222,31 @@ def visualize_frame_output(frame_idx, video_frames, outputs, figsize=(12, 8)):
 
 
 def visualize_formatted_frame_output(
-    frame_idx,
-    video_frames,
-    outputs_list,
-    titles=None,
-    points_list=None,
-    points_labels_list=None,
-    figsize=(12, 8),
-    title_suffix="",
-    prompt_info=None,
-):
+    frame_idx: int,
+    video_frames: Any,
+    outputs_list: Any,
+    titles: list[str] | None = None,
+    points_list: list[Any] | None = None,
+    points_labels_list: list[Any] | None = None,
+    figsize: tuple[int, int] = (12, 8),
+    title_suffix: str = "",
+    prompt_info: Any = None,
+) -> None:
+    del prompt_info
     _, plt, _ = _require_matplotlib()
-    if isinstance(outputs_list, dict) and frame_idx in outputs_list:
-        outputs_list = [outputs_list]
-    elif isinstance(outputs_list, dict) and not any(
-        isinstance(k, int) for k in outputs_list.keys()
-    ):
-        outputs_list = [{frame_idx: outputs_list}]
+    normalized_outputs: list[dict[int, dict[Any, Any]]]
+    if isinstance(outputs_list, dict):
+        output_mapping = cast(dict[Any, Any], outputs_list)
+        if frame_idx in output_mapping:
+            normalized_outputs = [cast(dict[int, dict[Any, Any]], output_mapping)]
+        elif not any(isinstance(key, int) for key in output_mapping):
+            normalized_outputs = [{frame_idx: output_mapping}]
+        else:
+            normalized_outputs = [cast(dict[int, dict[Any, Any]], output_mapping)]
+    else:
+        normalized_outputs = cast(list[dict[int, dict[Any, Any]]], outputs_list)
 
-    num_outputs = len(outputs_list)
+    num_outputs = len(normalized_outputs)
     if titles is None:
         titles = [f"Set {i + 1}" for i in range(num_outputs)]
     if len(titles) != num_outputs:
@@ -237,7 +258,9 @@ def visualize_formatted_frame_output(
 
     img = load_frame(video_frames[frame_idx])
     img_H, img_W = img.shape[:2]
-    for idx, (ax, outputs_set, ax_title) in enumerate(zip(axes, outputs_list, titles)):
+    for idx, (ax, outputs_set, ax_title) in enumerate(
+        zip(axes, normalized_outputs, titles)
+    ):
         ax.set_title(f"Frame {frame_idx} - {ax_title}{title_suffix}")
         ax.imshow(img)
         frame_outputs = outputs_set.get(frame_idx)
@@ -262,6 +285,8 @@ def visualize_formatted_frame_output(
             plot_mask(binary_mask, color=color, ax=ax)
             objects_drawn += 1
         if points_list is not None and points_list[idx] is not None:
+            if points_labels_list is None:
+                raise ValueError("points_labels_list is required with points_list")
             show_points(
                 points_list[idx], points_labels_list[idx], ax=ax, marker_size=200
             )
@@ -279,7 +304,12 @@ def visualize_formatted_frame_output(
     plt.show()
 
 
-def render_masklet_frame(img, outputs, frame_idx=None, alpha=0.5):
+def render_masklet_frame(
+    img: Any,
+    outputs: dict[str, Any],
+    frame_idx: int | None = None,
+    alpha: float = 0.5,
+) -> NDArray[Any]:
     """Overlay masklets and boxes on a frame, returning a uint8 RGB array."""
     img = load_frame(img)
     if img.dtype == np.float32 or img.max(initial=0) <= 1.0:
@@ -324,7 +354,14 @@ def render_masklet_frame(img, outputs, frame_idx=None, alpha=0.5):
     return np.asarray(pil)
 
 
-def save_masklet_video(video_frames, outputs, out_path, alpha=0.5, fps=10):
+def save_masklet_video(
+    video_frames: Any,
+    outputs: Any,
+    out_path: str | os.PathLike[str],
+    alpha: float = 0.5,
+    fps: int = 10,
+) -> NoReturn:
+    del video_frames, outputs, out_path, alpha, fps
     raise_unsupported(
         "sam3_mlx.visualization_utils.save_masklet_video",
         reason="port-gap",
@@ -336,15 +373,23 @@ def save_masklet_video(video_frames, outputs, out_path, alpha=0.5, fps=10):
     )
 
 
-def save_masklet_image(frame, outputs, out_path, alpha=0.5, frame_idx=None):
+def save_masklet_image(
+    frame: Any,
+    outputs: dict[str, Any],
+    out_path: str | os.PathLike[str],
+    alpha: float = 0.5,
+    frame_idx: int | None = None,
+) -> None:
     img = load_frame(frame)
     overlay = render_masklet_frame(img, outputs, frame_idx=frame_idx, alpha=alpha)
     Image.fromarray(overlay).save(out_path)
 
 
-def prepare_masks_for_visualization(frame_to_output):
+def prepare_masks_for_visualization(
+    frame_to_output: dict[int, dict[str, Any]],
+) -> dict[int, Any]:
     for frame_idx, out in frame_to_output.items():
-        processed = {}
+        processed: dict[Any, Any] = {}
         for idx, obj_id in enumerate(np.asarray(out["out_obj_ids"]).tolist()):
             if np.asarray(out["out_binary_masks"][idx]).any():
                 processed[obj_id] = out["out_binary_masks"][idx]
@@ -353,9 +398,12 @@ def prepare_masks_for_visualization(frame_to_output):
 
 
 def convert_coco_to_masklet_format(
-    annotations, img_info, is_prediction=False, score_threshold=0.5
-):
-    outputs = {
+    annotations: list[dict[str, Any]],
+    img_info: dict[str, Any],
+    is_prediction: bool = False,
+    score_threshold: float = 0.5,
+) -> dict[str, list[Any]]:
+    outputs: dict[str, list[Any]] = {
         "out_boxes_xywh": [],
         "out_probs": [],
         "out_obj_ids": [],
@@ -387,7 +435,12 @@ def convert_coco_to_masklet_format(
     return outputs
 
 
-def save_side_by_side_visualization(img, gt_anns, pred_anns, noun_phrase):
+def save_side_by_side_visualization(
+    img: Any,
+    gt_anns: dict[str, Any],
+    pred_anns: dict[str, Any],
+    noun_phrase: str,
+) -> None:
     _, plt, _ = _require_matplotlib()
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7))
     fig.suptitle(f"Noun phrase: '{noun_phrase}'", fontsize=16, fontweight="bold")
@@ -400,11 +453,11 @@ def save_side_by_side_visualization(img, gt_anns, pred_anns, noun_phrase):
     plt.tight_layout()
 
 
-def bitget(val, idx):
+def bitget(val: NDArray[Any], idx: int) -> NDArray[Any]:
     return (val >> idx) & 1
 
 
-def pascal_color_map():
+def pascal_color_map() -> NDArray[Any]:
     colormap = np.zeros((512, 3), dtype=int)
     ind = np.arange(512, dtype=int)
     for shift in reversed(list(range(8))):
@@ -427,11 +480,11 @@ def draw_masks_to_frame(
     return masked_frame
 
 
-def get_annot_df(file_path: str):
+def get_annot_df(file_path: str) -> Any:
     with open(file_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+        data = cast(dict[str, Any], json.load(f))
     try:
-        import pandas as pd
+        pd = import_module("pandas")
     except ImportError:
         return data
     return {
@@ -440,11 +493,11 @@ def get_annot_df(file_path: str):
     }
 
 
-def get_annot_dfs(file_list: list[str]):
+def get_annot_dfs(file_list: list[str]) -> dict[str, Any]:
     return {Path(annot_file).stem: get_annot_df(annot_file) for annot_file in file_list}
 
 
-def get_media_dir(media_dir: str, dataset: str):
+def get_media_dir(media_dir: str, dataset: str) -> str:
     if dataset in ["saco_veval_sav_test", "saco_veval_sav_val"]:
         return os.path.join(media_dir, "saco_sav", "JPEGImages_24fps")
     if dataset in ["saco_veval_yt1b_test", "saco_veval_yt1b_val"]:
@@ -457,8 +510,12 @@ def get_media_dir(media_dir: str, dataset: str):
 
 
 def get_all_annotations_for_frame(
-    dataset_df, video_id: int, frame_idx: int, data_dir: str, dataset: str
-):
+    dataset_df: Any,
+    video_id: int,
+    frame_idx: int,
+    data_dir: str,
+    dataset: str,
+) -> tuple[NDArray[Any], Any, Any]:
     media_dir = os.path.join(data_dir, "media")
     annot_df = dataset_df["annotations"]
     video_df = dataset_df["videos"]
@@ -471,8 +528,9 @@ def get_all_annotations_for_frame(
     if len(annot_df_current_video) == 0:
         return frame, None, None
     empty_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
-    pairs = []
-    for _, row in annot_df_current_video.iterrows():
+    pairs: list[tuple[NDArray[Any], str]] = []
+    rows = cast(Iterable[tuple[Any, Any]], annot_df_current_video.iterrows())
+    for _, row in rows:
         seg = row.segmentations[frame_idx]
         mask = rle_decode(seg) if seg else empty_mask
         pairs.append((mask, row.noun_phrase))
@@ -482,19 +540,19 @@ def get_all_annotations_for_frame(
 
 
 def visualize_prompt_overlay(
-    frame_idx,
-    video_frames,
-    title="Prompt Visualization",
-    text_prompt=None,
-    point_prompts=None,
-    point_labels=None,
-    bounding_boxes=None,
-    box_labels=None,
-    obj_id=None,
-):
+    frame_idx: int,
+    video_frames: Any,
+    title: str = "Prompt Visualization",
+    text_prompt: str | None = None,
+    point_prompts: list[Any] | None = None,
+    point_labels: list[int] | None = None,
+    bounding_boxes: list[Any] | None = None,
+    box_labels: list[int] | None = None,
+    obj_id: int | None = None,
+) -> None:
     patches, plt, _ = _require_matplotlib()
     img = Image.fromarray(load_frame(video_frames[frame_idx]))
-    fig, ax = plt.subplots(1, figsize=(6, 4))
+    _, ax = plt.subplots(1, figsize=(6, 4))
     ax.imshow(img)
     img_w, img_h = img.size
     if text_prompt:
@@ -542,7 +600,7 @@ def visualize_prompt_overlay(
     plt.show()
 
 
-def plot_results(img, results):
+def plot_results(img: Any, results: dict[str, Any]) -> None:
     _, plt, _ = _require_matplotlib()
     plt.figure(figsize=(12, 8))
     plt.imshow(img)
@@ -568,7 +626,7 @@ def plot_results(img, results):
         )
 
 
-def single_visualization(img, anns, title):
+def single_visualization(img: Any, anns: dict[str, Any], title: str) -> None:
     _, plt, _ = _require_matplotlib()
     fig, ax = plt.subplots(figsize=(7, 7))
     fig.suptitle(title, fontsize=16, fontweight="bold")
@@ -577,7 +635,9 @@ def single_visualization(img, anns, title):
     plt.tight_layout()
 
 
-def show_mask(mask, ax, obj_id=None, random_color=False):
+def show_mask(
+    mask: Any, ax: Any, obj_id: int | None = None, random_color: bool = False
+) -> None:
     if random_color:
         color = np.concatenate([np.random.random(3), np.array([0.6])], axis=0)
     else:
@@ -590,7 +650,7 @@ def show_mask(mask, ax, obj_id=None, random_color=False):
     ax.imshow(mask.reshape(h, w, 1) * color.reshape(1, 1, -1))
 
 
-def show_box(box, ax):
+def show_box(box: Any, ax: Any) -> None:
     _, plt, _ = _require_matplotlib()
     x0, y0 = box[0], box[1]
     w, h = box[2] - box[0], box[3] - box[1]
@@ -599,7 +659,7 @@ def show_box(box, ax):
     )
 
 
-def show_points(coords, labels, ax, marker_size=375):
+def show_points(coords: Any, labels: Any, ax: Any, marker_size: float = 375) -> None:
     coords = np.asarray(coords)
     labels = np.asarray(labels)
     pos_points = coords[labels == 1]
@@ -624,13 +684,16 @@ def show_points(coords, labels, ax, marker_size=375):
     )
 
 
-def load_frame(frame):
+def load_frame(frame: Any) -> NDArray[Any]:
     if isinstance(frame, np.ndarray):
-        img = frame
+        img = cast(NDArray[Any], frame)
     elif isinstance(frame, Image.Image):
         img = np.array(frame)
-    elif isinstance(frame, (str, os.PathLike)) and os.path.isfile(frame):
-        img = np.array(Image.open(frame).convert("RGB"))
+    elif isinstance(frame, (str, os.PathLike)):
+        path = os.fspath(cast(str | os.PathLike[str], frame))
+        if not os.path.isfile(path):
+            raise ValueError("Video frame path does not reference a file")
+        img = np.array(Image.open(path).convert("RGB"))
     else:
-        raise ValueError(f"Invalid video frame type: type(frame)={type(frame)}")
+        raise ValueError("Video frame must be an array, PIL image, or file path")
     return img

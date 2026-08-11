@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from enum import Enum
+from os import PathLike
+from typing import Any, Iterator, Self, cast
 
 import numpy as np
+from numpy.typing import NDArray
 from PIL import Image, ImageColor, ImageDraw, ImageFont
 
 from sam3_mlx.agent.helpers.color_map import colormap
@@ -18,16 +21,18 @@ class ColorMode(Enum):
 
 
 class GenericMask:
-    def __init__(self, mask_or_polygons, height: int, width: int):
-        self._mask = None
-        self._polygons = None
+    def __init__(self, mask_or_polygons: Any, height: int, width: int) -> None:
+        self._mask: NDArray[Any] | None = None
+        self._polygons: list[NDArray[Any]] | None = None
         self._has_holes = False
         self.height = int(height)
         self.width = int(width)
         if isinstance(mask_or_polygons, dict):
-            self._mask = rle_decode(mask_or_polygons)
+            self._mask = rle_decode(cast(dict[str, Any], mask_or_polygons))
         elif isinstance(mask_or_polygons, list):
-            self._polygons = mask_or_polygons
+            self._polygons = [
+                np.asarray(polygon) for polygon in cast(list[Any], mask_or_polygons)
+            ]
         else:
             mask = np.asarray(mask_or_polygons, dtype=bool)
             if mask.shape != (self.height, self.width):
@@ -37,39 +42,42 @@ class GenericMask:
             self._mask = mask
 
     @property
-    def mask(self):
+    def mask(self) -> NDArray[Any]:
         if self._mask is None:
             from .masks import polygons_to_bitmask
 
             self._mask = polygons_to_bitmask(
-                [np.asarray(p) for p in self._polygons], self.height, self.width
+                [np.asarray(p) for p in (self._polygons or [])],
+                self.height,
+                self.width,
             )
         return self._mask
 
     @property
-    def polygons(self):
+    def polygons(self) -> list[NDArray[Any]]:
         if self._polygons is None:
             self._polygons = []
         return self._polygons
 
     @property
-    def has_holes(self):
+    def has_holes(self) -> bool:
         return self._has_holes
 
-    def mask_to_polygons(self, mask):
+    def mask_to_polygons(self, mask: Any) -> tuple[list[NDArray[Any]], bool]:
+        del mask
         return [], False
 
-    def polygons_to_mask(self, polygons):
+    def polygons_to_mask(self, polygons: list[NDArray[Any]]) -> NDArray[Any]:
         from .masks import polygons_to_bitmask
 
         return polygons_to_bitmask(
             [np.asarray(p) for p in polygons], self.height, self.width
         )
 
-    def area(self):
+    def area(self) -> int:
         return int(self.mask.sum())
 
-    def bbox(self):
+    def bbox(self) -> list[float]:
         ys, xs = np.where(self.mask)
         if xs.size == 0 or ys.size == 0:
             return [0, 0, 0, 0]
@@ -77,24 +85,34 @@ class GenericMask:
 
 
 class _PanopticPrediction:
-    def __init__(self, panoptic_seg, segments_info, metadata=None):
+    def __init__(
+        self,
+        panoptic_seg: Any,
+        segments_info: list[dict[str, Any]],
+        metadata: Any = None,
+    ) -> None:
         self.panoptic_seg = np.asarray(panoptic_seg)
         self.segments_info = segments_info
         self.metadata = metadata
 
-    def non_empty_mask(self):
+    def non_empty_mask(self) -> NDArray[Any]:
         return self.panoptic_seg >= 0
 
-    def semantic_masks(self):
+    def semantic_masks(self) -> Iterator[tuple[dict[str, Any], NDArray[Any]]]:
         for segment in self.segments_info:
             yield segment, self.panoptic_seg == segment.get("id")
 
-    def instance_masks(self):
+    def instance_masks(self) -> Iterator[tuple[dict[str, Any], NDArray[Any]]]:
         yield from self.semantic_masks()
 
 
-def _create_text_labels(classes, scores, class_names, is_crowd=None):
-    labels = []
+def _create_text_labels(
+    classes: list[int],
+    scores: list[float] | None,
+    class_names: list[str] | None,
+    is_crowd: list[bool] | None = None,
+) -> list[str]:
+    labels: list[str] = []
     for i, class_id in enumerate(classes):
         label = class_names[class_id] if class_names is not None else str(class_id)
         if scores is not None:
@@ -106,45 +124,54 @@ def _create_text_labels(classes, scores, class_names, is_crowd=None):
 
 
 class VisImage:
-    def __init__(self, img, scale: float = 1.0):
+    def __init__(self, img: Any, scale: float = 1.0) -> None:
         self.img = np.asarray(img).astype(np.uint8)
         self.scale = scale
 
-    def _setup_figure(self, img):
+    def _setup_figure(self, img: Any) -> None:
+        del img
         return None
 
-    def reset_image(self, img):
+    def reset_image(self, img: Any) -> Self:
         self.img = np.asarray(img).astype(np.uint8)
         return self
 
-    def save(self, filepath):
+    def save(self, filepath: str | PathLike[str]) -> None:
         Image.fromarray(self.img).save(filepath)
 
-    def get_image(self):
+    def get_image(self) -> NDArray[Any]:
         return self.img
 
 
-def _as_rgb_tuple(color) -> tuple[int, int, int]:
+def _as_rgb_tuple(color: Any) -> tuple[int, int, int]:
     if color is None:
         return (0, 255, 0)
     if isinstance(color, str):
-        return ImageColor.getrgb(color)
+        rgb = ImageColor.getrgb(color)
+        return int(rgb[0]), int(rgb[1]), int(rgb[2])
     arr = np.asarray(color, dtype=float)
     if arr.max() <= 1:
         arr = arr * 255
-    return tuple(int(np.clip(v, 0, 255)) for v in arr[:3])
+    if arr.size < 3:
+        raise ValueError("color must contain at least three channels")
+    return (
+        int(np.clip(arr[0], 0, 255)),
+        int(np.clip(arr[1], 0, 255)),
+        int(np.clip(arr[2], 0, 255)),
+    )
 
 
 class Visualizer:
     def __init__(
         self,
-        img_rgb,
-        metadata=None,
+        img_rgb: Any,
+        metadata: Any = None,
         scale: float = 1.0,
-        instance_mode=ColorMode.IMAGE,
+        instance_mode: ColorMode = ColorMode.IMAGE,
         font_size_multiplier: float = 1.0,
         boarder_width_multiplier: float = 0,
-    ):
+    ) -> None:
+        del instance_mode
         self.img = np.asarray(img_rgb).astype(np.uint8)
         self.metadata = metadata
         self.scale = scale
@@ -152,38 +179,49 @@ class Visualizer:
         self.font_size_multiplier = font_size_multiplier
         self.boarder_width_multiplier = boarder_width_multiplier
 
-    def draw_instance_predictions(self, predictions):
+    def draw_instance_predictions(self, predictions: Any) -> Self:
+        del predictions
         return self
 
-    def draw_sem_seg(self, sem_seg, area_threshold=None, alpha=0.8):
+    def draw_sem_seg(
+        self, sem_seg: Any, area_threshold: float | None = None, alpha: float = 0.8
+    ) -> Self:
+        del sem_seg, area_threshold, alpha
         return self
 
     def draw_panoptic_seg(
-        self, panoptic_seg, segments_info, area_threshold=None, alpha=0.7
-    ):
+        self,
+        panoptic_seg: Any,
+        segments_info: Any,
+        area_threshold: float | None = None,
+        alpha: float = 0.7,
+    ) -> Self:
+        del panoptic_seg, segments_info, area_threshold, alpha
         return self
 
-    def draw_dataset_dict(self, dic):
+    def draw_dataset_dict(self, dic: Any) -> Self:
+        del dic
         return self
 
     def overlay_instances(
         self,
         *,
-        boxes=None,
-        labels=None,
-        masks=None,
-        keypoints=None,
-        assigned_colors=None,
-        alpha=0.5,
-        label_mode="1",
-        binary_masks=None,
-    ):
+        boxes: Any = None,
+        labels: list[str] | None = None,
+        masks: list[Any] | None = None,
+        keypoints: Any = None,
+        assigned_colors: list[Any] | None = None,
+        alpha: float = 0.5,
+        label_mode: str = "1",
+        binary_masks: list[Any] | None = None,
+    ) -> Self:
+        del keypoints
         image = Image.fromarray(self.output.img).convert("RGBA")
         draw = ImageDraw.Draw(image)
         boxes_arr = np.asarray(boxes, dtype=float) if boxes is not None else None
         if binary_masks is None and masks is not None:
             binary_masks = [
-                rle_decode(mask)
+                rle_decode(cast(dict[str, Any], mask))
                 if isinstance(mask, dict)
                 else np.asarray(mask, dtype=bool)
                 for mask in masks
@@ -244,24 +282,47 @@ class Visualizer:
         self.output.img = np.asarray(image.convert("RGB"))
         return self
 
-    def overlay_rotated_instances(self, boxes=None, labels=None, assigned_colors=None):
+    def overlay_rotated_instances(
+        self,
+        boxes: Any = None,
+        labels: list[str] | None = None,
+        assigned_colors: list[Any] | None = None,
+    ) -> Self:
         return self.overlay_instances(
             boxes=boxes, labels=labels, assigned_colors=assigned_colors
         )
 
-    def draw_and_connect_keypoints(self, keypoints):
+    def draw_and_connect_keypoints(self, keypoints: Any) -> Self:
+        del keypoints
         return self
 
-    def mask_dims_from_binary(self, mask, anchor_point=None):
+    def mask_dims_from_binary(
+        self, mask: Any, anchor_point: Any = None
+    ) -> tuple[int, int]:
+        del anchor_point
         ys, xs = np.where(np.asarray(mask, dtype=bool))
         if xs.size == 0 or ys.size == 0:
             return 0, 0
         return int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1)
 
-    def reposition_label(self, label_pos, dimensions, text_dims, padding=5):
+    def reposition_label(
+        self,
+        label_pos: tuple[int, int],
+        dimensions: tuple[int, int],
+        text_dims: tuple[int, int],
+        padding: int = 5,
+    ) -> tuple[int, int]:
+        del dimensions, text_dims, padding
         return label_pos
 
-    def locate_label_position(self, mask, label_text, font, padding=5):
+    def locate_label_position(
+        self,
+        mask: Any,
+        label_text: str,
+        font: Any,
+        padding: int = 5,
+    ) -> tuple[int, int]:
+        del label_text, font, padding
         ys, xs = np.where(np.asarray(mask, dtype=bool))
         if xs.size == 0 or ys.size == 0:
             return 0, 0
@@ -269,18 +330,20 @@ class Visualizer:
 
     def draw_text(
         self,
-        text,
-        position,
+        text: Any,
+        position: tuple[float, float] | list[float],
         *,
-        font_size=None,
-        color="g",
-        horizontal_alignment="left",
-        rotation=0,
-    ):
+        font_size: float | None = None,
+        color: Any = "g",
+        horizontal_alignment: str = "left",
+        rotation: float = 0,
+    ) -> Self:
+        del font_size, horizontal_alignment, rotation
         image = Image.fromarray(self.output.img).convert("RGB")
         draw = ImageDraw.Draw(image)
+        text_position = float(position[0]), float(position[1])
         draw.text(
-            tuple(position),
+            text_position,
             str(text),
             fill=_as_rgb_tuple(color),
             font=ImageFont.load_default(),
@@ -289,8 +352,14 @@ class Visualizer:
         return self
 
     def draw_box(
-        self, box_coord, edge_color="g", line_style="-", alpha=1.0, line_width=2
-    ):
+        self,
+        box_coord: tuple[float, float, float, float] | list[float],
+        edge_color: Any = "g",
+        line_style: str = "-",
+        alpha: float = 1.0,
+        line_width: float = 2,
+    ) -> Self:
+        del line_style, alpha
         image = Image.fromarray(self.output.img).convert("RGB")
         draw = ImageDraw.Draw(image)
         x0, y0, x1, y1 = box_coord
@@ -300,10 +369,15 @@ class Visualizer:
         self.output.img = np.asarray(image)
         return self
 
-    def draw_rotated_box_with_label(self, rotated_box, edge_color="g", label=None):
+    def draw_rotated_box_with_label(
+        self, rotated_box: Any, edge_color: Any = "g", label: str | None = None
+    ) -> Self:
+        del rotated_box, edge_color, label
         return self
 
-    def draw_circle(self, circle_coord, color, radius=3):
+    def draw_circle(
+        self, circle_coord: tuple[float, float], color: Any, radius: float = 3
+    ) -> Self:
         image = Image.fromarray(self.output.img).convert("RGB")
         draw = ImageDraw.Draw(image)
         x, y = circle_coord
@@ -313,7 +387,15 @@ class Visualizer:
         self.output.img = np.asarray(image)
         return self
 
-    def draw_line(self, x_data, y_data, color, linestyle="-", linewidth=None):
+    def draw_line(
+        self,
+        x_data: list[float],
+        y_data: list[float],
+        color: Any,
+        linestyle: str = "-",
+        linewidth: float | None = None,
+    ) -> Self:
+        del linestyle
         image = Image.fromarray(self.output.img).convert("RGB")
         draw = ImageDraw.Draw(image)
         draw.line(
@@ -326,21 +408,28 @@ class Visualizer:
 
     def draw_binary_mask(
         self,
-        binary_mask,
-        color=None,
+        binary_mask: Any,
+        color: Any = None,
         *,
-        edge_color=None,
-        text=None,
-        alpha=0.5,
-        area_threshold=0,
-    ):
+        edge_color: Any = None,
+        text: str | None = None,
+        alpha: float = 0.5,
+        area_threshold: float = 0,
+    ) -> Self:
+        del edge_color, text, area_threshold
         return self.overlay_instances(
             binary_masks=[binary_mask], assigned_colors=[color], alpha=alpha
         )
 
     def draw_binary_mask_with_number(
-        self, binary_mask, text, color=None, *, alpha=0.5, area_threshold=0
-    ):
+        self,
+        binary_mask: Any,
+        text: str,
+        color: Any = None,
+        *,
+        alpha: float = 0.5,
+        area_threshold: float = 0,
+    ) -> Self:
         return self.draw_binary_mask(
             binary_mask,
             color=color,
@@ -349,12 +438,17 @@ class Visualizer:
             area_threshold=area_threshold,
         )
 
-    def draw_soft_mask(self, soft_mask, color=None, *, alpha=0.5):
+    def draw_soft_mask(
+        self, soft_mask: Any, color: Any = None, *, alpha: float = 0.5
+    ) -> Self:
         return self.draw_binary_mask(
             np.asarray(soft_mask) > 0.5, color=color, alpha=alpha
         )
 
-    def draw_polygon(self, segment, color, edge_color=None, alpha=0.5):
+    def draw_polygon(
+        self, segment: Any, color: Any, edge_color: Any = None, alpha: float = 0.5
+    ) -> Self:
+        del edge_color
         image = Image.fromarray(self.output.img).convert("RGBA")
         overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
@@ -367,36 +461,52 @@ class Visualizer:
         )
         return self
 
-    def _jitter(self, color):
+    def _jitter(self, color: Any) -> NDArray[Any]:
         return np.asarray(color)
 
-    def _create_grayscale_image(self, mask=None):
+    def _create_grayscale_image(self, mask: Any = None) -> NDArray[Any]:
+        del mask
         gray = np.mean(self.img, axis=2).astype(np.uint8)
         return np.stack([gray, gray, gray], axis=2)
 
-    def _change_color_brightness(self, color, brightness_factor):
+    def _change_color_brightness(
+        self, color: Any, brightness_factor: float
+    ) -> NDArray[Any]:
         return np.clip(np.asarray(color, dtype=float) * brightness_factor, 0, 1)
 
-    def _convert_boxes(self, boxes):
+    def _convert_boxes(self, boxes: Any) -> Any:
         return boxes
 
-    def _convert_masks(self, masks):
+    def _convert_masks(self, masks: Any) -> Any:
         return masks
 
-    def _draw_number_in_box(self, box, num, color):
+    def _draw_number_in_box(self, box: Any, num: int, color: Any) -> Self:
+        del box, num, color
         return self
 
-    def number_to_string(self, number):
+    def number_to_string(self, number: Any) -> str:
         return str(number)
 
-    def _draw_number_in_mask(self, binary_mask, number, color):
+    def _draw_number_in_mask(self, binary_mask: Any, number: int, color: Any) -> Self:
+        del binary_mask, number, color
         return self
 
-    def _draw_text_in_mask(self, binary_mask, text, color):
+    def _draw_text_in_mask(self, binary_mask: Any, text: str, color: Any) -> Self:
+        del binary_mask, text, color
         return self
 
-    def _convert_keypoints(self, keypoints):
+    def _convert_keypoints(self, keypoints: Any) -> Any:
         return keypoints
 
-    def get_output(self):
+    def get_output(self) -> VisImage:
         return self.output
+
+
+__all__ = [
+    "ColorMode",
+    "GenericMask",
+    "VisImage",
+    "Visualizer",
+    "_PanopticPrediction",
+    "_create_text_labels",
+]
