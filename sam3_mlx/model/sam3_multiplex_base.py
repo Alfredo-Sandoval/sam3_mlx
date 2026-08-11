@@ -42,6 +42,7 @@ NumpyArray: TypeAlias = NDArray[np.generic]
 IntArray: TypeAlias = NDArray[np.int64]
 BoolArray: TypeAlias = NDArray[np.bool_]
 FeatureCache: TypeAlias = dict[str | int, object]
+TrackerState: TypeAlias = dict[str, object]
 MetadataValue = TypeVar("MetadataValue")
 
 
@@ -94,6 +95,73 @@ class _PropagateCall(Protocol):
     ) -> Iterable[PropagationResult]: ...
 
 
+class _InitStateCall(Protocol):
+    def __call__(
+        self,
+        *,
+        cached_features: FeatureCache,
+        video_height: int,
+        video_width: int,
+        num_frames: int,
+    ) -> object: ...
+
+
+class _AddMasksCall(Protocol):
+    def __call__(
+        self,
+        *,
+        inference_state: TrackerState,
+        frame_idx: int,
+        obj_ids: list[int],
+        masks: mx.array,
+        add_mask_to_memory: bool,
+    ) -> object: ...
+
+
+class _AddMaskCall(Protocol):
+    def __call__(
+        self,
+        *,
+        inference_state: TrackerState,
+        frame_idx: int,
+        obj_id: int,
+        mask: mx.array,
+        add_mask_to_memory: bool,
+    ) -> object: ...
+
+
+class _PreflightCall(Protocol):
+    def __call__(
+        self, inference_state: TrackerState, *, run_mem_encoder: bool
+    ) -> object: ...
+
+
+class _RemoveObjectsCall(Protocol):
+    def __call__(
+        self,
+        inference_state: TrackerState,
+        obj_ids: list[int],
+        *,
+        strict: bool,
+        need_output: bool,
+    ) -> tuple[Sequence[int], object]: ...
+
+
+class _RemoveObjectCall(Protocol):
+    def __call__(
+        self,
+        inference_state: TrackerState,
+        obj_id: int,
+        *,
+        strict: bool,
+        need_output: bool,
+    ) -> tuple[Sequence[int], object]: ...
+
+
+class _PackedRemoveCall(Protocol):
+    def __call__(self, indices: list[int], *, strict: bool) -> object: ...
+
+
 def _require_multiplex_controller(tracker: object) -> _MultiplexControllerView:
     controller: object = getattr(tracker, "multiplex_controller", None)
     allowed_bucket_capacity: object = getattr(
@@ -138,6 +206,27 @@ def _require_propagate_call(tracker: object) -> _PropagateCall:
             "Sam3MultiplexBase tracker.propagate_in_video"
         )
     return cast(_PropagateCall, method)
+
+
+def _optional_callable(target: object, name: str) -> object | None:
+    value: object = getattr(target, name, None)
+    return value if callable(value) else None
+
+
+def _tracker_flag(tracker: object, name: str) -> bool:
+    value: object = getattr(tracker, name, False)
+    return bool(value)
+
+
+def _optional_int_attribute(target: object, name: str) -> int | None:
+    value: object = getattr(target, name, None)
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, np.integer):
+        return value.item()
+    raise TypeError(f"{name} must be an integer when provided")
 
 
 def _is_mlx_array(value: object) -> TypeGuard[mx.array]:
@@ -3114,14 +3203,14 @@ class Sam3MultiplexBase(Sam3VideoBase):
         *,
         frame_idx: int,
         num_frames: int,
-        new_obj_ids: Any,
-        new_obj_masks: Any,
-        tracker_states_local: list[Any],
+        new_obj_ids: object,
+        new_obj_masks: TrackerArray,
+        tracker_states_local: list[TrackerState],
         orig_vid_height: int,
         orig_vid_width: int,
         feature_cache: FeatureCache,
-    ) -> list[Any]:
-        new_obj_ids_np = _array_to_numpy(new_obj_ids, dtype=np.int64).reshape(-1)
+    ) -> list[TrackerState]:
+        new_obj_ids_np = _int_array(new_obj_ids).reshape(-1)
         if new_obj_ids_np.size == 0:
             return tracker_states_local
 
@@ -3141,37 +3230,39 @@ class Sam3MultiplexBase(Sam3VideoBase):
 
         prev_sam2_state = tracker_states_local[0] if tracker_states_local else None
 
-        def _init_sam2_state(*, copy_backbone_out: bool) -> dict[str, Any]:
-            init_state = getattr(self.tracker, "init_state", None)
-            if init_state is None:
+        def _init_sam2_state(*, copy_backbone_out: bool) -> TrackerState:
+            init_state_value = _optional_callable(self.tracker, "init_state")
+            if init_state_value is None:
                 raise_unsupported_multiplex_runtime(
                     "Sam3MultiplexBase._tracker_add_new_objects(init_state)"
                 )
-            new_sam2_state = init_state(
+            init_state = cast(_InitStateCall, init_state_value)
+            new_sam2_state_value = init_state(
                 cached_features=feature_cache,
                 video_height=int(orig_vid_height),
                 video_width=int(orig_vid_width),
                 num_frames=int(num_frames),
             )
-            if not isinstance(new_sam2_state, dict):
+            if not isinstance(new_sam2_state_value, dict):
                 raise TypeError("tracker.init_state must return a SAM2 state dict.")
+            new_sam2_state = cast(TrackerState, new_sam2_state_value)
             if copy_backbone_out:
                 new_sam2_state["backbone_out"] = (
                     prev_sam2_state.get("backbone_out", None)
-                    if isinstance(prev_sam2_state, dict)
+                    if prev_sam2_state is not None
                     else None
                 )
             return new_sam2_state
 
-        if getattr(self.tracker, "is_multiplex_dynamic", False):
-            best_state = None
+        if _tracker_flag(self.tracker, "is_multiplex_dynamic"):
+            best_state: TrackerState | None = None
             best_available_slots = math.inf
             num_new_objects = int(new_obj_ids_np.size)
             for state in tracker_states_local:
-                if not isinstance(state, dict):
-                    continue
                 multiplex_state = state.get("multiplex_state")
-                available_slots = getattr(multiplex_state, "available_slots", None)
+                available_slots = _optional_int_attribute(
+                    multiplex_state, "available_slots"
+                )
                 if (
                     available_slots is not None
                     and available_slots >= num_new_objects
@@ -3185,20 +3276,21 @@ class Sam3MultiplexBase(Sam3VideoBase):
             else:
                 sam2_state = _init_sam2_state(copy_backbone_out=True)
                 tracker_states_local.append(sam2_state)
-        elif tracker_states_local and getattr(self.tracker, "per_obj_inference", False):
+        elif tracker_states_local and _tracker_flag(
+            self.tracker, "per_obj_inference"
+        ):
             sam2_state = tracker_states_local[0]
         else:
             sam2_state = _init_sam2_state(copy_backbone_out=bool(prev_sam2_state))
-            if getattr(self.tracker, "per_obj_inference", False):
+            if _tracker_flag(self.tracker, "per_obj_inference"):
                 tracker_states_local = [sam2_state]
             else:
                 tracker_states_local.append(sam2_state)
         sam2_state.setdefault("obj_ids", [])
-        if isinstance(sam2_state, dict):
-            sam2_state["cached_features"] = feature_cache
-            self._ensure_empty_packed_current_output(sam2_state, frame_idx)
+        sam2_state["cached_features"] = feature_cache
+        self._ensure_empty_packed_current_output(sam2_state, frame_idx)
 
-        input_mask_size = getattr(self.tracker, "input_mask_size", None)
+        input_mask_size = _optional_int_attribute(self.tracker, "input_mask_size")
         target_size = (
             (int(input_mask_size), int(input_mask_size))
             if input_mask_size is not None
@@ -3213,10 +3305,11 @@ class Sam3MultiplexBase(Sam3VideoBase):
             )[:, 0, :, :]
         new_obj_masks_mx = new_obj_masks_mx > 0
 
-        add_new_masks = getattr(self.tracker, "add_new_masks", None)
-        add_new_mask = getattr(self.tracker, "add_new_mask", None)
+        add_new_masks_value = _optional_callable(self.tracker, "add_new_masks")
+        add_new_mask_value = _optional_callable(self.tracker, "add_new_mask")
         obj_ids = [int(obj_id) for obj_id in new_obj_ids_np.tolist()]
-        if add_new_masks is not None:
+        if add_new_masks_value is not None:
+            add_new_masks = cast(_AddMasksCall, add_new_masks_value)
             add_new_masks(
                 inference_state=sam2_state,
                 frame_idx=frame_idx,
@@ -3224,7 +3317,8 @@ class Sam3MultiplexBase(Sam3VideoBase):
                 masks=new_obj_masks_mx,
                 add_mask_to_memory=True,
             )
-        elif add_new_mask is not None:
+        elif add_new_mask_value is not None:
+            add_new_mask = cast(_AddMaskCall, add_new_mask_value)
             for obj_idx, obj_id in enumerate(obj_ids):
                 add_new_mask(
                     inference_state=sam2_state,
@@ -3238,37 +3332,42 @@ class Sam3MultiplexBase(Sam3VideoBase):
                 "Sam3MultiplexBase._tracker_add_new_objects(add_mask)"
             )
 
-        propagate_preflight = getattr(
-            self.tracker, "propagate_in_video_preflight", None
+        propagate_preflight_value = _optional_callable(
+            self.tracker, "propagate_in_video_preflight"
         )
-        if propagate_preflight is not None:
+        if propagate_preflight_value is not None:
+            propagate_preflight = cast(_PreflightCall, propagate_preflight_value)
             propagate_preflight(sam2_state, run_mem_encoder=True)
         return tracker_states_local
 
     def _tracker_remove_objects(
         self,
-        tracker_states_local: list[Any],
-        obj_ids: Any,
+        tracker_states_local: list[TrackerState],
+        obj_ids: object,
     ) -> None:
         if isinstance(obj_ids, set):
-            obj_ids_np = np.asarray(sorted(obj_ids), dtype=np.int64).reshape(-1)
+            obj_ids_np = _int_array(list(cast(set[object], obj_ids))).reshape(-1)
         else:
-            obj_ids_np = _array_to_numpy(obj_ids, dtype=np.int64).reshape(-1)
+            obj_ids_np = _int_array(obj_ids).reshape(-1)
         if obj_ids_np.size == 0:
             return
-        remove_objects = getattr(self.tracker, "remove_objects", None)
-        remove_object = getattr(self.tracker, "remove_object", None)
-        kept_states: list[Any] = []
+        remove_objects_value = _optional_callable(self.tracker, "remove_objects")
+        remove_object_value = _optional_callable(self.tracker, "remove_object")
+        kept_states: list[TrackerState] = []
         for sam2_state in tracker_states_local:
-            if remove_objects is not None:
+            if remove_objects_value is not None:
+                remove_objects = cast(_RemoveObjectsCall, remove_objects_value)
                 new_obj_ids, _ = remove_objects(
                     sam2_state,
                     obj_ids_np.tolist(),
                     strict=False,
                     need_output=False,
                 )
-            elif remove_object is not None:
-                new_obj_ids = sam2_state.get("obj_ids", [])
+            elif remove_object_value is not None:
+                remove_object = cast(_RemoveObjectCall, remove_object_value)
+                new_obj_ids = _int_array(
+                    sam2_state.get("obj_ids", [])
+                ).reshape(-1).tolist()
                 for obj_id in obj_ids_np.tolist():
                     new_obj_ids, _ = remove_object(
                         sam2_state,
@@ -3291,20 +3390,22 @@ class Sam3MultiplexBase(Sam3VideoBase):
 
     def _packed_state_remove_objects(
         self,
-        sam2_state: Any,
-        obj_ids_np: np.ndarray,
+        sam2_state: object,
+        obj_ids_np: IntArray,
     ) -> list[int] | None:
         if not isinstance(sam2_state, dict):
             return None
-        multiplex_state = sam2_state.get("multiplex_state")
-        if multiplex_state is None or not hasattr(multiplex_state, "remove_objects"):
+        state = cast(TrackerState, sam2_state)
+        multiplex_state = state.get("multiplex_state")
+        remove_objects_value = _optional_callable(multiplex_state, "remove_objects")
+        if multiplex_state is None or remove_objects_value is None:
             return None
 
         if getattr(multiplex_state, "assignments", None) is None:
-            sam2_state["obj_ids"] = []
+            state["obj_ids"] = []
             return []
 
-        state_obj_ids = sam2_state.get(
+        state_obj_ids = state.get(
             "obj_ids",
             getattr(multiplex_state, "object_ids", None),
         )
@@ -3314,8 +3415,12 @@ class Sam3MultiplexBase(Sam3VideoBase):
                 "multiplex_state.object_ids."
             )
 
-        active_obj_ids = _array_to_numpy(state_obj_ids, dtype=np.int64).reshape(-1)
-        expected_entries = int(getattr(multiplex_state, "total_valid_entries"))
+        active_obj_ids = _int_array(state_obj_ids).reshape(-1)
+        expected_entries = _optional_int_attribute(
+            multiplex_state, "total_valid_entries"
+        )
+        if expected_entries is None:
+            raise TypeError("multiplex_state.total_valid_entries is required")
         if active_obj_ids.size != expected_entries:
             raise ValueError(
                 "Packed tracker state obj_ids must map one-to-one with "
@@ -3332,9 +3437,11 @@ class Sam3MultiplexBase(Sam3VideoBase):
         if not indices_to_remove:
             return [int(obj_id) for obj_id in active_obj_ids.tolist()]
 
-        multiplex_state.remove_objects(indices_to_remove, strict=False)
-        if getattr(multiplex_state, "object_ids", None) is not None:
-            new_obj_ids = [int(obj_id) for obj_id in multiplex_state.object_ids]
+        remove_packed = cast(_PackedRemoveCall, remove_objects_value)
+        remove_packed(indices_to_remove, strict=False)
+        multiplex_object_ids: object = getattr(multiplex_state, "object_ids", None)
+        if multiplex_object_ids is not None:
+            new_obj_ids = _int_array(multiplex_object_ids).reshape(-1).tolist()
         else:
             remove_indices = set(indices_to_remove)
             new_obj_ids = [
@@ -3342,7 +3449,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
                 for idx, obj_id in enumerate(active_obj_ids.tolist())
                 if idx not in remove_indices
             ]
-        sam2_state["obj_ids"] = new_obj_ids
+        state["obj_ids"] = new_obj_ids
         return new_obj_ids
 
     def _tracker_update_memories(
