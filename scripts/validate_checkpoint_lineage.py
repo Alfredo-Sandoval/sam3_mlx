@@ -8,10 +8,44 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Protocol, TypedDict, cast
 
 import mlx.core as mx
 
 from sam3_mlx.convert import normalize_sam3_image_weight_layout
+from sam3_mlx.release_contract import JsonObject, require_json_object
+
+
+class ShapeMismatch(TypedDict):
+    key: str
+    published: list[int]
+    reproduced: list[int]
+
+
+class DtypeMismatch(TypedDict):
+    key: str
+    published: str
+    reproduced: str
+
+
+class TensorComparison(TypedDict):
+    published_tensor_count: int
+    reproduced_tensor_count: int
+    exact_tensor_count: int
+    missing_keys: list[str]
+    extra_keys: list[str]
+    shape_mismatches: list[ShapeMismatch]
+    dtype_mismatches: list[DtypeMismatch]
+    value_mismatches: list[str]
+    semantic_match: bool
+    comparison_layout: str
+
+
+class _MlxLoad(Protocol):
+    def __call__(self, file: str | Path, /) -> object: ...
+
+
+_mlx_load = cast(_MlxLoad, getattr(mx, "load"))
 
 
 def _sha256(path: Path) -> str:
@@ -22,10 +56,10 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _compare_tensors(
+def compare_tensors(
     published: dict[str, mx.array],
     reproduced: dict[str, mx.array],
-) -> dict:
+) -> TensorComparison:
     published = {
         key: normalize_sam3_image_weight_layout(key, value)
         for key, value in published.items()
@@ -38,9 +72,9 @@ def _compare_tensors(
     reproduced_keys = set(reproduced)
     missing = sorted(published_keys - reproduced_keys)
     extra = sorted(reproduced_keys - published_keys)
-    shape_mismatches = []
-    dtype_mismatches = []
-    value_mismatches = []
+    shape_mismatches: list[ShapeMismatch] = []
+    dtype_mismatches: list[DtypeMismatch] = []
+    value_mismatches: list[str] = []
     exact = 0
     for key in sorted(published_keys & reproduced_keys):
         left = published[key]
@@ -63,7 +97,7 @@ def _compare_tensors(
                 }
             )
             continue
-        if bool(mx.all(left == right).item()):
+        if bool(mx.all(mx.equal(left, right)).item()):
             exact += 1
         else:
             value_mismatches.append(key)
@@ -89,6 +123,24 @@ def _compare_tensors(
     }
 
 
+def load_checkpoint_tensors(path: Path) -> dict[str, mx.array]:
+    """Load and validate the mapping shape required by lineage comparison."""
+
+    payload = _mlx_load(path)
+    if not isinstance(payload, dict):
+        raise ValueError(f"Checkpoint {path} must contain a tensor mapping.")
+    raw_payload = cast(dict[object, object], payload)
+    tensors: dict[str, mx.array] = {}
+    for key, value in raw_payload.items():
+        if not isinstance(key, str) or not isinstance(value, mx.array):
+            raise ValueError(f"Checkpoint {path} must map string keys to MLX arrays.")
+        tensors[key] = value
+    return tensors
+
+
+_compare_tensors = compare_tensors
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--official-checkpoint", type=Path, required=True)
@@ -100,7 +152,10 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
 
-    reproduction_manifest = json.loads(args.reproduction_manifest.read_text())
+    reproduction_manifest = require_json_object(
+        json.loads(args.reproduction_manifest.read_text()),
+        field="Reproduction manifest",
+    )
     official_sha256 = _sha256(args.official_checkpoint)
     reproduced_sha256 = _sha256(args.reproduced_checkpoint)
     expected_manifest = {
@@ -119,11 +174,11 @@ def main() -> None:
     if mismatches:
         raise SystemExit(f"Reproduction manifest mismatch: {mismatches}")
 
-    comparison = _compare_tensors(
-        mx.load(str(args.published_checkpoint)),
-        mx.load(str(args.reproduced_checkpoint)),
+    comparison = compare_tensors(
+        load_checkpoint_tensors(args.published_checkpoint),
+        load_checkpoint_tensors(args.reproduced_checkpoint),
     )
-    report = {
+    report: JsonObject = {
         "schema_version": 1,
         "status": "passed" if comparison["semantic_match"] else "failed",
         "generated_at": datetime.now(timezone.utc).isoformat(),

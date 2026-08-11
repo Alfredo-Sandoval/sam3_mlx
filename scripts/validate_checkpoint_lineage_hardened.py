@@ -8,15 +8,12 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sys
-from typing import Any
-
-import mlx.core as mx
+from typing import cast
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from sam3_mlx.convert import normalize_sam3_image_weight_layout  # noqa: E402
 from sam3_mlx.release_contract import (  # noqa: E402
     CHECKPOINT_TENSOR_COUNT,
     MLX_CHECKPOINT_REPO,
@@ -26,88 +23,28 @@ from sam3_mlx.release_contract import (  # noqa: E402
     OFFICIAL_CHECKPOINT_REVISION,
     OFFICIAL_CHECKPOINT_SHA256,
     PACKAGE_VERSION,
+    JsonObject,
+    require_json_object,
     sha256_path,
 )
 from sam3_mlx.source_binding import validate_attestation_only_worktree  # noqa: E402
+from scripts.validate_checkpoint_lineage import (  # noqa: E402
+    TensorComparison,
+    compare_tensors,
+    load_checkpoint_tensors,
+)
 
 LINEAGE_SCHEMA_VERSION = 2
 CONVERT_MODULE = REPO_ROOT / "sam3_mlx" / "convert.py"
 
 
-def _compare_tensors(
-    published: dict[str, mx.array],
-    reproduced: dict[str, mx.array],
-) -> dict[str, Any]:
-    published = {
-        key: normalize_sam3_image_weight_layout(key, value)
-        for key, value in published.items()
-    }
-    reproduced = {
-        key: normalize_sam3_image_weight_layout(key, value)
-        for key, value in reproduced.items()
-    }
-    published_keys = set(published)
-    reproduced_keys = set(reproduced)
-    missing = sorted(published_keys - reproduced_keys)
-    extra = sorted(reproduced_keys - published_keys)
-    shape_mismatches = []
-    dtype_mismatches = []
-    value_mismatches = []
-    exact = 0
-    for key in sorted(published_keys & reproduced_keys):
-        left = published[key]
-        right = reproduced[key]
-        if left.shape != right.shape:
-            shape_mismatches.append(
-                {
-                    "key": key,
-                    "published": list(left.shape),
-                    "reproduced": list(right.shape),
-                }
-            )
-            continue
-        if left.dtype != right.dtype:
-            dtype_mismatches.append(
-                {
-                    "key": key,
-                    "published": str(left.dtype),
-                    "reproduced": str(right.dtype),
-                }
-            )
-            continue
-        if bool(mx.all(left == right).item()):
-            exact += 1
-        else:
-            value_mismatches.append(key)
-    return {
-        "published_tensor_count": len(published_keys),
-        "reproduced_tensor_count": len(reproduced_keys),
-        "exact_tensor_count": exact,
-        "missing_keys": missing,
-        "extra_keys": extra,
-        "shape_mismatches": shape_mismatches,
-        "dtype_mismatches": dtype_mismatches,
-        "value_mismatches": value_mismatches,
-        "semantic_match": not any(
-            (
-                missing,
-                extra,
-                shape_mismatches,
-                dtype_mismatches,
-                value_mismatches,
-            )
-        ),
-        "comparison_layout": "canonical MLX image-runtime layout",
-    }
-
-
 def _validate_reproduction_manifest(
-    manifest: dict[str, Any],
+    manifest: JsonObject,
     *,
     official_sha256: str,
     reproduced_sha256: str,
 ) -> None:
-    expected = {
+    expected: JsonObject = {
         "architecture": "sam3-image",
         "source_repo": OFFICIAL_CHECKPOINT_REPO,
         "source_revision": OFFICIAL_CHECKPOINT_REVISION,
@@ -127,37 +64,44 @@ def _validate_reproduction_manifest(
             f"Reproduction manifest does not match release contract: {drift}"
         )
 
-    ignored_keys = manifest.get("ignored_keys")
-    if not isinstance(ignored_keys, list) or any(
-        not isinstance(key, str) or not key.startswith("tracker.")
-        for key in ignored_keys
-    ):
+    ignored_value = manifest.get("ignored_keys")
+    if not isinstance(ignored_value, list):
         raise ValueError(
             "Reproduction manifest ignored_keys must contain only explicit tracker keys."
         )
+    ignored_keys: list[str] = []
+    for key_value in cast(list[object], ignored_value):
+        if not isinstance(key_value, str) or not key_value.startswith("tracker."):
+            raise ValueError(
+                "Reproduction manifest ignored_keys must contain only explicit tracker keys."
+            )
+        ignored_keys.append(key_value)
     if ignored_keys != sorted(set(ignored_keys)):
         raise ValueError(
             "Reproduction manifest ignored_keys must be sorted and unique."
         )
 
-    dtype_counts = manifest.get("dtype_counts")
-    if not isinstance(dtype_counts, dict) or not dtype_counts:
+    dtype_counts = require_json_object(
+        manifest.get("dtype_counts"), field="Reproduction manifest dtype_counts"
+    )
+    if not dtype_counts:
         raise ValueError(
             "Reproduction manifest dtype_counts must be a non-empty object."
         )
-    if any(
-        not isinstance(dtype_name, str)
-        or not dtype_name
-        or isinstance(count, bool)
-        or not isinstance(count, int)
-        or count < 0
-        for dtype_name, count in dtype_counts.items()
-    ):
-        raise ValueError(
-            "Reproduction manifest dtype_counts must map dtype names to "
-            "non-negative integer counts."
-        )
-    if sum(dtype_counts.values()) != CHECKPOINT_TENSOR_COUNT:
+    normalized_dtype_counts: dict[str, int] = {}
+    for dtype_name, count in dtype_counts.items():
+        if (
+            not dtype_name
+            or isinstance(count, bool)
+            or not isinstance(count, int)
+            or count < 0
+        ):
+            raise ValueError(
+                "Reproduction manifest dtype_counts must map dtype names to "
+                "non-negative integer counts."
+            )
+        normalized_dtype_counts[dtype_name] = count
+    if sum(normalized_dtype_counts.values()) != CHECKPOINT_TENSOR_COUNT:
         raise ValueError("Reproduction manifest dtype_counts do not cover all tensors.")
 
 
@@ -206,9 +150,10 @@ def main() -> None:
         )
 
     try:
-        reproduction_manifest = json.loads(args.reproduction_manifest.read_text())
-        if not isinstance(reproduction_manifest, dict):
-            raise ValueError("Reproduction manifest must be a JSON object.")
+        reproduction_manifest = require_json_object(
+            json.loads(args.reproduction_manifest.read_text()),
+            field="Reproduction manifest",
+        )
         _validate_reproduction_manifest(
             reproduction_manifest,
             official_sha256=official_sha256,
@@ -217,9 +162,9 @@ def main() -> None:
     except (ValueError, json.JSONDecodeError) as exc:
         raise SystemExit(str(exc)) from exc
 
-    comparison = _compare_tensors(
-        mx.load(str(args.published_checkpoint)),
-        mx.load(str(args.reproduced_checkpoint)),
+    comparison: TensorComparison = compare_tensors(
+        load_checkpoint_tensors(args.published_checkpoint),
+        load_checkpoint_tensors(args.reproduced_checkpoint),
     )
     counts_match_contract = (
         comparison["published_tensor_count"] == CHECKPOINT_TENSOR_COUNT
@@ -235,7 +180,7 @@ def main() -> None:
     if final_source_commit != source_commit:
         raise SystemExit("sam3_mlx source commit changed during lineage execution.")
 
-    report = {
+    report: JsonObject = {
         "schema_version": LINEAGE_SCHEMA_VERSION,
         "status": "passed" if passed else "failed",
         "generated_at": datetime.now(timezone.utc).isoformat(),

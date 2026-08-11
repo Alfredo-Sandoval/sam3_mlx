@@ -1,6 +1,9 @@
 import importlib.util
+from pathlib import Path
 
 import mlx.core as mx
+import numpy as np
+import pytest
 
 from tests._paths import REPO_ROOT
 
@@ -40,3 +43,11 @@ def test_compare_tensors_requires_exact_keys_shapes_dtypes_and_values():
     assert changed["missing_keys"] == ["bias"]
     assert changed["extra_keys"] == ["extra"]
     assert changed["value_mismatches"] == ["weight"]
+
+
+def test_load_checkpoint_tensors_rejects_non_mapping_payload(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "array.npy"
+    np.save(checkpoint, np.array([1.0], dtype=np.float32))
+
+    with pytest.raises(ValueError, match="must contain a tensor mapping"):
+        _lineage.load_checkpoint_tensors(checkpoint)

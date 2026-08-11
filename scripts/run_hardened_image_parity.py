@@ -13,8 +13,6 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-from typing import Any
-
 import numpy as np
 from PIL import Image
 
@@ -42,18 +40,24 @@ from sam3_mlx.release_contract import (  # noqa: E402
     RELEASE_IMAGES,
     RELEASE_THRESHOLDS,
     REPORT_SCHEMA_VERSION,
+    JsonObject,
+    OracleBindings,
+    ReleaseImage,
     build_oracle_bindings,
     canonical_json_sha256,
     sha256_path,
+    require_json_list,
+    require_json_object,
     validate_exact_mapping,
 )
 from sam3_mlx.source_binding import validate_attestation_only_worktree  # noqa: E402
-from run_image_parity import (  # noqa: E402
-    _case_specs,
-    _evidence_path,
-    _mlx_outputs,
-    _validate_official_checkout,
+from scripts.run_image_parity import (  # noqa: E402
+    case_specs,
+    evidence_path,
+    mlx_outputs,
+    validate_official_checkout,
 )
+from scripts._oracle_runtime import OracleCase  # noqa: E402
 
 HARDENED_ORACLE = REPO_ROOT / "scripts" / "run_upstream_image_oracle_hardened.py"
 
@@ -74,9 +78,9 @@ def _validate_profile_image(
     image: Image.Image,
     profile: str,
     official_checkout: Path,
-) -> dict[str, Any]:
-    observed = {
-        "path": _evidence_path(image_path, official_checkout=official_checkout),
+) -> ReleaseImage:
+    observed: ReleaseImage = {
+        "path": evidence_path(image_path, official_checkout=official_checkout),
         "sha256": sha256_path(image_path),
         "size": list(image.size),
     }
@@ -91,10 +95,10 @@ def _validate_profile_image(
 def _validate_oracle_archive(
     path: Path,
     *,
-    expected_bindings: dict[str, Any],
-    expected_specs: list[dict[str, Any]],
+    expected_bindings: OracleBindings,
+    expected_specs: list[OracleCase],
     image_size: tuple[int, int],
-) -> tuple[dict[str, Any], list[dict[str, np.ndarray]]]:
+) -> tuple[JsonObject, list[dict[str, np.ndarray]]]:
     try:
         archive_context = np.load(path, allow_pickle=False)
     except (OSError, ValueError) as exc:
@@ -103,12 +107,12 @@ def _validate_oracle_archive(
     with archive_context as archive:
         if "metadata_json" not in archive.files:
             raise ValueError("Oracle cache is missing metadata_json.")
-        metadata = json.loads(str(archive["metadata_json"]))
-        if not isinstance(metadata, dict):
-            raise ValueError("Oracle metadata must be a JSON object.")
-        bindings = metadata.get("bindings")
-        if not isinstance(bindings, dict):
-            raise ValueError("Oracle metadata is missing complete cache bindings.")
+        metadata = require_json_object(
+            json.loads(str(archive["metadata_json"])), field="Oracle metadata"
+        )
+        bindings = require_json_object(
+            metadata.get("bindings"), field="Oracle metadata bindings"
+        )
         validate_exact_mapping(
             bindings, expected_bindings, label="oracle cache bindings"
         )
@@ -118,14 +122,14 @@ def _validate_oracle_archive(
                 "Oracle cache key does not match its complete provenance bindings."
             )
 
-        cases_metadata = metadata.get("cases")
-        if not isinstance(cases_metadata, list) or len(cases_metadata) != len(
-            expected_specs
-        ):
+        cases_metadata = require_json_list(
+            metadata.get("cases"), field="Oracle metadata cases"
+        )
+        if len(cases_metadata) != len(expected_specs):
             raise ValueError("Oracle cache case metadata count is invalid.")
         expected_names = [spec["name"] for spec in expected_specs]
         observed_names = [
-            case.get("name") if isinstance(case, dict) else None
+            require_json_object(case, field="Oracle case metadata").get("name")
             for case in cases_metadata
         ]
         if observed_names != expected_names:
@@ -139,8 +143,9 @@ def _validate_oracle_archive(
         for index, (spec, case_metadata) in enumerate(
             zip(expected_specs, cases_metadata, strict=True)
         ):
-            if not isinstance(case_metadata, dict):
-                raise ValueError(f"Oracle case {spec['name']!r} metadata is invalid.")
+            case_metadata = require_json_object(
+                case_metadata, field=f"Oracle case {spec['name']!r} metadata"
+            )
             if case_metadata.get("resolution") != spec["resolution"]:
                 raise ValueError(
                     f"Oracle case {spec['name']!r} resolution metadata drifted."
@@ -215,7 +220,7 @@ def main() -> None:
         evidence_relative = _repo_relative(args.evidence_out)
         if report_relative == evidence_relative:
             raise ValueError("Report and raw evidence paths must be distinct.")
-        revision = _validate_official_checkout(
+        revision = validate_official_checkout(
             args.official_checkout,
             expected_revision=OFFICIAL_CODE_REVISION,
         )
@@ -247,7 +252,7 @@ def main() -> None:
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
-    specs = _case_specs(image, args.profile)
+    specs = case_specs(image, args.profile)
     observed_names = tuple(spec["name"] for spec in specs)
     if observed_names != EXPECTED_CASE_NAMES[args.profile]:
         raise SystemExit(f"Case matrix drifted for {args.profile}: {observed_names}.")
@@ -304,7 +309,7 @@ def main() -> None:
         except (ValueError, json.JSONDecodeError) as exc:
             raise SystemExit(str(exc)) from exc
 
-    mlx_outputs, performance = _mlx_outputs(
+    runtime_outputs, performance = mlx_outputs(
         checkpoint=args.mlx_checkpoint,
         image=image,
         specs=specs,
@@ -319,7 +324,7 @@ def main() -> None:
             thresholds=RELEASE_THRESHOLDS,
         )
         for spec, official, mlx in zip(
-            specs, official_outputs, mlx_outputs, strict=True
+            specs, official_outputs, runtime_outputs, strict=True
         )
     ]
     status = "passed" if all(case["status"] == "passed" for case in cases) else "failed"
@@ -352,12 +357,12 @@ def main() -> None:
         args.evidence_out,
         metadata=evidence_metadata,
         official_outputs=official_outputs,
-        mlx_outputs=mlx_outputs,
+        mlx_outputs=runtime_outputs,
     )
 
     try:
         final_source_commit, _ = validate_attestation_only_worktree(REPO_ROOT)
-        final_revision = _validate_official_checkout(
+        final_revision = validate_official_checkout(
             args.official_checkout,
             expected_revision=OFFICIAL_CODE_REVISION,
         )

@@ -20,16 +20,30 @@ import os
 import platform
 import statistics
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, cast
 
 import numpy as np
 from PIL import Image
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from sam3_mlx.model.sam3_image_processor import (  # noqa: E402
+    ProcessorState,
+    Sam3Processor,
+)
+from scripts._oracle_runtime import OracleCase  # noqa: E402
+
+
+class _MlxEval(Protocol):
+    def __call__(self, *values: object) -> None: ...
+
+
 MASK_IOU_MIN = 0.95
 MASK_IOU_MEAN_MIN = 0.99
 BOX_L_INF_MAX = 2.0
@@ -45,9 +59,9 @@ MLX_CHECKPOINT_SHA256 = (
 )
 
 
-def _case_specs(image: Image.Image, profile: str) -> list[dict[str, Any]]:
+def case_specs(image: Image.Image, profile: str) -> list[OracleCase]:
     if profile == "holdout":
-        return [
+        holdout_cases: list[OracleCase] = [
             {
                 "name": f"text_paper_bag_{resolution}",
                 "resolution": resolution,
@@ -55,20 +69,24 @@ def _case_specs(image: Image.Image, profile: str) -> list[dict[str, Any]]:
                 "geometric_prompts": [],
             }
             for resolution in (1008, 672, 504)
-        ] + [
-            {
-                "name": "text_car_1008",
-                "resolution": 1008,
-                "prompt": "car",
-                "geometric_prompts": [],
-            },
-            {
-                "name": "text_nonsense_1008",
-                "resolution": 1008,
-                "prompt": "zzzz_not_a_real_class_qqq",
-                "geometric_prompts": [],
-            },
         ]
+        holdout_cases.extend(
+            [
+                {
+                    "name": "text_car_1008",
+                    "resolution": 1008,
+                    "prompt": "car",
+                    "geometric_prompts": [],
+                },
+                {
+                    "name": "text_nonsense_1008",
+                    "resolution": 1008,
+                    "prompt": "zzzz_not_a_real_class_qqq",
+                    "geometric_prompts": [],
+                },
+            ]
+        )
+        return holdout_cases
     if profile != "example":
         raise ValueError(f"Unknown case profile: {profile!r}")
 
@@ -79,7 +97,7 @@ def _case_specs(image: Image.Image, profile: str) -> list[dict[str, Any]]:
 
     positive = normalized_cxcywh(480, 290, 110, 360)
     negative = normalized_cxcywh(370, 280, 115, 375)
-    return [
+    example_cases: list[OracleCase] = [
         {
             "name": "text_shoe_1008",
             "resolution": 1008,
@@ -120,6 +138,7 @@ def _case_specs(image: Image.Image, profile: str) -> list[dict[str, Any]]:
             "geometric_prompts": [],
         },
     ]
+    return example_cases
 
 
 def _sha256(path: Path) -> str:
@@ -130,7 +149,7 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _evidence_path(path: Path, *, official_checkout: Path) -> str:
+def evidence_path(path: Path, *, official_checkout: Path) -> str:
     try:
         relative = path.resolve().relative_to(official_checkout.resolve())
     except ValueError:
@@ -138,7 +157,7 @@ def _evidence_path(path: Path, *, official_checkout: Path) -> str:
     return f"official-checkout/{relative}"
 
 
-def _validate_official_checkout(
+def validate_official_checkout(
     checkout: Path,
     *,
     expected_revision: str = OFFICIAL_REVISION,
@@ -219,7 +238,9 @@ def _match_objects(
     return sorted(matches)
 
 
-def _run_prompt(processor, state: dict[str, Any], spec: dict[str, Any]):
+def _run_prompt(
+    processor: Sam3Processor, state: ProcessorState, spec: OracleCase
+) -> ProcessorState:
     processor.reset_all_prompts(state)
     if spec["prompt"] is not None:
         state = processor.set_text_prompt(spec["prompt"], state)
@@ -232,11 +253,11 @@ def _run_prompt(processor, state: dict[str, Any], spec: dict[str, Any]):
     return state
 
 
-def _mlx_outputs(
+def mlx_outputs(
     *,
     checkpoint: Path,
     image: Image.Image,
-    specs: list[dict[str, Any]],
+    specs: list[OracleCase],
     confidence_threshold: float,
     repetitions: int,
 ) -> tuple[list[dict[str, np.ndarray]], dict[str, Any]]:
@@ -244,18 +265,20 @@ def _mlx_outputs(
     import sam3_mlx
     from sam3_mlx.model.sam3_image_processor import Sam3Processor
 
+    mlx_eval = cast(_MlxEval, getattr(mx, "eval"))
+
     load_started = time.perf_counter()
     model = sam3_mlx.build_sam3_image_model(
         checkpoint_path=str(checkpoint),
         load_from_HF=False,
         enable_segmentation=True,
     )
-    mx.eval(model.parameters())
+    mlx_eval(cast(object, model.parameters()))
     cold_load_s = time.perf_counter() - load_started
 
     outputs: list[dict[str, np.ndarray]] = []
     states: dict[int, dict[str, Any]] = {}
-    processors: dict[int, Any] = {}
+    processors: dict[int, Sam3Processor] = {}
     latencies: dict[int, list[float]] = {}
     mx.clear_cache()
     mx.reset_peak_memory()
@@ -272,7 +295,7 @@ def _mlx_outputs(
             processors[resolution] = processor
         processor = processors[resolution]
         state = _run_prompt(processor, states[resolution], spec)
-        mx.eval(state["masks"], state["boxes"], state["scores"])
+        mlx_eval(state["masks"], state["boxes"], state["scores"])
         outputs.append(
             {
                 "masks": np.asarray(state["masks"], dtype=np.bool_),
@@ -291,12 +314,12 @@ def _mlx_outputs(
         )
         processor = processors[resolution]
         warmup = _run_prompt(processor, processor.set_image(image), spec)
-        mx.eval(warmup["masks"], warmup["boxes"], warmup["scores"])
+        mlx_eval(warmup["masks"], warmup["boxes"], warmup["scores"])
         samples: list[float] = []
         for _ in range(repetitions):
             started = time.perf_counter()
             state = _run_prompt(processor, processor.set_image(image), spec)
-            mx.eval(state["masks"], state["boxes"], state["scores"])
+            mlx_eval(state["masks"], state["boxes"], state["scores"])
             mx.synchronize()
             samples.append(time.perf_counter() - started)
         latencies[resolution] = samples
@@ -322,8 +345,14 @@ def _mlx_outputs(
     }
 
 
+_case_specs = case_specs
+_evidence_path = evidence_path
+_mlx_outputs = mlx_outputs
+_validate_official_checkout = validate_official_checkout
+
+
 def _compare_case(
-    spec: dict[str, Any],
+    spec: OracleCase,
     official: dict[str, np.ndarray],
     mlx: dict[str, np.ndarray],
 ) -> dict[str, Any]:
@@ -404,7 +433,7 @@ def main() -> None:
     args = parser.parse_args()
 
     try:
-        revision = _validate_official_checkout(args.official_checkout)
+        revision = validate_official_checkout(args.official_checkout)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     if args.repetitions < 5:
@@ -424,7 +453,7 @@ def main() -> None:
         )
 
     image = Image.open(args.image).convert("RGB")
-    specs = _case_specs(image, args.profile)
+    specs = case_specs(image, args.profile)
     with tempfile.TemporaryDirectory(prefix="sam3-mlx-parity-") as temp_dir:
         temp = Path(temp_dir)
         cases_path = temp / "cases.json"
@@ -480,7 +509,7 @@ def main() -> None:
                 for index in range(len(specs))
             ]
 
-    mlx_outputs, performance = _mlx_outputs(
+    runtime_outputs, performance = mlx_outputs(
         checkpoint=args.mlx_checkpoint,
         image=image,
         specs=specs,
@@ -490,7 +519,7 @@ def main() -> None:
     cases = [
         _compare_case(spec, official, mlx)
         for spec, official, mlx in zip(
-            specs, official_outputs, mlx_outputs, strict=True
+            specs, official_outputs, runtime_outputs, strict=True
         )
     ]
     status = "passed" if all(case["status"] == "passed" for case in cases) else "failed"
@@ -512,7 +541,7 @@ def main() -> None:
             "sha256": mlx_checkpoint_sha256,
         },
         "image": {
-            "path": _evidence_path(
+            "path": evidence_path(
                 args.image,
                 official_checkout=args.official_checkout,
             ),
