@@ -15,16 +15,29 @@ from __future__ import annotations
 import json
 import random
 from collections import Counter
+from collections.abc import Mapping, Sequence, Set
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
+from typing import Protocol
 
 import mlx.core as mx
+import numpy as np
 from PIL import Image as PILImage
 
 from sam3_mlx.model.box_ops import box_xywh_to_xyxy
+from sam3_mlx.rle import CocoRle
 from sam3_mlx.train._unsupported import raise_unsupported
-from sam3_mlx.train.data.coco_json_loaders import COCO_FROM_JSON
+from sam3_mlx.train.data.coco_json_loaders import (
+    COCO_FROM_JSON,
+    AnnotationRecord,
+    ImageMetadata,
+    QueryRecord,
+)
+from sam3_mlx.train.transforms._array_contracts import (
+    ArrayInput,
+    mx_array,
+    mx_ops,
+)
 
 MLX_IMAGE_DATASET_BASE_COMMIT = "13ec0366cb85f7a025a9a36af94fa9eb9599b9d9"
 
@@ -36,67 +49,98 @@ class InferenceMetadata:
     coco_image_id: int
     original_image_id: int
     original_category_id: int
-    original_size: Tuple[int, int]
+    original_size: tuple[int, int]
     object_id: int
     frame_index: int
-    is_conditioning_only: Optional[bool] = False
+    is_conditioning_only: bool | None = False
 
 
 @dataclass
 class FindQuery:
     query_text: str
     image_id: int
-    object_ids_output: List[int]
+    object_ids_output: list[int]
     is_exhaustive: bool
     query_processing_order: int = 0
-    input_bbox: Optional[mx.array] = None
-    input_bbox_label: Optional[mx.array] = None
-    input_points: Optional[mx.array] = None
-    semantic_target: Optional[mx.array] = None
-    is_pixel_exhaustive: Optional[bool] = None
+    input_bbox: mx.array | None = None
+    input_bbox_label: mx.array | None = None
+    input_points: mx.array | None = None
+    semantic_target: mx.array | CocoRle | None = None
+    is_pixel_exhaustive: bool | None = None
 
 
 @dataclass
 class FindQueryLoaded(FindQuery):
-    inference_metadata: Optional[InferenceMetadata] = None
+    inference_metadata: InferenceMetadata | None = None
 
 
 @dataclass
 class Object:
     bbox: mx.array
-    area: Union[float, mx.array]
-    object_id: Optional[int] = -1
-    frame_index: Optional[int] = -1
-    segment: Optional[Union[mx.array, dict[str, object]]] = None
+    area: float | mx.array
+    object_id: int | None = -1
+    frame_index: int | None = -1
+    segment: mx.array | CocoRle | dict[str, object] | None = None
     is_crowd: bool = False
-    source: Optional[str] = None
+    source: str | None = None
 
 
 @dataclass
 class Image:
-    data: Union[mx.array, PILImage.Image]
-    objects: List[Object]
-    size: Tuple[int, int]
-    blurring_mask: Optional[Dict[str, Any]] = None
+    data: mx.array | PILImage.Image
+    objects: list[Object]
+    size: tuple[int, int]
+    blurring_mask: object | None = None
 
 
 @dataclass
 class Datapoint:
     """Refers to an image/video and all its annotations."""
 
-    find_queries: List[FindQueryLoaded]
-    images: List[Image]
-    raw_images: Optional[List[PILImage.Image]] = None
+    find_queries: list[FindQueryLoaded]
+    images: list[Image]
+    raw_images: list[PILImage.Image] | None = None
 
 
-def _as_float_array(value) -> mx.array:
+class _CocoApi(Protocol):
+    def getDatapointIds(self) -> list[int]: ...
+
+    def loadImagesFromDatapoint(self, idx: int) -> list[ImageMetadata]: ...
+
+    def loadQueriesAndAnnotationsFromDatapoint(
+        self, idx: int
+    ) -> tuple[list[QueryRecord], list[AnnotationRecord]]: ...
+
+
+class _CocoLoader(Protocol):
+    def __call__(
+        self,
+        annotation_file: str,
+        prompts: str | Sequence[Mapping[str, object]] | None = None,
+        include_negatives: bool = True,
+        category_chunk_size: int | None = None,
+        include_segmentation: bool = False,
+    ) -> _CocoApi: ...
+
+
+class _DatapointTransform(Protocol):
+    def __call__(self, datapoint: Datapoint, **kwargs: int) -> Datapoint: ...
+
+
+def _as_float_array(
+    value: ArrayInput | Sequence[Sequence[float]],
+) -> mx.array:
     if isinstance(value, mx.array):
-        return value.astype(mx.float32)
-    return mx.array(value, dtype=mx.float32)
+        return mx_ops(value).astype(mx.float32)
+    if isinstance(value, np.ndarray):
+        return mx_array(value, dtype=mx.float32)
+    return mx_array(np.asarray(value, dtype=np.float32), dtype=mx.float32)
 
 
-def _denormalize_xywh_to_xyxy(boxes, height: int, width: int) -> mx.array:
-    bbox = box_xywh_to_xyxy(_as_float_array(boxes)).reshape(-1, 4)
+def _denormalize_xywh_to_xyxy(
+    boxes: ArrayInput | Sequence[Sequence[float]], height: int, width: int
+) -> mx.array:
+    bbox = mx_ops(box_xywh_to_xyxy(_as_float_array(boxes))).reshape(-1, 4)
     scale = mx.array([width, height, width, height], dtype=mx.float32)
     return mx.clip(bbox * scale, a_min=0.0, a_max=scale)
 
@@ -111,12 +155,12 @@ class CustomCocoDetectionAPI:
         load_segmentation: bool,
         fix_fname: bool = False,
         training: bool = True,
-        blurring_masks_path: Optional[str] = None,
+        blurring_masks_path: str | None = None,
         use_caching: bool = True,
-        zstd_dict_path=None,
-        filter_query=None,
-        coco_json_loader: Callable = COCO_FROM_JSON,
-        limit_ids: int = None,
+        zstd_dict_path: str | None = None,
+        filter_query: _DatapointTransform | None = None,
+        coco_json_loader: _CocoLoader = COCO_FROM_JSON,
+        limit_ids: int | None = None,
         is_sharded_annotation_dir: bool = False,
     ) -> None:
         if use_caching is not True:
@@ -131,7 +175,7 @@ class CustomCocoDetectionAPI:
         self.load_segmentation = load_segmentation
         self.fix_fname = fix_fname
         self.filter_query = filter_query
-        self.coco = None
+        self.coco: _CocoApi | None = None
         self.coco_json_loader = coco_json_loader
         self.limit_ids = limit_ids
         self.training = training
@@ -141,15 +185,17 @@ class CustomCocoDetectionAPI:
         self.set_sharded_annotation_file(0)
 
     def _load_images(
-        self, datapoint_id: int, img_ids_to_load: Optional[Set[int]] = None
-    ) -> Tuple[List[Tuple[int, PILImage.Image]], List[Dict[str, Any]]]:
-        all_images = []
-        all_img_metadata = []
-        for current_meta in self.coco.loadImagesFromDatapoint(datapoint_id):
+        self, datapoint_id: int, img_ids_to_load: Set[int] | None = None
+    ) -> tuple[list[tuple[int, PILImage.Image]], list[ImageMetadata]]:
+        if self.coco is None:
+            raise RuntimeError("COCO loader must be initialized before loading images.")
+        all_images: list[tuple[int, PILImage.Image]] = []
+        all_img_metadata: list[ImageMetadata] = []
+        for loaded_meta in self.coco.loadImagesFromDatapoint(datapoint_id):
+            current_meta = loaded_meta.copy()
             img_id = current_meta["id"]
             if img_ids_to_load is not None and img_id not in img_ids_to_load:
                 continue
-            current_meta = dict(current_meta)
             if self.fix_fname:
                 current_meta["file_name"] = Path(current_meta["file_name"]).name
 
@@ -174,13 +220,13 @@ class CustomCocoDetectionAPI:
             all_img_metadata.append(current_meta)
         return all_images, all_img_metadata
 
-    def set_curr_epoch(self, epoch: int):
+    def set_curr_epoch(self, epoch: int) -> None:
         self.curr_epoch = epoch
 
-    def set_epoch(self, epoch: int):
+    def set_epoch(self, epoch: int) -> None:
         self.curr_epoch = epoch
 
-    def set_sharded_annotation_file(self, data_epoch: int):
+    def set_sharded_annotation_file(self, data_epoch: int) -> None:
         del data_epoch
         if self.coco is not None:
             return
@@ -188,10 +234,9 @@ class CustomCocoDetectionAPI:
             raise FileNotFoundError(
                 f"please provide valid annotation file. Missing: {self.annFile}"
             )
-        loader_kwargs = {}
-        if self.load_segmentation:
-            loader_kwargs["include_segmentation"] = True
-        self.coco = self.coco_json_loader(str(self.annFile), **loader_kwargs)
+        self.coco = self.coco_json_loader(
+            str(self.annFile), include_segmentation=self.load_segmentation
+        )
         ids_list = list(sorted(self.coco.getDatapointIds()))
         if self.limit_ids is not None:
             local_random = random.Random(len(ids_list))
@@ -203,6 +248,8 @@ class CustomCocoDetectionAPI:
         return self._load_datapoint(index)
 
     def _load_datapoint(self, index: int) -> Datapoint:
+        if self.coco is None:
+            raise RuntimeError("COCO loader must be initialized before dataset access.")
         datapoint_id = self.ids[index]
         pil_images, img_metadata = self._load_images(datapoint_id)
         queries, annotations = self.coco.loadQueriesAndAnnotationsFromDatapoint(
@@ -210,11 +257,17 @@ class CustomCocoDetectionAPI:
         )
         return self.load_queries(pil_images, annotations, queries, img_metadata)
 
-    def load_queries(self, pil_images, annotations, queries, img_metadata):
-        images: List[Image] = []
-        id2index_img = {}
-        id2index_obj = {}
-        id2imsize = {}
+    def load_queries(
+        self,
+        pil_images: Sequence[tuple[int, PILImage.Image]],
+        annotations: Sequence[AnnotationRecord],
+        queries: Sequence[QueryRecord],
+        img_metadata: Sequence[ImageMetadata],
+    ) -> Datapoint:
+        images: list[Image] = []
+        id2index_img: dict[int, int] = {}
+        id2index_obj: dict[int, int] = {}
+        id2imsize: dict[int, tuple[int, int]] = {}
         if len(pil_images) != len(img_metadata):
             raise AssertionError("pil_images and img_metadata length mismatch.")
 
@@ -252,7 +305,7 @@ class CustomCocoDetectionAPI:
             )
             id2index_obj[annotation["id"]] = len(images[image_id].objects) - 1
 
-        stage2num_queries = Counter()
+        stage2num_queries: Counter[int] = Counter()
         for query in queries:
             stage2num_queries[query["query_processing_order"]] += 1
         if stage2num_queries:
@@ -264,14 +317,16 @@ class CustomCocoDetectionAPI:
                         f"expected {num_queries_per_stage}"
                     )
 
-        find_queries = []
+        find_queries: list[FindQueryLoaded] = []
         for query in queries:
             height, width = id2imsize[query["image_id"]]
-            if query.get("input_box") is not None and len(query["input_box"]) > 0:
-                bbox = _denormalize_xywh_to_xyxy(query["input_box"], height, width)
-                if query.get("input_box_label") is not None:
-                    bbox_label = mx.array(
-                        query["input_box_label"], dtype=mx.int64
+            input_box = query["input_box"]
+            input_box_label = query["input_box_label"]
+            if input_box:
+                bbox = _denormalize_xywh_to_xyxy(input_box, height, width)
+                if input_box_label is not None:
+                    bbox_label = mx_ops(
+                        mx_array(input_box_label, dtype=mx.int64)
                     ).reshape(-1)
                     if len(bbox_label) != len(bbox):
                         raise AssertionError("input_box_label length mismatch.")
@@ -281,28 +336,22 @@ class CustomCocoDetectionAPI:
                 bbox = None
                 bbox_label = None
 
-            if query.get("input_points") is not None:
-                points = mx.array(query["input_points"], dtype=mx.float32).reshape(
-                    1, -1, 3
-                )
+            input_points = query["input_points"]
+            if input_points is not None:
+                points = mx_ops(
+                    mx_array(
+                        np.asarray(input_points, dtype=np.float32), dtype=mx.float32
+                    )
+                ).reshape(1, -1, 3)
                 scale = mx.array([width, height, 1.0], dtype=mx.float32)
                 points = mx.clip(points * scale, a_min=0.0, a_max=scale)
             else:
                 points = None
 
             img_meta = img_metadata[id2index_img[query["image_id"]]]
-            try:
-                original_image_id = int(img_meta["original_img_id"])
-            except (KeyError, TypeError, ValueError):
-                original_image_id = -1
-            try:
-                coco_image_id = int(img_meta.get("coco_img_id", query["id"]))
-            except (TypeError, ValueError):
-                coco_image_id = -1
-            try:
-                original_category_id = int(query["original_cat_id"])
-            except (KeyError, TypeError, ValueError):
-                original_category_id = -1
+            original_image_id = img_meta["original_img_id"]
+            coco_image_id = img_meta["coco_img_id"]
+            original_category_id = query["original_cat_id"]
 
             if query["object_ids_output"]:
                 first_obj_id = query["object_ids_output"][0]
@@ -310,6 +359,8 @@ class CustomCocoDetectionAPI:
                 image_idx = id2index_img[query["image_id"]]
                 object_id = images[image_idx].objects[obj_idx].object_id
                 frame_index = images[image_idx].objects[obj_idx].frame_index
+                object_id = -1 if object_id is None else object_id
+                frame_index = -1 if frame_index is None else frame_index
             else:
                 object_id = -1
                 frame_index = -1
@@ -354,9 +405,9 @@ class CustomCocoDetectionAPI:
 class Sam3ImageDataset(CustomCocoDetectionAPI):
     def __init__(
         self,
-        img_folder,
-        ann_file,
-        transforms,
+        img_folder: str,
+        ann_file: str,
+        transforms: Sequence[_DatapointTransform] | None,
         max_ann_per_img: int,
         multiplier: int,
         training: bool,
@@ -365,13 +416,13 @@ class Sam3ImageDataset(CustomCocoDetectionAPI):
         max_val_queries: int = 300,
         fix_fname: bool = False,
         is_sharded_annotation_dir: bool = False,
-        blurring_masks_path: Optional[str] = None,
+        blurring_masks_path: str | None = None,
         use_caching: bool = True,
-        zstd_dict_path=None,
-        filter_query=None,
-        coco_json_loader: Callable = COCO_FROM_JSON,
-        limit_ids: int = None,
-    ):
+        zstd_dict_path: str | None = None,
+        filter_query: _DatapointTransform | None = None,
+        coco_json_loader: _CocoLoader = COCO_FROM_JSON,
+        limit_ids: int | None = None,
+    ) -> None:
         super().__init__(
             img_folder,
             ann_file,
@@ -386,14 +437,14 @@ class Sam3ImageDataset(CustomCocoDetectionAPI):
             limit_ids=limit_ids,
             is_sharded_annotation_dir=is_sharded_annotation_dir,
         )
-        self._transforms = [] if transforms is None else transforms
+        self._transforms = list(transforms or ())
         self.training = training
         self.max_ann_per_img = max_ann_per_img
         self.max_train_queries = max_train_queries
         self.max_val_queries = max_val_queries
         self.repeat_factors = [float(multiplier) for _ in self.ids]
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> Datapoint:
         datapoint = super().__getitem__(idx)
         if self.filter_query is not None:
             datapoint = self.filter_query(datapoint)
