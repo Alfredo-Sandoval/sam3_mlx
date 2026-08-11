@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import fields, is_dataclass
-from typing import Any, Protocol, TypeAlias, TypeGuard, cast
+from typing import Any, Protocol, TypeAlias, TypeGuard, TypeVar, cast
 
 import mlx.core as mx
 import numpy as np
@@ -38,6 +38,7 @@ NumpyArray: TypeAlias = NDArray[np.generic]
 FloatArray: TypeAlias = NDArray[np.float32]
 TrackerArray: TypeAlias = mx.array | NumpyArray
 ObjectIdCollection: TypeAlias = Sequence[int] | set[int]
+RecursiveValue = TypeVar("RecursiveValue")
 
 
 class _ArrayMethods(Protocol):
@@ -50,6 +51,18 @@ class _MlxUnaryArrayCall(Protocol):
 
 class _MlxMasksToBoxesCall(Protocol):
     def __call__(self, masks: mx.array, obj_ids: list[int]) -> object: ...
+
+
+class _NoArgCall(Protocol):
+    def __call__(self) -> object: ...
+
+
+class _IterableCall(Protocol):
+    def __call__(self, values: object) -> object: ...
+
+
+class _KeywordCall(Protocol):
+    def __call__(self, **kwargs: object) -> object: ...
 
 
 def _is_mlx_array(value: object) -> TypeGuard[mx.array]:
@@ -227,27 +240,41 @@ def _point_count(points: TrackerArray | Sequence[object]) -> int:
     return len(points)
 
 
-def recursive_to(data: Any, *args: Any, **kwargs: Any) -> Any:
+def recursive_to(
+    data: RecursiveValue, *args: object, **kwargs: object
+) -> RecursiveValue:
     if _is_mlx_array(data):
-        return _mlx_to(data, *args, **kwargs)
+        return cast(RecursiveValue, _mlx_to(data, *args, **kwargs))
     if isinstance(data, np.ndarray):
-        return cast(NumpyArray, data)
+        return data
     if isinstance(data, Mapping):
-        ret = type(data)()
-        for key, value in data.items():
+        source = cast(Mapping[object, object], data)
+        ret_value = cast(_NoArgCall, type(data))()
+        if not isinstance(ret_value, MutableMapping):
+            raise TypeError("recursive_to mapping constructors must return mappings")
+        ret = cast(MutableMapping[object, object], ret_value)
+        for key, value in source.items():
             ret[key] = recursive_to(value, *args, **kwargs)
-        return ret
+        return cast(RecursiveValue, ret)
     if isinstance(data, tuple):
-        return tuple(recursive_to(value, *args, **kwargs) for value in data)
+        values = cast(tuple[object, ...], data)
+        return cast(
+            RecursiveValue,
+            tuple(recursive_to(value, *args, **kwargs) for value in values),
+        )
     if isinstance(data, Sequence) and not isinstance(data, str):
-        return type(data)(recursive_to(value, *args, **kwargs) for value in data)
+        values = cast(Sequence[object], data)
+        constructed = cast(_IterableCall, type(data))(
+            recursive_to(value, *args, **kwargs) for value in values
+        )
+        return cast(RecursiveValue, constructed)
     if is_dataclass(data):
-        ret_cls = type(data)
+        ret_cls = cast(_KeywordCall, type(data))
         ret_fields = {
             field.name: recursive_to(getattr(data, field.name), *args, **kwargs)
             for field in fields(data)
         }
-        return ret_cls(**ret_fields)
+        return cast(RecursiveValue, ret_cls(**ret_fields))
     return data
 
 
