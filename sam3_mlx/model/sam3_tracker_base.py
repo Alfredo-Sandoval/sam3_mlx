@@ -36,6 +36,7 @@ import numpy as np
 from sam3_mlx._unsupported import raise_unsupported
 import sam3_mlx.model.data_misc as _data_misc
 import sam3_mlx.model.sam3_tracker_utils as _tracker_utils
+from sam3_mlx.model.memory import MemoryEncoderOutput
 from sam3_mlx.sam.mask_decoder import MaskDecoder, MLP
 from sam3_mlx.sam.prompt_encoder import PromptEncoder
 from sam3_mlx.sam.transformer import TwoWayTransformer
@@ -118,11 +119,6 @@ class TrackingBackboneOutput(TypedDict):
     frames_to_add_correction_pt: list[int]
     point_inputs_per_frame: dict[int, PointInputs]
     mask_inputs_per_frame: dict[int, mx.array]
-
-
-class MemoryEncoderOutput(TypedDict):
-    vision_features: mx.array
-    vision_pos_enc: list[mx.array]
 
 
 class SamMaskDecoderExtraArgs(TypedDict, total=False):
@@ -1133,7 +1129,7 @@ class Sam3TrackerBase(nn.Module):
 
         if return_dict:
             return output_dict
-        all_frame_outputs_by_frame: dict[int, TrackerFrameOutput] = {}
+        all_frame_outputs_by_frame: dict[int, TrackerStoredFrameOutput] = {}
         all_frame_outputs_by_frame.update(output_dict["cond_frame_outputs"])
         all_frame_outputs_by_frame.update(output_dict["non_cond_frame_outputs"])
         all_frame_outputs = [all_frame_outputs_by_frame[t] for t in range(num_frames)]
@@ -1253,11 +1249,11 @@ class Sam3TrackerBase(nn.Module):
             _unsupported_tracker_base("track_step(offload_output_to_cpu_for_eval=True)")
 
         def _trim_past_out(
-            past_out: TrackerFrameOutput,
-        ) -> TrackerFrameOutput:
+            past_out: TrackerStoredFrameOutput,
+        ) -> TrackerStoredFrameOutput:
             complete_past_out = cast(_MemoryFrameOutput, past_out)
             return cast(
-                TrackerFrameOutput,
+                TrackerStoredFrameOutput,
                 {
                     "pred_masks": complete_past_out["pred_masks"],
                     "obj_ptr": complete_past_out["obj_ptr"],

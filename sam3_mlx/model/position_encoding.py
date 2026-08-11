@@ -1,8 +1,8 @@
 import math
-from typing import Optional
+from typing import Protocol, cast
 
 import mlx.core as mx
-import mlx.nn as nn
+from mlx import nn
 
 from sam3_mlx.model.bounded_cache import BoundedLRUCache
 
@@ -11,16 +11,28 @@ from sam3_mlx.model.bounded_cache import BoundedLRUCache
 _DEFAULT_POS_CACHE_SIZE = 16
 
 
+class _ArrayMethods(Protocol):
+    def flatten(self, start_axis: int = 0, end_axis: int = -1) -> mx.array: ...
+
+    def reshape(self, *shape: int) -> mx.array: ...
+
+    def transpose(self, *axes: int) -> mx.array: ...
+
+
+def _array_methods(array: mx.array) -> _ArrayMethods:
+    return cast(_ArrayMethods, array)
+
+
 class PositionEmbeddingSine(nn.Module):
     def __init__(
         self,
-        num_pos_feats,
+        num_pos_feats: int,
         temperature: int = 10000,
         normalize: bool = True,
-        scale: Optional[float] = None,
-        precompute_resolution: Optional[int] = None,
+        scale: float | None = None,
+        precompute_resolution: int | None = None,
         cache_size: int = _DEFAULT_POS_CACHE_SIZE,
-    ):
+    ) -> None:
         super().__init__()
         assert num_pos_feats % 2 == 0, "Expecting even model width"
         self.num_pos_feats = num_pos_feats // 2
@@ -46,7 +58,11 @@ class PositionEmbeddingSine(nn.Module):
                 tensors = mx.zeros((1, 1) + size)
                 self(tensors)
 
-    def _encode_xy(self, x, y):
+    def _encode_xy(
+        self,
+        x: mx.array,
+        y: mx.array,
+    ) -> tuple[mx.array, mx.array]:
         assert len(x) == len(y) and x.ndim == y.ndim == 1
         x_embed = x * self.scale
         y_embed = y * self.scale
@@ -56,30 +72,45 @@ class PositionEmbeddingSine(nn.Module):
 
         pos_x = x_embed[:, None] / dim_t
         pos_y = y_embed[:, None] / dim_t
-        pos_x = mx.stack(
-            (mx.sin(pos_x[:, 0::2]), mx.cos(pos_x[:, 1::2])), axis=2
+        pos_x = _array_methods(
+            mx.stack([mx.sin(pos_x[:, 0::2]), mx.cos(pos_x[:, 1::2])], axis=2)
         ).flatten(1)
-        pos_y = mx.stack(
-            (mx.sin(pos_y[:, 0::2]), mx.cos(pos_y[:, 1::2])), axis=2
+        pos_y = _array_methods(
+            mx.stack([mx.sin(pos_y[:, 0::2]), mx.cos(pos_y[:, 1::2])], axis=2)
         ).flatten(1)
         return pos_x, pos_y
 
-    def encode_boxes(self, x, y, w, h):
+    def encode_boxes(
+        self,
+        x: mx.array,
+        y: mx.array,
+        w: mx.array,
+        h: mx.array,
+    ) -> mx.array:
         pos_x, pos_y = self._encode_xy(x, y)
-        pos = mx.concat((pos_y, pos_x, h[:, None], w[:, None]), axis=1)
+        pos = mx.concat([pos_y, pos_x, h[:, None], w[:, None]], axis=1)
         return mx.stop_gradient(pos)
 
     encode = encode_boxes
 
-    def encode_points(self, x, y, labels):
+    def encode_points(
+        self,
+        x: mx.array,
+        y: mx.array,
+        labels: mx.array,
+    ) -> mx.array:
         (bx, nx), (by, ny), (bl, nl) = x.shape, y.shape, labels.shape
         assert bx == by and nx == ny and bx == bl and nx == nl
-        pos_x, pos_y = self._encode_xy(x.flatten(), y.flatten())
-        pos_x, pos_y = pos_x.reshape(bx, nx, -1), pos_y.reshape(by, ny, -1)
-        pos = mx.concat((pos_y, pos_x, labels[:, :, None]), axis=2)
+        pos_x, pos_y = self._encode_xy(
+            _array_methods(x).flatten(),
+            _array_methods(y).flatten(),
+        )
+        pos_x = _array_methods(pos_x).reshape(bx, nx, -1)
+        pos_y = _array_methods(pos_y).reshape(by, ny, -1)
+        pos = mx.concat([pos_y, pos_x, labels[:, :, None]], axis=2)
         return mx.stop_gradient(pos)
 
-    def __call__(self, x: mx.array | tuple) -> mx.array:
+    def __call__(self, x: mx.array | tuple[int, int, int, int]) -> mx.array:
         """
         Args:
             x: Either an mx.array (NCHW format) or a shape tuple (N, C, H, W)
@@ -94,9 +125,13 @@ class PositionEmbeddingSine(nn.Module):
         if cached is not None:
             return mx.repeat(cached[None], repeats=batch, axis=0)
 
-        y_embed = mx.arange(1, height + 1, dtype=mx.float32).reshape(1, -1, 1)
+        y_embed = _array_methods(
+            mx.arange(1, height + 1, dtype=mx.float32)
+        ).reshape(1, -1, 1)
         y_embed = mx.broadcast_to(y_embed, (batch, height, width))
-        x_embed = mx.arange(1, width + 1, dtype=mx.float32).reshape(1, 1, -1)
+        x_embed = _array_methods(
+            mx.arange(1, width + 1, dtype=mx.float32)
+        ).reshape(1, 1, -1)
         x_embed = mx.broadcast_to(x_embed, (batch, height, width))
 
         if self.normalize:
@@ -109,12 +144,18 @@ class PositionEmbeddingSine(nn.Module):
 
         pos_x = x_embed[:, :, :, None] / dim_t
         pos_y = y_embed[:, :, :, None] / dim_t
-        pos_x = mx.stack(
-            (mx.sin(pos_x[:, :, :, 0::2]), mx.cos(pos_x[:, :, :, 1::2])), axis=4
+        pos_x = _array_methods(
+            mx.stack(
+                [mx.sin(pos_x[:, :, :, 0::2]), mx.cos(pos_x[:, :, :, 1::2])],
+                axis=4,
+            )
         ).flatten(3)
-        pos_y = mx.stack(
-            (mx.sin(pos_y[:, :, :, 0::2]), mx.cos(pos_y[:, :, :, 1::2])), axis=4
+        pos_y = _array_methods(
+            mx.stack(
+                [mx.sin(pos_y[:, :, :, 0::2]), mx.cos(pos_y[:, :, :, 1::2])],
+                axis=4,
+            )
         ).flatten(3)
-        pos = mx.concat((pos_y, pos_x), axis=3).transpose(0, 3, 1, 2)
+        pos = _array_methods(mx.concat([pos_y, pos_x], axis=3)).transpose(0, 3, 1, 2)
         self.cache[cache_key] = pos[0]
         return mx.stop_gradient(pos)

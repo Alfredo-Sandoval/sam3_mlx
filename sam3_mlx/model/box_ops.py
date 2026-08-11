@@ -3,12 +3,16 @@
 Utilities for bounding box manipulation and GIoU.
 """
 
-from typing import Tuple
+from typing import Protocol, cast
 
 import mlx.core as mx
 
 
-def unbind(x: mx.array, dim):
+class _ArrayMethods(Protocol):
+    def transpose(self, axes: list[int]) -> mx.array: ...
+
+
+def unbind(x: mx.array, dim: int) -> list[mx.array]:
     if dim < 0:
         dim += x.ndim
     if dim < 0 or dim >= x.ndim:
@@ -17,46 +21,46 @@ def unbind(x: mx.array, dim):
         return [x[..., index] for index in range(x.shape[-1])]
     perm = list(range(x.ndim))
     perm.insert(0, perm.pop(dim))
-    return [t for t in x.transpose(perm)]
+    return [t for t in cast(_ArrayMethods, x).transpose(perm)]
 
 
-def box_cxcywh_to_xyxy(x):
+def box_cxcywh_to_xyxy(x: mx.array) -> mx.array:
     x_c, y_c, w, h = unbind(x, -1)
     b = [(x_c - 0.5 * w), (y_c - 0.5 * h), (x_c + 0.5 * w), (y_c + 0.5 * h)]
     return mx.stack(b, axis=-1)
 
 
-def box_cxcywh_to_xywh(x):
+def box_cxcywh_to_xywh(x: mx.array) -> mx.array:
     x_c, y_c, w, h = unbind(x, -1)
     b = [(x_c - 0.5 * w), (y_c - 0.5 * h), (w), (h)]
     return mx.stack(b, axis=-1)
 
 
-def box_xywh_to_xyxy(x):
+def box_xywh_to_xyxy(x: mx.array) -> mx.array:
     x, y, w, h = unbind(x, -1)
     b = [(x), (y), (x + w), (y + h)]
     return mx.stack(b, axis=-1)
 
 
-def box_xywh_to_cxcywh(x):
+def box_xywh_to_cxcywh(x: mx.array) -> mx.array:
     x, y, w, h = unbind(x, -1)
     b = [(x + 0.5 * w), (y + 0.5 * h), (w), (h)]
     return mx.stack(b, axis=-1)
 
 
-def box_xyxy_to_xywh(x):
+def box_xyxy_to_xywh(x: mx.array) -> mx.array:
     x, y, X, Y = unbind(x, -1)
     b = [(x), (y), (X - x), (Y - y)]
     return mx.stack(b, axis=-1)
 
 
-def box_xyxy_to_cxcywh(x):
+def box_xyxy_to_cxcywh(x: mx.array) -> mx.array:
     x0, y0, x1, y1 = unbind(x, -1)
     b = [(x0 + x1) / 2, (y0 + y1) / 2, (x1 - x0), (y1 - y0)]
     return mx.stack(b, axis=-1)
 
 
-def box_area(boxes):
+def box_area(boxes: mx.array) -> mx.array:
     """
     Batched version of box area. Boxes should be in [x0, y0, x1, y1] format.
 
@@ -70,7 +74,7 @@ def box_area(boxes):
     return (x1 - x0) * (y1 - y0)
 
 
-def masks_to_boxes(masks):
+def masks_to_boxes(masks: mx.array) -> mx.array:
     """Compute the bounding boxes around the provided masks
 
     The masks should be in format [N, H, W] where N is the number of masks, (H, W) are the spatial dimensions.
@@ -101,7 +105,7 @@ def masks_to_boxes(masks):
     return boxes * has_any.astype(mx.float32)[:, None]
 
 
-def box_iou(boxes1, boxes2):
+def box_iou(boxes1: mx.array, boxes2: mx.array) -> tuple[mx.array, mx.array]:
     """
     Batched version of box_iou. Boxes should be in [x0, y0, x1, y1] format.
 
@@ -129,7 +133,7 @@ def box_iou(boxes1, boxes2):
     return iou, union
 
 
-def generalized_box_iou(boxes1, boxes2):
+def generalized_box_iou(boxes1: mx.array, boxes2: mx.array) -> mx.array:
     """
     Batched version of Generalized IoU from https://giou.stanford.edu/
 
@@ -155,7 +159,10 @@ def generalized_box_iou(boxes1, boxes2):
     return iou - (area - union) / area
 
 
-def fast_diag_generalized_box_iou(boxes1, boxes2):
+def fast_diag_generalized_box_iou(
+    boxes1: mx.array,
+    boxes2: mx.array,
+) -> mx.array:
     assert len(boxes1) == len(boxes2)
     box1_xy = boxes1[:, 2:]
     box1_XY = boxes1[:, :2]
@@ -181,7 +188,7 @@ def fast_diag_generalized_box_iou(boxes1, boxes2):
     return iou - (tot_area - union) / tot_area
 
 
-def fast_diag_box_iou(boxes1, boxes2):
+def fast_diag_box_iou(boxes1: mx.array, boxes2: mx.array) -> mx.array:
     assert len(boxes1) == len(boxes2)
     box1_xy = boxes1[:, 2:]
     box1_XY = boxes1[:, :2]
@@ -206,7 +213,7 @@ def fast_diag_box_iou(boxes1, boxes2):
 
 def box_xywh_inter_union(
     boxes1: mx.array, boxes2: mx.array
-) -> Tuple[mx.array, mx.array]:
+) -> tuple[mx.array, mx.array]:
     # Assumes boxes in xywh format.
     if boxes1.shape[-1] != 4 or boxes2.shape[-1] != 4:
         raise ValueError("boxes1 and boxes2 must have last dimension 4.")
