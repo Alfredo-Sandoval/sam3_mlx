@@ -128,6 +128,34 @@ class _KeywordCall(Protocol):
     def __call__(self, **kwargs: object) -> object: ...
 
 
+class _ClearPointsCall(Protocol):
+    def __call__(
+        self,
+        inference_state: TrackerState,
+        frame_idx: int,
+        obj_id: int,
+        need_output: bool,
+    ) -> object: ...
+
+
+class _AddMaskCall(Protocol):
+    def __call__(
+        self,
+        inference_state: TrackerState,
+        frame_idx: int,
+        obj_id: int,
+        mask: object,
+    ) -> object: ...
+
+
+class _PreflightCall(Protocol):
+    def __call__(
+        self,
+        inference_state: TrackerState,
+        run_mem_encoder: bool = True,
+    ) -> object: ...
+
+
 class _MaterializedVideoFrames(Protocol):
     images: object
 
@@ -213,6 +241,27 @@ def _first_axis_size(value: object, *, name: str) -> int:
         raise TypeError(f"{name} must expose a non-empty shape")
     shape_values = cast(Sequence[object], shape)
     return _integer_value(shape_values[0], name=f"{name} first dimension")
+
+
+def _tracker_prompt_result(
+    value: object,
+) -> tuple[int, list[int], object, TrackerArray | None]:
+    if not isinstance(value, tuple):
+        raise TypeError("tracker prompt methods must return a four-item tuple")
+    tuple_value = cast(tuple[object, ...], value)
+    if len(tuple_value) != 4:
+        raise TypeError("tracker prompt methods must return a four-item tuple")
+    frame_idx_raw, obj_ids_raw, low_res_masks, video_res_masks = tuple_value
+    frame_idx = _integer_value(frame_idx_raw, name="tracker prompt frame_idx")
+    obj_ids = [
+        _integer_value(obj_id, name="tracker prompt obj_ids")
+        for obj_id in _object_id_sequence(obj_ids_raw)
+    ]
+    if video_res_masks is not None and not (
+        _is_mlx_array(video_res_masks) or isinstance(video_res_masks, np.ndarray)
+    ):
+        raise TypeError("tracker prompt video_res_masks must be an array or None")
+    return frame_idx, obj_ids, low_res_masks, cast(TrackerArray | None, video_res_masks)
 
 
 def _int_keyed_object_dict(value: object, *, name: str) -> dict[int, object]:
@@ -2640,6 +2689,7 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
                 "Sam3MultiplexTrackingWithInteractivity.add_sam2_new_points(distributed)"
             )
         frame_idx = int(frame_idx)
+        obj_id = _integer_value(obj_id, name="obj_id")
         num_frames = int(inference_state["num_frames"])
         if not 0 <= frame_idx < num_frames:
             raise ValueError(
@@ -2686,7 +2736,9 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
                         "Expected exactly one SAM2 state for obj_id "
                         f"{obj_id}, found {len(tracker_states)}."
                     )
-                if len(tracker_states[0].get("obj_ids", [])) > 1:
+                if len(
+                    _object_id_sequence(tracker_states[0].get("obj_ids", []))
+                ) > 1:
                     self._extract_object_to_singleton_state(
                         inference_state,
                         obj_id,
@@ -2801,33 +2853,41 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
         )
         if mask_input is not None and 0 in tuple(mask_input.shape):
             mask_input = None
-        add_new_mask = getattr(self.tracker, "add_new_mask", None)
-        if mask_input is not None and add_new_mask is not None:
-            self.tracker.clear_all_points_in_frame(
+        add_new_mask: object = getattr(self.tracker, "add_new_mask", None)
+        if mask_input is not None and callable(add_new_mask):
+            clear_points: object = getattr(
+                self.tracker,
+                "clear_all_points_in_frame",
+                None,
+            )
+            if not callable(clear_points):
+                raise TypeError("tracker.clear_all_points_in_frame must be callable")
+            cast(_ClearPointsCall, clear_points)(
                 sam2_state,
                 frame_idx,
                 obj_id,
                 need_output=False,
             )
-            frame_idx, obj_ids, _low_res_masks, video_res_masks = add_new_mask(
-                sam2_state,
-                frame_idx,
-                obj_id,
-                mask_input,
+            prompt_result = cast(_AddMaskCall, add_new_mask)(
+                sam2_state, frame_idx, obj_id, mask_input
             )
         else:
-            frame_idx, obj_ids, _low_res_masks, video_res_masks = (
-                self.tracker.add_new_points(
-                    inference_state=sam2_state,
-                    frame_idx=frame_idx,
-                    obj_id=obj_id,
-                    points=points,
-                    labels=labels,
-                    clear_old_points=clear_old_points,
-                    rel_coordinates=rel_coordinates,
-                    use_prev_mem_frame=use_prev_mem_frame,
-                )
+            add_new_points: object = getattr(self.tracker, "add_new_points", None)
+            if not callable(add_new_points):
+                raise TypeError("tracker.add_new_points must be callable")
+            prompt_result = cast(_KeywordCall, add_new_points)(
+                inference_state=sam2_state,
+                frame_idx=frame_idx,
+                obj_id=obj_id,
+                points=points,
+                labels=labels,
+                clear_old_points=clear_old_points,
+                rel_coordinates=rel_coordinates,
+                use_prev_mem_frame=use_prev_mem_frame,
             )
+        frame_idx, obj_ids, _low_res_masks, video_res_masks = _tracker_prompt_result(
+            prompt_result
+        )
         if video_res_masks is not None and len(video_res_masks) > 0:
             video_res_masks = fill_holes_in_mask_scores(
                 video_res_masks,
@@ -2837,7 +2897,14 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
                 remove_sprinkles=True,
             )
         self._sync_sam2_inputs_before_point_preflight(sam2_state)
-        self.tracker.propagate_in_video_preflight(sam2_state, run_mem_encoder=True)
+        preflight: object = getattr(
+            self.tracker,
+            "propagate_in_video_preflight",
+            None,
+        )
+        if not callable(preflight):
+            raise TypeError("tracker.propagate_in_video_preflight must be callable")
+        cast(_PreflightCall, preflight)(sam2_state, run_mem_encoder=True)
         if not inference_state.get("is_image_only", False):
             self.clear_detector_added_cond_frame_in_sam2(sam2_state, obj_id, frame_idx)
 
@@ -2883,7 +2950,7 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
         )
 
     def _sync_sam2_inputs_before_point_preflight(
-        self, sam2_state: dict[str, Any]
+        self, sam2_state: TrackerState
     ) -> None:
         mask_inputs_per_obj = sam2_state.get("mask_inputs_per_obj")
         point_inputs_per_obj = sam2_state.get("point_inputs_per_obj")
@@ -2893,40 +2960,66 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
         ):
             return
 
-        for obj_idx, mask_inputs_per_frame in list(mask_inputs_per_obj.items()):
+        mask_inputs_by_obj = cast(Mapping[object, object], mask_inputs_per_obj)
+        point_inputs_by_obj = cast(Mapping[object, object], point_inputs_per_obj)
+        for obj_idx, mask_inputs_per_frame in list(mask_inputs_by_obj.items()):
             if not isinstance(mask_inputs_per_frame, dict):
                 continue
-            point_inputs_per_frame = point_inputs_per_obj.get(obj_idx, {})
-            point_frame_indices = (
-                set(point_inputs_per_frame)
-                if isinstance(point_inputs_per_frame, Mapping)
-                else set()
-            )
-            for frame_id in list(mask_inputs_per_frame):
+            mutable_mask_inputs = cast(dict[object, object], mask_inputs_per_frame)
+            point_inputs_per_frame = point_inputs_by_obj.get(obj_idx, {})
+            if isinstance(point_inputs_per_frame, Mapping):
+                point_frame_indices = set(
+                    cast(Mapping[object, object], point_inputs_per_frame)
+                )
+            else:
+                point_frame_indices: set[object] = set()
+            for frame_id in list(mutable_mask_inputs):
                 if frame_id not in point_frame_indices:
-                    mask_inputs_per_frame.pop(frame_id, None)
+                    mutable_mask_inputs.pop(frame_id, None)
 
         input_frames: set[int] = set()
-        for point_inputs_per_frame in point_inputs_per_obj.values():
+        for point_inputs_per_frame in point_inputs_by_obj.values():
             if isinstance(point_inputs_per_frame, Mapping):
+                point_frames = cast(Mapping[object, object], point_inputs_per_frame)
                 input_frames.update(
-                    int(frame_id) for frame_id in point_inputs_per_frame
+                    _integer_value(frame_id, name="point input frame index")
+                    for frame_id in point_frames
                 )
-        for mask_inputs_per_frame in mask_inputs_per_obj.values():
+        for mask_inputs_per_frame in mask_inputs_by_obj.values():
             if isinstance(mask_inputs_per_frame, Mapping):
-                input_frames.update(int(frame_id) for frame_id in mask_inputs_per_frame)
+                mask_frames = cast(Mapping[object, object], mask_inputs_per_frame)
+                input_frames.update(
+                    _integer_value(frame_id, name="mask input frame index")
+                    for frame_id in mask_frames
+                )
 
         temp_frames: set[int] = set()
-        for temp_outputs in sam2_state.get("temp_output_dict_per_obj", {}).values():
+        temp_outputs_per_obj = _mapping_view(
+            sam2_state.get("temp_output_dict_per_obj", {}),
+            name="temp_output_dict_per_obj",
+        )
+        for temp_outputs in temp_outputs_per_obj.values():
             if not isinstance(temp_outputs, Mapping):
                 continue
+            temp_output_mapping = cast(Mapping[object, object], temp_outputs)
             for storage_key in ("cond_frame_outputs", "non_cond_frame_outputs"):
-                frame_outputs = temp_outputs.get(storage_key, {})
+                frame_outputs = temp_output_mapping.get(storage_key, {})
                 if isinstance(frame_outputs, Mapping):
-                    temp_frames.update(int(frame_id) for frame_id in frame_outputs)
+                    frame_output_mapping = cast(Mapping[object, object], frame_outputs)
+                    temp_frames.update(
+                        _integer_value(frame_id, name="temporary output frame index")
+                        for frame_id in frame_output_mapping
+                    )
 
         previous_input_frames = input_frames - temp_frames
-        cond_outputs = sam2_state.get("output_dict", {}).get("cond_frame_outputs", {})
+        output_dict = _mapping_view(
+            sam2_state.get("output_dict", {}),
+            name="output_dict",
+        )
+        cond_outputs = _mapping_view(
+            output_dict.get("cond_frame_outputs", {}),
+            name="cond_frame_outputs",
+        )
         cond_frame_outputs: set[int] = set()
         non_cond_frame_outputs: set[int] = set()
         for frame_id in previous_input_frames:
@@ -3091,13 +3184,17 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
     def _get_sam2_inference_states_by_obj_ids(
         self,
         inference_state: dict[str, Any],
-        obj_ids: list[Any],
-    ) -> list[Any]:
+        obj_ids: Sequence[int],
+    ) -> list[TrackerState]:
         requested_obj_ids = set(obj_ids)
+        tracker_states = _require_tracker_state_list(
+            inference_state.get("sam2_inference_states", [])
+        )
         return [
             state
-            for state in inference_state.get("sam2_inference_states", [])
-            if requested_obj_ids & set(state.get("obj_ids", []))
+            for state in tracker_states
+            if requested_obj_ids
+            & set(_object_id_sequence(state.get("obj_ids", [])))
         ]
 
     def _lookup_existing_obj_idx(
