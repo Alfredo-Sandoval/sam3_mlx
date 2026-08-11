@@ -11,11 +11,27 @@ names as fail-fast shims.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from typing import Never, TypeAlias, cast
+
 import mlx.core as mx
+import numpy as np
+from numpy.typing import NDArray
 
 from sam3_mlx._unsupported import UPSTREAM_COMMIT, raise_unsupported
+from sam3_mlx.sam.tensor_protocols import ArrayConstructor
 
 MLX_SIGMOID_FOCAL_LOSS_BASE_COMMIT = "dc33741d86020f34c73f9534deabff1007cdd886"
+ArrayValue: TypeAlias = (
+    mx.array
+    | NDArray[np.generic]
+    | bool
+    | int
+    | float
+    | Sequence[int]
+    | Sequence[float]
+)
+_mx_array = cast(ArrayConstructor, getattr(mx, "array"))
 
 _UNSUPPORTED_TRITON_FOCAL_LOSS_MESSAGE = (
     "Official SAM3 sigmoid focal-loss Triton autograd kernel behavior is "
@@ -26,7 +42,7 @@ _UNSUPPORTED_TRITON_FOCAL_LOSS_MESSAGE = (
 )
 
 
-def _raise_triton_focal_loss_unsupported(feature: str) -> None:
+def _raise_triton_focal_loss_unsupported(feature: str) -> Never:
     raise_unsupported(
         feature,
         reason="triton-kernel",
@@ -35,37 +51,52 @@ def _raise_triton_focal_loss_unsupported(feature: str) -> None:
     )
 
 
-def _as_float_array(value) -> mx.array:
+def _as_float_array(value: ArrayValue) -> mx.array:
     if isinstance(value, mx.array):
         return value.astype(mx.float32)
-    return mx.array(value, dtype=mx.float32)
+    return _mx_array(value, dtype=mx.float32)
 
 
-def _inner_focal_loss_fwd(*args, **kwargs):
+def _inner_focal_loss_fwd(  # pyright: ignore[reportUnusedFunction]
+    *args: object, **kwargs: object
+) -> Never:
+    del args, kwargs
     _raise_triton_focal_loss_unsupported("_inner_focal_loss_fwd")
 
 
-def sigmoid_focal_loss_fwd_kernel(*args, **kwargs):
+def sigmoid_focal_loss_fwd_kernel(*args: object, **kwargs: object) -> Never:
+    del args, kwargs
     _raise_triton_focal_loss_unsupported("sigmoid_focal_loss_fwd_kernel")
 
 
-def sigmoid_focal_loss_fwd_kernel_reduce(*args, **kwargs):
+def sigmoid_focal_loss_fwd_kernel_reduce(*args: object, **kwargs: object) -> Never:
+    del args, kwargs
     _raise_triton_focal_loss_unsupported("sigmoid_focal_loss_fwd_kernel_reduce")
 
 
-def _inner_focal_loss_bwd(*args, **kwargs):
+def _inner_focal_loss_bwd(  # pyright: ignore[reportUnusedFunction]
+    *args: object, **kwargs: object
+) -> Never:
+    del args, kwargs
     _raise_triton_focal_loss_unsupported("_inner_focal_loss_bwd")
 
 
-def sigmoid_focal_loss_bwd_kernel(*args, **kwargs):
+def sigmoid_focal_loss_bwd_kernel(*args: object, **kwargs: object) -> Never:
+    del args, kwargs
     _raise_triton_focal_loss_unsupported("sigmoid_focal_loss_bwd_kernel")
 
 
-def sigmoid_focal_loss_bwd_kernel_reduce(*args, **kwargs):
+def sigmoid_focal_loss_bwd_kernel_reduce(*args: object, **kwargs: object) -> Never:
+    del args, kwargs
     _raise_triton_focal_loss_unsupported("sigmoid_focal_loss_bwd_kernel_reduce")
 
 
-def sigmoid_focal_loss(inputs, targets, alpha: float = 0.25, gamma: float = 2.0):
+def sigmoid_focal_loss(
+    inputs: ArrayValue,
+    targets: ArrayValue,
+    alpha: float = 0.25,
+    gamma: float = 2.0,
+) -> mx.array:
     """Elementwise sigmoid focal loss with the official alpha/gamma contract."""
 
     inputs = _as_float_array(inputs)
@@ -85,7 +116,12 @@ def sigmoid_focal_loss(inputs, targets, alpha: float = 0.25, gamma: float = 2.0)
     return alpha_t * bce_loss * ((1 - p_t) ** gamma)
 
 
-def sigmoid_focal_loss_reduce(inputs, targets, alpha: float = 0.25, gamma: float = 2.0):
+def sigmoid_focal_loss_reduce(
+    inputs: ArrayValue,
+    targets: ArrayValue,
+    alpha: float = 0.25,
+    gamma: float = 2.0,
+) -> mx.array:
     """Sum-reduced sigmoid focal loss, equivalent to the official reduced kernel."""
 
     return mx.sum(sigmoid_focal_loss(inputs, targets, alpha=alpha, gamma=gamma))
@@ -97,7 +133,8 @@ class SigmoidFocalLoss:
     BLOCK_SIZE = 256
 
     @staticmethod
-    def apply(*args, **kwargs):
+    def apply(*args: object, **kwargs: object) -> Never:
+        del args, kwargs
         _raise_triton_focal_loss_unsupported("SigmoidFocalLoss.apply")
 
 
@@ -108,7 +145,8 @@ class SigmoidFocalLossReduced:
     REDUCE_SIZE = 32
 
     @staticmethod
-    def apply(*args, **kwargs):
+    def apply(*args: object, **kwargs: object) -> Never:
+        del args, kwargs
         _raise_triton_focal_loss_unsupported("SigmoidFocalLossReduced.apply")
 
 

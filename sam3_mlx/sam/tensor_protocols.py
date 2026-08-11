@@ -5,6 +5,10 @@ from typing import Protocol
 import mlx.core as mx
 
 
+class ArrayConstructor(Protocol):
+    def __call__(self, value: object, dtype: object | None = None) -> mx.array: ...
+
+
 class ArrayModule(Protocol):
     def __call__(self, x: mx.array) -> mx.array: ...
 

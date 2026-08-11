@@ -151,3 +151,22 @@ def test_point_sample_rejects_unsupported_grid_sample_modes():
         point_sample(values, points, mode="nearest")
     with pytest.raises(NotImplementedError, match="zero padding"):
         point_sample(values, points, padding_mode="border")
+
+
+@pytest.mark.parametrize(
+    ("num_points", "oversample_ratio", "message"),
+    [(True, 2, "num_points"), (4, True, "oversample_ratio")],
+)
+def test_uncertain_point_sampling_rejects_boolean_integer_counts(
+    num_points: int, oversample_ratio: int, message: str
+) -> None:
+    logits = mx.zeros((1, 1, 2, 2), dtype=mx.float32)
+
+    with pytest.raises(TypeError, match=message):
+        mask_sampling.get_uncertain_point_coords_with_randomness(
+            logits,
+            mask_sampling.calculate_uncertainty,
+            num_points=num_points,
+            oversample_ratio=oversample_ratio,
+            importance_sample_ratio=0.5,
+        )
