@@ -43,6 +43,7 @@ from sam3_mlx.model.vl_combiner import (
 )
 from sam3_mlx.model.geometry_encoders import SequenceGeometryEncoder
 from sam3_mlx.model.maskformer_segmentation import (
+    CrossAttention,
     PixelDecoder,
     UniversalSegmentationHead,
 )
@@ -80,6 +81,7 @@ if TYPE_CHECKING:
         Sam3MultiplexVideoPredictor,
     )
     from sam3_mlx.model.sam3_video_inference import (
+        ProcessorFactory,
         Sam3VideoInferenceWithInstanceInteractivity,
     )
     from sam3_mlx.model.sam3_video_predictor import Sam3VideoPredictor
@@ -525,7 +527,7 @@ def _create_segmentation_head() -> UniversalSegmentationHead:
         aux_masks=False,
         presence_head=False,
         dot_product_scorer=None,
-        cross_attend_prompt=cross_attend_prompt,
+        cross_attend_prompt=cast(CrossAttention, cross_attend_prompt),
         pixel_decoder=pixel_decoder,
     )
     return segmentation_head
@@ -2575,7 +2577,7 @@ def build_sam3_video_model(
     local_weights_dir: str | None = None,
     convert_from_pytorch: bool = False,
     enable_segmentation: bool = True,
-    processor_factory: Callable[..., object] | None = None,
+    processor_factory: ProcessorFactory | None = None,
     frame_feature_cache_size: int = 4,
     conversion_source_revision: str | None = None,
 ) -> Sam3VideoInferenceWithInstanceInteractivity:

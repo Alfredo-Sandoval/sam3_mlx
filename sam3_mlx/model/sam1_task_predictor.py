@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import logging
-from typing import List, Optional, Tuple, Union
+from typing import NoReturn, Protocol, TypedDict, cast
 
 import mlx.core as mx
-import mlx.nn as nn
+from mlx import nn
 import numpy as np
 from PIL.Image import Image
 
 from sam3_mlx._unsupported import raise_unsupported
 from sam3_mlx.mlx_runtime import to_numpy as _to_numpy
+from sam3_mlx.model.data_misc import reshape_array, transpose_array
+from sam3_mlx.model.sam3_tracker_base import (
+    BackboneFeatureOutput,
+    ImageBackboneOutput,
+    SamMaskDecoderExtraArgs,
+)
 from sam3_mlx.model.utils.sam1_utils import SAM2Transforms
 from sam3_mlx.sam.mask_decoder import MaskDecoder
 from sam3_mlx.sam.prompt_encoder import PromptEncoder
@@ -17,14 +24,23 @@ from sam3_mlx.sam.transformer import TwoWayTransformer
 
 
 def _raise_sam1_unsupported(
-    feature: str, *, reason: str, detail: str, alternative=None
-):
+    feature: str, *, reason: str, detail: str, alternative: str | None = None
+) -> NoReturn:
     raise_unsupported(
         feature,
         reason=reason,
         detail=detail,
         alternative=alternative,
     )
+
+
+class _ImageBackbone(Protocol):
+    def forward_image(self, img_batch: mx.array) -> ImageBackboneOutput: ...
+
+
+class _PredictorFeatures(TypedDict):
+    image_embed: mx.array
+    high_res_feats: list[mx.array]
 
 
 class SAM3InteractiveImageModel(nn.Module):
@@ -38,11 +54,11 @@ class SAM3InteractiveImageModel(nn.Module):
 
     def __init__(
         self,
-        backbone=None,
+        backbone: _ImageBackbone | None = None,
         image_size: int = 1008,
         backbone_stride: int = 14,
         hidden_dim: int = 256,
-        sam_mask_decoder_extra_args: Optional[dict] = None,
+        sam_mask_decoder_extra_args: SamMaskDecoderExtraArgs | None = None,
     ) -> None:
         super().__init__()
         self.backbone = backbone
@@ -55,7 +71,7 @@ class SAM3InteractiveImageModel(nn.Module):
         self._build_sam_heads()
 
     @property
-    def device(self):
+    def device(self) -> str:
         return "mlx"
 
     def _build_sam_heads(self) -> None:
@@ -85,8 +101,9 @@ class SAM3InteractiveImageModel(nn.Module):
             **(self.sam_mask_decoder_extra_args or {}),
         )
 
-    def forward_image(self, img_batch):
-        if self.backbone is None:
+    def forward_image(self, img_batch: mx.array) -> BackboneFeatureOutput:
+        backbone = self.backbone
+        if backbone is None:
             _raise_sam1_unsupported(
                 "sam3_mlx.model.sam1_task_predictor.SAM3InteractiveImageModel.forward_image",
                 reason="image-interactivity",
@@ -96,7 +113,7 @@ class SAM3InteractiveImageModel(nn.Module):
                 ),
                 alternative="Sam3Processor.set_image() plus Sam3Image.predict_inst()",
             )
-        backbone_out = self.backbone.forward_image(img_batch)
+        backbone_out = backbone.forward_image(img_batch)
         sam2_backbone_out = backbone_out.get("sam2_backbone_out")
         if sam2_backbone_out is None:
             _raise_sam1_unsupported(
@@ -110,7 +127,9 @@ class SAM3InteractiveImageModel(nn.Module):
             )
         return self.precompute_high_res_features(sam2_backbone_out)
 
-    def precompute_high_res_features(self, backbone_out):
+    def precompute_high_res_features(
+        self, backbone_out: BackboneFeatureOutput
+    ) -> BackboneFeatureOutput:
         backbone_out = backbone_out.copy()
         backbone_out["backbone_fpn"] = list(backbone_out["backbone_fpn"])
         backbone_out["vision_pos_enc"] = list(backbone_out["vision_pos_enc"])
@@ -124,7 +143,14 @@ class SAM3InteractiveImageModel(nn.Module):
         )
         return backbone_out
 
-    def _prepare_backbone_features(self, backbone_out):
+    def _prepare_backbone_features(
+        self, backbone_out: BackboneFeatureOutput
+    ) -> tuple[
+        BackboneFeatureOutput,
+        list[mx.array],
+        list[mx.array],
+        list[tuple[int, int]],
+    ]:
         backbone_out = backbone_out.copy()
         if "backbone_fpn" not in backbone_out or "vision_pos_enc" not in backbone_out:
             raise KeyError("backbone_out must contain backbone_fpn and vision_pos_enc.")
@@ -137,13 +163,15 @@ class SAM3InteractiveImageModel(nn.Module):
 
         feature_maps = backbone_out["backbone_fpn"][-self.num_feature_levels :]
         vision_pos_embeds = backbone_out["vision_pos_enc"][-self.num_feature_levels :]
-        feat_sizes = [(x.shape[-2], x.shape[-1]) for x in vision_pos_embeds]
-        vision_feats = [
-            x.reshape(x.shape[0], x.shape[1], -1).transpose(2, 0, 1)
+        feat_sizes: list[tuple[int, int]] = [
+            (x.shape[-2], x.shape[-1]) for x in vision_pos_embeds
+        ]
+        vision_feats: list[mx.array] = [
+            transpose_array(reshape_array(x, x.shape[0], x.shape[1], -1), 2, 0, 1)
             for x in feature_maps
         ]
         vision_pos_embeds = [
-            x.reshape(x.shape[0], x.shape[1], -1).transpose(2, 0, 1)
+            transpose_array(reshape_array(x, x.shape[0], x.shape[1], -1), 2, 0, 1)
             for x in vision_pos_embeds
         ]
         return backbone_out, vision_feats, vision_pos_embeds, feat_sizes
@@ -153,10 +181,10 @@ class SAM3InteractiveImagePredictor(nn.Module):
     def __init__(
         self,
         sam_model: SAM3InteractiveImageModel,
-        mask_threshold=0.0,
-        max_hole_area=256.0,
-        max_sprinkle_area=0.0,
-        **kwargs,
+        mask_threshold: float = 0.0,
+        max_hole_area: float = 256.0,
+        max_sprinkle_area: float = 0.0,
+        **kwargs: object,
     ) -> None:
         if kwargs:
             unexpected = ", ".join(sorted(kwargs))
@@ -170,8 +198,8 @@ class SAM3InteractiveImagePredictor(nn.Module):
             max_sprinkle_area=max_sprinkle_area,
         )
         self._is_image_set = False
-        self._features = None
-        self._orig_hw = None
+        self._features: _PredictorFeatures | None = None
+        self._orig_hw: list[tuple[int, int]] | None = None
         self._is_batch = False
         self.mask_threshold = mask_threshold
         image_embedding_size = self.model.image_size // self.model.backbone_stride
@@ -181,16 +209,14 @@ class SAM3InteractiveImagePredictor(nn.Module):
             (image_embedding_size, image_embedding_size),
         ]
 
-    def set_image(self, image: Union[np.ndarray, Image]) -> None:
+    def set_image(self, image: np.ndarray | Image) -> None:
         self.reset_predictor()
         if isinstance(image, np.ndarray):
             logging.info("For numpy array image, we assume (HxWxC) format")
-            self._orig_hw = [image.shape[:2]]
-        elif isinstance(image, Image):
+            self._orig_hw = [cast(tuple[int, int], image.shape[:2])]
+        else:
             w, h = image.size
             self._orig_hw = [(h, w)]
-        else:
-            raise ValueError("Image must be a NumPy array or PIL image.")
 
         input_image = self._transforms(image)[None, ...]
         if len(input_image.shape) != 4 or input_image.shape[1] != 3:
@@ -201,17 +227,11 @@ class SAM3InteractiveImagePredictor(nn.Module):
         self._set_features_from_backbone(self.model.forward_image(input_image))
         logging.info("Image embeddings computed.")
 
-    def set_image_batch(self, image_list: List[np.ndarray]) -> None:
+    def set_image_batch(self, image_list: list[np.ndarray]) -> None:
         self.reset_predictor()
-        if not isinstance(image_list, list):
-            raise AssertionError("image_list must be a list")
         self._orig_hw = []
         for image in image_list:
-            if not isinstance(image, np.ndarray):
-                raise AssertionError(
-                    "Images are expected to be NumPy arrays in RGB HWC format."
-                )
-            self._orig_hw.append(image.shape[:2])
+            self._orig_hw.append(cast(tuple[int, int], image.shape[:2]))
         img_batch = self._transforms.forward_batch(image_list)
         if len(img_batch.shape) != 4 or img_batch.shape[1] != 3:
             raise AssertionError(
@@ -222,12 +242,24 @@ class SAM3InteractiveImagePredictor(nn.Module):
         self._is_batch = True
         logging.info("Image embeddings computed.")
 
-    def _set_features_from_backbone(self, backbone_out) -> None:
-        _, vision_feats, _, _ = self.model._prepare_backbone_features(backbone_out)
+    def _set_features_from_backbone(self, backbone_out: BackboneFeatureOutput) -> None:
+        prepare_backbone_features = cast(
+            Callable[
+                [BackboneFeatureOutput],
+                tuple[
+                    BackboneFeatureOutput,
+                    list[mx.array],
+                    list[mx.array],
+                    list[tuple[int, int]],
+                ],
+            ],
+            getattr(self.model, "_prepare_backbone_features"),
+        )
+        _, vision_feats, _, _ = prepare_backbone_features(backbone_out)
         vision_feats[-1] = vision_feats[-1] + self.model.no_mem_embed
         batch_size = vision_feats[-1].shape[1]
         feats = [
-            feat.transpose(1, 2, 0).reshape(batch_size, -1, *feat_size)
+            reshape_array(transpose_array(feat, 1, 2, 0), batch_size, -1, *feat_size)
             for feat, feat_size in zip(vision_feats[::-1], self._bb_feat_sizes[::-1])
         ][::-1]
         self._features = {"image_embed": feats[-1], "high_res_feats": feats[:-1]}
@@ -235,24 +267,25 @@ class SAM3InteractiveImagePredictor(nn.Module):
 
     def predict_batch(
         self,
-        point_coords_batch: List[np.ndarray] = None,
-        point_labels_batch: List[np.ndarray] = None,
-        box_batch: List[np.ndarray] = None,
-        mask_input_batch: List[np.ndarray] = None,
+        point_coords_batch: list[np.ndarray] | None = None,
+        point_labels_batch: list[np.ndarray] | None = None,
+        box_batch: list[np.ndarray] | None = None,
+        mask_input_batch: list[np.ndarray] | None = None,
         multimask_output: bool = True,
         return_logits: bool = False,
-        normalize_coords=True,
-    ) -> Tuple[List[np.ndarray], List[np.ndarray], List[np.ndarray]]:
+        normalize_coords: bool = True,
+    ) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray]]:
         if not self._is_batch:
             raise AssertionError("This function should only be used in batched mode")
         if not self._is_image_set:
             raise RuntimeError(
                 "An image must be set with .set_image_batch(...) before prediction."
             )
-        num_images = len(self._features["image_embed"])
-        all_masks = []
-        all_ious = []
-        all_low_res_masks = []
+        features = self._require_features()
+        num_images = len(features["image_embed"])
+        all_masks: list[np.ndarray] = []
+        all_ious: list[np.ndarray] = []
+        all_low_res_masks: list[np.ndarray] = []
         for img_idx in range(num_images):
             point_coords = (
                 point_coords_batch[img_idx] if point_coords_batch is not None else None
@@ -264,7 +297,7 @@ class SAM3InteractiveImagePredictor(nn.Module):
             mask_input = (
                 mask_input_batch[img_idx] if mask_input_batch is not None else None
             )
-            mask_input, unnorm_coords, labels, unnorm_box = self._prep_prompts(
+            prepared_mask, unnorm_coords, labels, unnorm_box = self._prep_prompts(
                 point_coords,
                 point_labels,
                 box,
@@ -276,7 +309,7 @@ class SAM3InteractiveImagePredictor(nn.Module):
                 unnorm_coords,
                 labels,
                 unnorm_box,
-                mask_input,
+                prepared_mask,
                 multimask_output,
                 return_logits=return_logits,
                 img_idx=img_idx,
@@ -290,19 +323,19 @@ class SAM3InteractiveImagePredictor(nn.Module):
 
     def predict(
         self,
-        point_coords: Optional[np.ndarray] = None,
-        point_labels: Optional[np.ndarray] = None,
-        box: Optional[np.ndarray] = None,
-        mask_input: Optional[np.ndarray] = None,
+        point_coords: np.ndarray | None = None,
+        point_labels: np.ndarray | None = None,
+        box: np.ndarray | None = None,
+        mask_input: np.ndarray | None = None,
         multimask_output: bool = True,
         return_logits: bool = False,
-        normalize_coords=True,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        normalize_coords: bool = True,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         if not self._is_image_set:
             raise RuntimeError(
                 "An image must be set with .set_image(...) before mask prediction."
             )
-        mask_input, unnorm_coords, labels, unnorm_box = self._prep_prompts(
+        prepared_mask, unnorm_coords, labels, unnorm_box = self._prep_prompts(
             point_coords,
             point_labels,
             box,
@@ -313,7 +346,7 @@ class SAM3InteractiveImagePredictor(nn.Module):
             unnorm_coords,
             labels,
             unnorm_box,
-            mask_input,
+            prepared_mask,
             multimask_output,
             return_logits=return_logits,
         )
@@ -324,30 +357,44 @@ class SAM3InteractiveImagePredictor(nn.Module):
         )
 
     def _prep_prompts(
-        self, point_coords, point_labels, box, mask_logits, normalize_coords, img_idx=-1
-    ):
-        unnorm_coords, labels, unnorm_box, mask_input = None, None, None, None
+        self,
+        point_coords: np.ndarray | None,
+        point_labels: np.ndarray | None,
+        box: np.ndarray | None,
+        mask_logits: np.ndarray | None,
+        normalize_coords: bool,
+        img_idx: int = -1,
+    ) -> tuple[
+        mx.array | None,
+        mx.array | None,
+        mx.array | None,
+        mx.array | None,
+    ]:
+        unnorm_coords: mx.array | None = None
+        labels: mx.array | None = None
+        unnorm_box: mx.array | None = None
+        mask_input: mx.array | None = None
         if point_coords is not None:
             if point_labels is None:
                 raise AssertionError(
                     "point_labels must be supplied if point_coords is supplied."
                 )
-            point_coords = mx.array(point_coords, dtype=mx.float32)
+            point_coords_mx = mx.array(point_coords, dtype=mx.float32)
             unnorm_coords = self._transforms.transform_coords(
-                point_coords,
+                point_coords_mx,
                 normalize=normalize_coords,
-                orig_hw=self._orig_hw[img_idx],
+                orig_hw=self._require_orig_hw()[img_idx],
             )
             labels = mx.array(point_labels, dtype=mx.int32)
             if len(unnorm_coords.shape) == 2:
                 unnorm_coords = unnorm_coords[None, ...]
                 labels = labels[None, ...]
         if box is not None:
-            box = mx.array(box, dtype=mx.float32)
+            box_mx = mx.array(box, dtype=mx.float32)
             unnorm_box = self._transforms.transform_boxes(
-                box,
+                box_mx,
                 normalize=normalize_coords,
-                orig_hw=self._orig_hw[img_idx],
+                orig_hw=self._require_orig_hw()[img_idx],
             )
         if mask_logits is not None:
             mask_input = mx.array(mask_logits, dtype=mx.float32)
@@ -357,14 +404,14 @@ class SAM3InteractiveImagePredictor(nn.Module):
 
     def _predict(
         self,
-        point_coords: Optional[mx.array],
-        point_labels: Optional[mx.array],
-        boxes: Optional[mx.array] = None,
-        mask_input: Optional[mx.array] = None,
+        point_coords: mx.array | None,
+        point_labels: mx.array | None,
+        boxes: mx.array | None = None,
+        mask_input: mx.array | None = None,
         multimask_output: bool = True,
         return_logits: bool = False,
         img_idx: int = -1,
-    ) -> Tuple[mx.array, mx.array, mx.array]:
+    ) -> tuple[mx.array, mx.array, mx.array]:
         if not self._is_image_set:
             raise RuntimeError(
                 "An image must be set with .set_image(...) before mask prediction."
@@ -379,7 +426,7 @@ class SAM3InteractiveImagePredictor(nn.Module):
         else:
             concat_points = (point_coords, point_labels)
         if boxes is not None:
-            box_coords = boxes.reshape(-1, 2, 2)
+            box_coords = reshape_array(boxes, -1, 2, 2)
             box_labels = mx.broadcast_to(
                 mx.array([[2, 3]], dtype=mx.int32),
                 (box_coords.shape[0], 2),
@@ -397,11 +444,12 @@ class SAM3InteractiveImagePredictor(nn.Module):
             masks=mask_input,
         )
         batched_mode = concat_points is not None and concat_points[0].shape[0] > 1
+        features = self._require_features()
         high_res_features = [
-            feat_level[img_idx][None] for feat_level in self._features["high_res_feats"]
+            feat_level[img_idx][None] for feat_level in features["high_res_feats"]
         ]
         low_res_masks, iou_predictions, _, _ = self.model.sam_mask_decoder(
-            image_embeddings=self._features["image_embed"][img_idx][None],
+            image_embeddings=features["image_embed"][img_idx][None],
             image_pe=self.model.sam_prompt_encoder.get_dense_pe(),
             sparse_prompt_embeddings=sparse_embeddings,
             dense_prompt_embeddings=dense_embeddings,
@@ -411,7 +459,7 @@ class SAM3InteractiveImagePredictor(nn.Module):
         )
 
         masks = self._transforms.postprocess_masks(
-            low_res_masks, self._orig_hw[img_idx]
+            low_res_masks, self._require_orig_hw()[img_idx]
         )
         low_res_masks = mx.clip(low_res_masks, -32.0, 32.0)
         if not return_logits:
@@ -427,8 +475,20 @@ class SAM3InteractiveImagePredictor(nn.Module):
             raise AssertionError("Features must exist if an image has been set.")
         return self._features["image_embed"]
 
+    def _require_features(self) -> _PredictorFeatures:
+        if self._features is None:
+            raise RuntimeError("Image features are unavailable before set_image().")
+        return self._features
+
+    def _require_orig_hw(self) -> list[tuple[int, int]]:
+        if self._orig_hw is None:
+            raise RuntimeError(
+                "Original image sizes are unavailable before set_image()."
+            )
+        return self._orig_hw
+
     @property
-    def device(self):
+    def device(self) -> str:
         device = self.model.device
         if device not in (None, "mlx"):
             _raise_sam1_unsupported(
