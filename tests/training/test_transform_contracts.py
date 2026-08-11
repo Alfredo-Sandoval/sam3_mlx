@@ -14,6 +14,11 @@ from sam3_mlx.train.data.sam3_image_dataset import (
 )
 from sam3_mlx.train.transforms.basic import TargetDict, resize
 from sam3_mlx.train.transforms.basic_for_api import ToTensorAPI
+from sam3_mlx.train.transforms.filter_query_transforms import (
+    FilterQueryWithText,
+    FlexibleFilterFindGetQueries,
+)
+from sam3_mlx.train.transforms.point_sampling import RandomGeometricInputsAPI
 
 
 def test_resize_preserves_fractional_geometry_from_integer_mlx_targets():
@@ -98,3 +103,66 @@ def test_collator_converts_optional_prompt_builders_to_mlx_arrays() -> None:
     assert isinstance(stage.input_points_mask, mx.array)
     assert stage.input_boxes.shape == (1, 1, 4)
     assert stage.input_points.shape == (1, 1, 3)
+
+
+def test_random_geometric_inputs_decodes_rle_segments() -> None:
+    image = Image(
+        data=PILImage.new("RGB", (2, 2)),
+        objects=[
+            Object(
+                bbox=mx.array([0, 0, 1, 1], dtype=mx.float32),
+                area=1.0,
+                segment={"size": [2, 2], "counts": [0, 1, 3]},
+            )
+        ],
+        size=(2, 2),
+    )
+    query = FindQueryLoaded(
+        query_text="geometric",
+        image_id=0,
+        object_ids_output=[0],
+        is_exhaustive=True,
+    )
+
+    result = RandomGeometricInputsAPI(
+        num_points=1,
+        box_chance=0.0,
+        resample_box_from_mask=True,
+        point_sample_mode="centered",
+    )(Datapoint(find_queries=[query], images=[image]))
+
+    assert result.find_queries[0].input_points is not None
+    np.testing.assert_array_equal(
+        to_numpy(result.find_queries[0].input_points),
+        np.array([[[0.0, 0.0, 1.0]]], dtype=np.float32),
+    )
+
+
+def test_query_filter_prunes_and_remaps_objects_without_nullable_queries() -> None:
+    objects = [
+        Object(bbox=mx.zeros((4,)), area=1.0),
+        Object(bbox=mx.ones((4,)), area=1.0),
+    ]
+    image = Image(data=PILImage.new("RGB", (2, 2)), objects=objects, size=(2, 2))
+    queries = [
+        FindQueryLoaded(
+            query_text="drop",
+            image_id=0,
+            object_ids_output=[0],
+            is_exhaustive=True,
+        ),
+        FindQueryLoaded(
+            query_text="keep",
+            image_id=0,
+            object_ids_output=[1],
+            is_exhaustive=True,
+        ),
+    ]
+
+    result = FlexibleFilterFindGetQueries(FilterQueryWithText(["drop"]))(
+        Datapoint(find_queries=queries, images=[image])
+    )
+
+    assert [query.query_text for query in result.find_queries] == ["keep"]
+    assert result.find_queries[0].object_ids_output == [0]
+    assert result.images[0].objects == [objects[1]]

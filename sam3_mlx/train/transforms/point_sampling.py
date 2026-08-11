@@ -8,36 +8,40 @@ from __future__ import annotations
 
 import math
 import random
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Literal, TypeAlias, cast
 
 import mlx.core as mx
 import numpy as np
+from numpy.typing import NDArray
 from PIL import Image as PILImage
+
+from sam3_mlx.train.data.sam3_image_dataset import Datapoint, FindQuery, Object
+from sam3_mlx.train.transforms._array_contracts import (
+    ArrayData,
+    ArrayInput,
+    is_mlx_array,
+    mx_array,
+    mx_ops,
+    mx_shape,
+    restore_array,
+    to_numpy,
+)
 
 
 MLX_POINT_SAMPLING_BASE_COMMIT = "629029d376426710c263b606aa137ec17dc55a94"
 
+PointSampleMode: TypeAlias = Literal["centered", "random_mask", "random_box"]
+CocoRle: TypeAlias = Mapping[str, object]
+MaskInput: TypeAlias = ArrayData
+BoxInput: TypeAlias = ArrayInput
 
-def _is_mlx_array(value) -> bool:
-    return isinstance(value, mx.array)
-
-
-def _to_numpy(value) -> np.ndarray:
-    if isinstance(value, np.ndarray):
-        return value
-    if _is_mlx_array(value):
-        mx.eval(value)
-    return np.asarray(value)
+def _from_numpy(value: NDArray[np.generic], like: ArrayData) -> ArrayData:
+    return restore_array(value, like, preserve_dtype=False)
 
 
-def _from_numpy(value: np.ndarray, like):
-    if _is_mlx_array(like):
-        return mx.array(value)
-    return value
-
-
-def _as_rank3_points(value) -> mx.array:
-    points = mx.array(value, dtype=mx.float32)
+def _as_rank3_points(value: ArrayInput) -> mx.array:
+    points = mx_array(value, dtype=mx.float32)
     if points.ndim == 2:
         return points[None, :, :]
     if points.ndim == 3:
@@ -77,22 +81,35 @@ def _decode_compressed_rle_counts(counts: str | bytes) -> list[int]:
     return decoded
 
 
-def _decode_coco_rle(rle) -> np.ndarray:
+def _parse_rle_int(value: object) -> int:
+    if not isinstance(value, (int, float, str)):
+        raise TypeError("COCO RLE values must be numeric.")
+    return int(value)
+
+
+def _decode_coco_rle(rle: CocoRle | MaskInput) -> NDArray[np.bool_]:
     """Decode uncompressed or compressed COCO RLE to a boolean mask."""
 
-    if isinstance(rle, np.ndarray):
-        return np.asarray(rle, dtype=bool)
-    if not isinstance(rle, dict):
+    if isinstance(rle, np.ndarray) or is_mlx_array(rle):
+        return to_numpy(rle).astype(bool, copy=False)
+    if not isinstance(rle, Mapping):
         raise TypeError("COCO RLE must be a dict with 'size' and 'counts'.")
     if "size" not in rle or "counts" not in rle:
         raise ValueError("COCO RLE must contain 'size' and 'counts'.")
 
-    height, width = [int(v) for v in rle["size"]]
+    raw_size = rle["size"]
+    if not isinstance(raw_size, Sequence) or isinstance(raw_size, (str, bytes)):
+        raise TypeError("COCO RLE size must be a two-element sequence.")
+    size_values = cast(Sequence[object], raw_size)
+    if len(size_values) != 2:
+        raise ValueError("COCO RLE size must contain height and width.")
+    height, width = [_parse_rle_int(value) for value in size_values]
     counts = rle["counts"]
     if isinstance(counts, (str, bytes)):
         counts = _decode_compressed_rle_counts(counts)
     elif isinstance(counts, Sequence):
-        counts = [int(v) for v in counts]
+        count_values = cast(Sequence[object], counts)
+        counts = [_parse_rle_int(value) for value in count_values]
     else:
         raise TypeError("COCO RLE counts must be a sequence, str, or bytes.")
 
@@ -115,7 +132,9 @@ def _decode_coco_rle(rle) -> np.ndarray:
     return flat.reshape((width, height)).T.astype(bool, copy=False)
 
 
-def _distance_transform_inside_mask(mask: np.ndarray) -> np.ndarray:
+def _distance_transform_inside_mask(
+    mask: NDArray[np.generic],
+) -> NDArray[np.float32]:
     """Exact but simple Euclidean distance transform for data-loader masks."""
 
     mask_bool = mask.astype(bool, copy=False)
@@ -136,25 +155,39 @@ def _distance_transform_inside_mask(mask: np.ndarray) -> np.ndarray:
     return dist
 
 
-def _mask_to_box_np(mask: np.ndarray) -> np.ndarray:
+def _mask_to_box_np(mask: NDArray[np.generic]) -> NDArray[np.float32]:
     ys, xs = np.nonzero(mask)
     if len(xs) == 0:
         return np.zeros((4,), dtype=np.float32)
     return np.array([xs.min(), ys.min(), xs.max() + 1, ys.max() + 1], dtype=np.float32)
 
 
-def sample_points_from_rle(rle, n_points, mode, box=None, normalize=True):
+def sample_points_from_rle(
+    rle: CocoRle | MaskInput,
+    n_points: int,
+    mode: PointSampleMode,
+    box: BoxInput | None = None,
+    normalize: bool = True,
+) -> NDArray[np.generic]:
     """Sample points from a COCO RLE mask using the official mode contract."""
 
     mask = np.ascontiguousarray(_decode_coco_rle(rle))
     points = sample_points_from_mask(mask, n_points, mode, box)
     if normalize:
         height, width = mask.shape
-        points = points / np.array([width, height, 1.0], dtype=np.float32)[None, :]
+        float_points = points.astype(np.float32, copy=False)
+        return float_points / np.array(
+            [width, height, 1.0], dtype=np.float32
+        )[None, :]
     return points
 
 
-def sample_points_from_mask(mask, n_points, mode, box=None):
+def sample_points_from_mask(
+    mask: MaskInput,
+    n_points: int,
+    mode: PointSampleMode,
+    box: BoxInput | None = None,
+) -> NDArray[np.generic]:
     if mode == "centered":
         return center_positive_sample(mask, n_points)
     if mode == "random_mask":
@@ -166,10 +199,12 @@ def sample_points_from_mask(mask, n_points, mode, box=None):
     raise ValueError(f"Unknown point sampling mode {mode}.")
 
 
-def uniform_positive_sample(mask, n_points):
+def uniform_positive_sample(
+    mask: MaskInput, n_points: int
+) -> NDArray[np.generic]:
     """Sample positive integer-pixel points uniformly from a binary mask."""
 
-    mask_np = _to_numpy(mask).astype(bool, copy=False)
+    mask_np = to_numpy(mask).astype(bool, copy=False)
     mask_points = np.stack(np.nonzero(mask_np), axis=0).transpose(1, 0)
     if len(mask_points) == 0:
         raise AssertionError("Can't sample positive points from an empty mask.")
@@ -179,28 +214,32 @@ def uniform_positive_sample(mask, n_points):
     return np.concatenate([selected_points, labels], axis=1)
 
 
-def center_positive_sample(mask, n_points):
+def center_positive_sample(
+    mask: MaskInput, n_points: int
+) -> NDArray[np.generic]:
     """Sample points farthest from mask edges and previously sampled points."""
 
-    padded_mask = np.pad(_to_numpy(mask).astype(np.uint8, copy=False), 1)
-    points = []
+    padded_mask = np.pad(to_numpy(mask).astype(np.uint8, copy=False), 1)
+    point_coords: list[tuple[np.intp, ...]] = []
     for _ in range(n_points):
         if np.max(padded_mask) <= 0:
             raise AssertionError("Can't sample positive points from an empty mask.")
         dist = _distance_transform_inside_mask(padded_mask)
         point = np.unravel_index(dist.argmax(), dist.shape)
         padded_mask[point[0], point[1]] = 0
-        points.append(point[::-1])
-    points = np.stack(points, axis=0) - 1
+        point_coords.append(point[::-1])
+    points = np.stack(point_coords, axis=0) - 1
     labels = np.ones((len(points), 1), dtype=points.dtype)
     return np.concatenate([points, labels], axis=1)
 
 
-def uniform_sample_from_box(mask, box, n_points):
+def uniform_sample_from_box(
+    mask: MaskInput, box: BoxInput, n_points: int
+) -> NDArray[np.generic]:
     """Sample integer points uniformly from an unnormalized XYXY box."""
 
-    mask_np = _to_numpy(mask)
-    int_box = np.ceil(_to_numpy(box)).astype(np.int64)
+    mask_np = to_numpy(mask)
+    int_box = np.ceil(to_numpy(box)).astype(np.int64)
     x0, y0, x1, y1 = int_box.tolist()
     if x1 <= x0 or y1 <= y0:
         raise ValueError(f"Cannot sample from an empty box: {box!r}")
@@ -212,10 +251,14 @@ def uniform_sample_from_box(mask, box, n_points):
     return np.stack([x, y, labels], axis=1)
 
 
-def rescale_box_xyxy(box, factor, imsize=None):
+def rescale_box_xyxy(
+    box: ArrayData,
+    factor: float,
+    imsize: tuple[int, int] | None = None,
+) -> ArrayData:
     """Rescale an unnormalized XYXY box around its center."""
 
-    box_np = _to_numpy(box).astype(np.float32, copy=False)
+    box_np = to_numpy(box).astype(np.float32, copy=False)
     cx = (box_np[0] + box_np[2]) / 2
     cy = (box_np[1] + box_np[3]) / 2
     width = box_np[2] - box_np[0]
@@ -237,12 +280,18 @@ def rescale_box_xyxy(box, factor, imsize=None):
     return _from_numpy(new_box, box)
 
 
-def noise_box(box, im_size, box_noise_std, box_noise_max, min_box_area):
+def noise_box(
+    box: ArrayData,
+    im_size: tuple[int, int],
+    box_noise_std: float,
+    box_noise_max: float | None,
+    min_box_area: float,
+) -> ArrayData:
     """Apply official-style relative Gaussian box noise."""
 
     if box_noise_std <= 0.0:
         return box
-    box_np = _to_numpy(box).astype(np.float32, copy=False)
+    box_np = to_numpy(box).astype(np.float32, copy=False)
     width = box_np[2] - box_np[0]
     height = box_np[3] - box_np[1]
     noise = box_noise_std * np.random.normal(size=(4,)).astype(np.float32)
@@ -265,17 +314,17 @@ class RandomGeometricInputsAPI:
 
     def __init__(
         self,
-        num_points,
-        box_chance,
-        box_noise_std=0.0,
-        box_noise_max=None,
-        minimum_box_area=0.0,
-        resample_box_from_mask=False,
-        point_sample_mode="random_mask",
-        sample_box_scale_factor=1.0,
-        geometric_query_str="geometric",
-        concat_points=False,
-    ):
+        num_points: int | tuple[int, int],
+        box_chance: float,
+        box_noise_std: float = 0.0,
+        box_noise_max: float | None = None,
+        minimum_box_area: float = 0.0,
+        resample_box_from_mask: bool = False,
+        point_sample_mode: PointSampleMode = "random_mask",
+        sample_box_scale_factor: float = 1.0,
+        geometric_query_str: str = "geometric",
+        concat_points: bool = False,
+    ) -> None:
         self.num_points = num_points
         if not isinstance(self.num_points, int):
             low, high = self.num_points
@@ -287,12 +336,12 @@ class RandomGeometricInputsAPI:
         self.resample_box_from_mask = resample_box_from_mask
         if point_sample_mode not in {"centered", "random_mask", "random_box"}:
             raise AssertionError("Unknown point sample mode.")
-        self.point_sample_mode = point_sample_mode
+        self.point_sample_mode: PointSampleMode = point_sample_mode
         self.geometric_query_str = geometric_query_str
         self.concat_points = concat_points
         self.sample_box_scale_factor = sample_box_scale_factor
 
-    def _sample_num_points_and_if_box(self):
+    def _sample_num_points_and_if_box(self) -> tuple[int, bool]:
         if isinstance(self.num_points, tuple):
             n_points = random.randrange(self.num_points[0], self.num_points[1])
         else:
@@ -301,17 +350,17 @@ class RandomGeometricInputsAPI:
         n_points -= int(use_box)
         return n_points, use_box
 
-    def _get_original_box(self, target_object):
+    def _get_original_box(self, target_object: Object) -> ArrayData:
         if not self.resample_box_from_mask:
             return target_object.bbox
         if target_object.segment is None:
             raise ValueError("resample_box_from_mask requires target_object.segment.")
         return _from_numpy(
-            _mask_to_box_np(_to_numpy(target_object.segment)),
+            _mask_to_box_np(_decode_coco_rle(target_object.segment)),
             target_object.bbox,
         )
 
-    def _get_target_object(self, datapoint, query):
+    def _get_target_object(self, datapoint: Datapoint, query: FindQuery) -> Object:
         img = datapoint.images[query.image_id]
         targets = query.object_ids_output
         if len(targets) != 1:
@@ -320,7 +369,7 @@ class RandomGeometricInputsAPI:
             )
         return img.objects[targets[0]]
 
-    def __call__(self, datapoint, **kwargs):
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
         del kwargs
         for query in datapoint.find_queries:
             if query.query_text != self.geometric_query_str:
@@ -340,16 +389,16 @@ class RandomGeometricInputsAPI:
                     rescale_box_xyxy(
                         box,
                         self.sample_box_scale_factor,
-                        _to_numpy(mask).shape,
+                        _decode_coco_rle(mask).shape,
                     )
                     if self.sample_box_scale_factor != 1.0
                     else box
                 )
                 input_points = sample_points_from_mask(
-                    _to_numpy(mask),
+                    _decode_coco_rle(mask),
                     n_points,
                     self.point_sample_mode,
-                    _to_numpy(sample_box),
+                    to_numpy(sample_box),
                 )
                 input_points = mx.array(input_points, dtype=mx.float32)[None, :, :]
                 if self.concat_points and query.input_points is not None:
@@ -376,10 +425,10 @@ class RandomGeometricInputsAPI:
                 if input_box is None:
                     query.input_bbox_label = None
                 else:
-                    num_boxes = mx.array(input_box).reshape(-1, 4).shape[0]
+                    num_boxes = mx_shape(mx_ops(input_box).reshape(-1, 4))[0]
                     if (
                         query.input_bbox_label is None
-                        or np.size(_to_numpy(query.input_bbox_label)) != num_boxes
+                        or np.size(to_numpy(query.input_bbox_label)) != num_boxes
                     ):
                         query.input_bbox_label = mx.ones((num_boxes,), dtype=mx.bool_)
 
@@ -393,15 +442,15 @@ class RandomizeInputBbox:
 
     def __init__(
         self,
-        box_noise_std=0.0,
-        box_noise_max=None,
-        minimum_box_area=0.0,
-    ):
+        box_noise_std: float = 0.0,
+        box_noise_max: float | None = None,
+        minimum_box_area: float = 0.0,
+    ) -> None:
         self.box_noise_std = box_noise_std
         self.box_noise_max = box_noise_max
         self.minimum_box_area = minimum_box_area
 
-    def __call__(self, datapoint, **kwargs):
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
         del kwargs
         for query in datapoint.find_queries:
             if query.input_bbox is None:
@@ -409,13 +458,15 @@ class RandomizeInputBbox:
             img = datapoint.images[query.image_id].data
             if isinstance(img, PILImage.Image):
                 width, height = img.size
-            elif _is_mlx_array(img):
+            elif is_mlx_array(img):
                 height, width = img.shape[-2:]
             else:
                 raise TypeError(f"Unsupported image type: {type(img)!r}")
 
-            boxes = mx.array(query.input_bbox, dtype=mx.float32).reshape(-1, 4)
-            if boxes.shape[0] == 0:
+            boxes = mx_ops(mx_array(query.input_bbox, dtype=mx.float32)).reshape(
+                -1, 4
+            )
+            if mx_shape(boxes)[0] == 0:
                 continue
             noised_boxes = [
                 mx.array(
@@ -428,10 +479,10 @@ class RandomizeInputBbox:
                     ),
                     dtype=mx.float32,
                 )
-                for box_id in range(boxes.shape[0])
+                for box_id in range(mx_shape(boxes)[0])
             ]
-            query.input_bbox = mx.stack(noised_boxes, axis=0).reshape(
-                query.input_bbox.shape
+            query.input_bbox = mx_ops(mx.stack(noised_boxes, axis=0)).reshape(
+                *mx_shape(query.input_bbox)
             )
         return datapoint
 

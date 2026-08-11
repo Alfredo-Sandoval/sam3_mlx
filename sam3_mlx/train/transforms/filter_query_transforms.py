@@ -8,44 +8,37 @@ from __future__ import annotations
 
 import logging
 import random
-from typing import List, Optional, Union
+from collections.abc import Sequence
 
 import mlx.core as mx
 import numpy as np
 
 from sam3_mlx._unsupported import raise_unsupported
-from sam3_mlx.train.data.sam3_image_dataset import Datapoint, FindQuery, Object
+from sam3_mlx.train.data.sam3_image_dataset import Datapoint, FindQuery, Image, Object
+from sam3_mlx.train.transforms._array_contracts import to_numpy
 
 
 MLX_FILTER_QUERY_BASE_COMMIT = "dc33741d86020f34c73f9534deabff1007cdd886"
 
 
-def _to_numpy(value) -> np.ndarray:
-    if isinstance(value, np.ndarray):
-        return value
-    if isinstance(value, mx.array):
-        mx.eval(value)
-    return np.asarray(value)
-
-
-def _scalar(value):
-    array = _to_numpy(value)
+def _scalar(value: float | mx.array) -> float:
+    array = to_numpy(value)
     if array.shape == ():
-        return array.item()
+        return float(array.item())
     if array.size == 1:
-        return array.reshape(-1)[0].item()
+        return float(array.reshape(-1)[0].item())
     raise ValueError(f"Expected scalar value, got shape {array.shape}.")
 
 
 class FilterDataPointQueries:
-    find_ids_to_filter: set = None
-    get_ids_to_filter: set = None
-    obj_ids_to_filter: set = None
+    find_ids_to_filter: set[int] | None = None
+    get_ids_to_filter: set[int] | None = None
+    obj_ids_to_filter: set[tuple[int, int]] | None = None
 
     def identify_queries_to_filter(self, datapoint: Datapoint) -> None:
         raise NotImplementedError
 
-    def _do_filter_query(self, query: Union[FindQuery], query_id: int):
+    def do_filter_query(self, query: FindQuery, query_id: int) -> bool:
         del query
         if self.find_ids_to_filter is None:
             raise AssertionError("identify_queries_to_filter must run first.")
@@ -54,14 +47,16 @@ class FilterDataPointQueries:
 
 class FilterQueryWithText(FilterDataPointQueries):
     def __init__(
-        self, exclude_find_keys: List[str] = None, exclude_get_keys: List[str] = None
-    ):
-        self.find_filter_keys = exclude_find_keys if exclude_find_keys else []
-        self.get_filter_keys = exclude_get_keys if exclude_get_keys else []
+        self,
+        exclude_find_keys: Sequence[str] | None = None,
+        exclude_get_keys: Sequence[str] | None = None,
+    ) -> None:
+        self.find_filter_keys = list(exclude_find_keys or ())
+        self.get_filter_keys = list(exclude_get_keys or ())
 
-    def identify_queries_to_filter(self, datapoint):
+    def identify_queries_to_filter(self, datapoint: Datapoint) -> None:
         self.obj_ids_to_filter = set()
-        del_find_ids = []
+        del_find_ids: list[int] = []
         for index, query in enumerate(datapoint.find_queries):
             if query.query_text in self.find_filter_keys:
                 del_find_ids.append(index)
@@ -88,7 +83,8 @@ class KeepMaxNumFindQueries(FilterDataPointQueries):
                 range(num_find_queries), k=num_to_filter
             )
         else:
-            pos_find_ids, neg_find_ids = [], []
+            pos_find_ids: list[int] = []
+            neg_find_ids: list[int] = []
             for index, query in enumerate(datapoint.find_queries):
                 if len(query.object_ids_output) == 0:
                     neg_find_ids.append(index)
@@ -143,14 +139,14 @@ class KeepUnaryFindQueriesOnly(FilterDataPointQueries):
 
 class FilterZeroBoxQueries(FilterDataPointQueries):
     @staticmethod
-    def _is_zero_area_object(obj: Object):
-        bbox = _to_numpy(obj.bbox)
+    def _is_zero_area_object(obj: Object) -> bool:
+        bbox = to_numpy(obj.bbox).astype(np.float32, copy=False)
         height = bbox[..., 3] - bbox[..., 1]
         width = bbox[..., 2] - bbox[..., 0]
         return bool(np.any((height == 0) | (width == 0)))
 
-    def identify_queries_to_filter(self, datapoint):
-        exclude_objects = set()
+    def identify_queries_to_filter(self, datapoint: Datapoint) -> None:
+        exclude_objects: set[tuple[int, int]] = set()
         for image_id, image in enumerate(datapoint.images):
             exclude_objects.update(
                 (image_id, obj_id)
@@ -172,7 +168,7 @@ class FilterFindQueriesWithTooManyOut(FilterDataPointQueries):
     def __init__(self, max_num_objects: int):
         self.max_num_objects = max_num_objects
 
-    def identify_queries_to_filter(self, datapoint):
+    def identify_queries_to_filter(self, datapoint: Datapoint) -> None:
         self.obj_ids_to_filter = set()
         self.find_ids_to_filter = {
             index
@@ -182,7 +178,7 @@ class FilterFindQueriesWithTooManyOut(FilterDataPointQueries):
 
 
 class FilterEmptyTargets(FilterDataPointQueries):
-    def identify_queries_to_filter(self, datapoint):
+    def identify_queries_to_filter(self, datapoint: Datapoint) -> None:
         self.obj_ids_to_filter = set()
         for img_id, image in enumerate(datapoint.images):
             for obj_id, obj in enumerate(image.objects):
@@ -197,9 +193,9 @@ class FilterNonExhaustiveFindQueries(FilterDataPointQueries):
             raise AssertionError("exhaustivity_type must be 'pixel' or 'instance'.")
         self.exhaustivity_type = exhaustivity_type
 
-    def identify_queries_to_filter(self, datapoint):
+    def identify_queries_to_filter(self, datapoint: Datapoint) -> None:
         self.obj_ids_to_filter = set()
-        del_find_ids = []
+        del_find_ids: list[int] = []
         for index, query in enumerate(datapoint.find_queries):
             if self.exhaustivity_type == "instance":
                 if not query.is_exhaustive:
@@ -212,7 +208,7 @@ class FilterNonExhaustiveFindQueries(FilterDataPointQueries):
 
 
 class FilterInvalidGeometricQueries(FilterDataPointQueries):
-    def identify_queries_to_filter(self, datapoint):
+    def identify_queries_to_filter(self, datapoint: Datapoint) -> None:
         self.obj_ids_to_filter = set()
         self.find_ids_to_filter = {
             index
@@ -232,18 +228,16 @@ class FlexibleFilterFindGetQueries:
         self.query_filter = query_filter
         self.enabled = enabled
 
-    def __call__(self, datapoint, **kwargs):
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
         del kwargs
         if not self.enabled:
             return datapoint
 
         self.query_filter.identify_queries_to_filter(datapoint=datapoint)
-        for index, query in enumerate(datapoint.find_queries):
-            if self.query_filter._do_filter_query(query, index):
-                datapoint.find_queries[index] = None
-
         new_find_queries = [
-            query for query in datapoint.find_queries if query is not None
+            query
+            for index, query in enumerate(datapoint.find_queries)
+            if not self.query_filter.do_filter_query(query, index)
         ]
         start_with_zero_check = len(new_find_queries) == 0 or any(
             query.query_processing_order == 0 for query in new_find_queries
@@ -287,8 +281,8 @@ class FlexibleFilterFindGetQueries:
 
             if unused_ids:
                 old_objects = datapoint.images[img_id].objects
-                object_old_to_new_map = {}
-                new_objects = []
+                object_old_to_new_map: dict[int, int] = {}
+                new_objects: list[Object] = []
                 for old_id, obj in enumerate(old_objects):
                     if old_id not in unused_ids:
                         object_old_to_new_map[old_id] = len(new_objects)
@@ -306,8 +300,8 @@ class FlexibleFilterFindGetQueries:
                     ]
 
         images_to_keep = {query.image_id for query in datapoint.find_queries}
-        old_img_to_new_img = {}
-        new_images = []
+        old_img_to_new_img: dict[int, int] = {}
+        new_images: list[Image] = []
         for img_id, image in enumerate(datapoint.images):
             if img_id in images_to_keep:
                 old_img_to_new_img[img_id] = len(new_images)
@@ -322,15 +316,16 @@ class FlexibleFilterFindGetQueries:
 class AddPrefixSuffixToFindText:
     def __init__(
         self,
-        prefix: Optional[str] = None,
-        suffix: Optional[str] = None,
+        prefix: str | None = None,
+        suffix: str | None = None,
         condition_on_text: bool = False,
-        condition_text_list: Optional[List[str]] = None,
+        condition_text_list: Sequence[str] | None = None,
         enabled: bool = True,
     ) -> None:
         self.prefix = prefix
         self.suffix = suffix
         self.condition_on_text = condition_on_text
+        self.condition_text_set: set[str] = set()
         if self.condition_on_text:
             if condition_text_list is None:
                 raise AssertionError(
@@ -350,7 +345,7 @@ class AddPrefixSuffixToFindText:
                 condition_text_list,
             )
 
-    def __call__(self, datapoint, **kwargs):
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
         del kwargs
         if not self.enabled:
             return datapoint
@@ -380,13 +375,13 @@ class FilterCrowds(FilterDataPointQueries):
 
 
 class TextQueryToVisual:
-    def __init__(self, probability, keep_text_queries=False) -> None:
+    def __init__(self, probability: float, keep_text_queries: bool = False) -> None:
         self.probability = probability
         if not 0 <= probability <= 1:
             raise AssertionError("probability must be between 0 and 1.")
         self.keep_text_queries = keep_text_queries
 
-    def __call__(self, datapoint: Datapoint, **kwargs):
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
         del kwargs
         for query in datapoint.find_queries:
             if query.input_bbox is not None or query.input_points is not None:
@@ -408,7 +403,7 @@ class TextQueryToVisual:
 
 
 class RemoveInputBoxes:
-    def __call__(self, datapoint: Datapoint, **kwargs):
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
         del kwargs
         for query in datapoint.find_queries:
             if query.input_bbox is None:
@@ -421,13 +416,13 @@ class RemoveInputBoxes:
 
 
 class OverwriteTextQuery:
-    def __init__(self, target_text, probability=1.0) -> None:
+    def __init__(self, target_text: str, probability: float = 1.0) -> None:
         self.probability = probability
         self.target_text = target_text
         if not 0 <= probability <= 1:
             raise AssertionError("probability must be between 0 and 1.")
 
-    def __call__(self, datapoint: Datapoint, **kwargs):
+    def __call__(self, datapoint: Datapoint, **kwargs: object) -> Datapoint:
         del kwargs
         for query in datapoint.find_queries:
             if random.random() <= self.probability:
