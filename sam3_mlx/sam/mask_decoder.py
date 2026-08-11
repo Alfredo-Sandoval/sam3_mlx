@@ -1,11 +1,22 @@
 from __future__ import annotations
 
-from typing import List, Optional, Tuple, Type
+from typing import cast
 
 import mlx.core as mx
-import mlx.nn as nn
+from mlx import nn
 
 from sam3_mlx.sam.common import Conv2dNCHW, ConvTranspose2dNCHW, LayerNorm2d
+from sam3_mlx.sam.tensor_protocols import (
+    ActivationFactory,
+    ArrayMethods,
+    ArrayModule,
+    MaskTransformer,
+    WeightedModule,
+)
+
+
+def _array_methods(array: mx.array) -> ArrayMethods:
+    return cast(ArrayMethods, array)
 
 
 class MaskDecoder(nn.Module):
@@ -13,16 +24,16 @@ class MaskDecoder(nn.Module):
         self,
         *,
         transformer_dim: int,
-        transformer: nn.Module,
+        transformer: MaskTransformer,
         num_multimask_outputs: int = 3,
-        activation: Type[nn.Module] = nn.GELU,
+        activation: ActivationFactory = nn.GELU,
         iou_head_depth: int = 3,
         iou_head_hidden_dim: int = 256,
         use_high_res_features: bool = False,
-        iou_prediction_use_sigmoid=False,
-        dynamic_multimask_via_stability=False,
-        dynamic_multimask_stability_delta=0.05,
-        dynamic_multimask_stability_thresh=0.98,
+        iou_prediction_use_sigmoid: bool = False,
+        dynamic_multimask_via_stability: bool = False,
+        dynamic_multimask_stability_delta: float = 0.05,
+        dynamic_multimask_stability_thresh: float = 0.98,
         pred_obj_scores: bool = False,
         pred_obj_scores_mlp: bool = False,
         use_multimask_token_for_obj_ptr: bool = False,
@@ -39,7 +50,7 @@ class MaskDecoder(nn.Module):
             self.obj_score_token = nn.Embedding(1, transformer_dim)
         self.use_multimask_token_for_obj_ptr = use_multimask_token_for_obj_ptr
 
-        self.output_upscaling = [
+        self.output_upscaling: list[ArrayModule] = [
             ConvTranspose2dNCHW(
                 transformer_dim, transformer_dim // 4, kernel_size=2, stride=2
             ),
@@ -71,7 +82,10 @@ class MaskDecoder(nn.Module):
             sigmoid_output=iou_prediction_use_sigmoid,
         )
         if self.pred_obj_scores:
-            self.pred_obj_score_head = nn.Linear(transformer_dim, 1)
+            self.pred_obj_score_head = cast(
+                ArrayModule,
+                nn.Linear(transformer_dim, 1),
+            )
             if pred_obj_scores_mlp:
                 self.pred_obj_score_head = MLP(transformer_dim, transformer_dim, 1, 3)
 
@@ -87,8 +101,8 @@ class MaskDecoder(nn.Module):
         dense_prompt_embeddings: mx.array,
         multimask_output: bool,
         repeat_image: bool,
-        high_res_features: Optional[List[mx.array]] = None,
-    ) -> Tuple[mx.array, mx.array, mx.array, mx.array]:
+        high_res_features: list[mx.array] | None = None,
+    ) -> tuple[mx.array, mx.array, mx.array, mx.array]:
         masks, iou_pred, mask_tokens_out, object_score_logits = self.predict_masks(
             image_embeddings=image_embeddings,
             image_pe=image_pe,
@@ -115,7 +129,11 @@ class MaskDecoder(nn.Module):
             sam_tokens_out = mask_tokens_out[:, 0:1]
         return masks, iou_pred, sam_tokens_out, object_score_logits
 
-    def _upscale(self, src: mx.array, high_res_features: Optional[List[mx.array]]):
+    def _upscale(
+        self,
+        src: mx.array,
+        high_res_features: list[mx.array] | None,
+    ) -> mx.array:
         if not self.use_high_res_features:
             x = src
             for layer in self.output_upscaling:
@@ -137,22 +155,26 @@ class MaskDecoder(nn.Module):
         sparse_prompt_embeddings: mx.array,
         dense_prompt_embeddings: mx.array,
         repeat_image: bool,
-        high_res_features: Optional[List[mx.array]] = None,
-    ) -> Tuple[mx.array, mx.array, mx.array, mx.array]:
+        high_res_features: list[mx.array] | None = None,
+    ) -> tuple[mx.array, mx.array, mx.array, mx.array]:
         offset = 0
         if self.pred_obj_scores:
             output_tokens = mx.concat(
                 [
-                    self.obj_score_token.weight,
-                    self.iou_token.weight,
-                    self.mask_tokens.weight,
+                    cast(WeightedModule, self.obj_score_token).weight,
+                    cast(WeightedModule, self.iou_token).weight,
+                    cast(WeightedModule, self.mask_tokens).weight,
                 ],
                 axis=0,
             )
             offset = 1
         else:
             output_tokens = mx.concat(
-                [self.iou_token.weight, self.mask_tokens.weight], axis=0
+                [
+                    cast(WeightedModule, self.iou_token).weight,
+                    cast(WeightedModule, self.mask_tokens).weight,
+                ],
+                axis=0,
             )
         output_tokens = mx.broadcast_to(
             output_tokens[None, :, :],
@@ -162,7 +184,7 @@ class MaskDecoder(nn.Module):
                 output_tokens.shape[1],
             ),
         )
-        tokens = mx.concat((output_tokens, sparse_prompt_embeddings), axis=1)
+        tokens = mx.concat([output_tokens, sparse_prompt_embeddings], axis=1)
 
         if repeat_image:
             src = mx.repeat(image_embeddings, tokens.shape[0], axis=0)
@@ -182,7 +204,9 @@ class MaskDecoder(nn.Module):
         iou_token_out = hs[:, offset, :]
         mask_tokens_out = hs[:, offset + 1 : offset + 1 + self.num_mask_tokens, :]
 
-        src = src.transpose(0, 2, 1).reshape(batch_size, channels, height, width)
+        src = _array_methods(
+            _array_methods(src).transpose(0, 2, 1)
+        ).reshape(batch_size, channels, height, width)
         upscaled_embedding = self._upscale(src, high_res_features)
 
         hyper_in = mx.stack(
@@ -194,8 +218,14 @@ class MaskDecoder(nn.Module):
         )
         batch_size, channels, height, width = upscaled_embedding.shape
         masks = (
-            hyper_in @ upscaled_embedding.reshape(batch_size, channels, height * width)
-        ).reshape(batch_size, -1, height, width)
+            hyper_in
+            @ _array_methods(upscaled_embedding).reshape(
+                batch_size,
+                channels,
+                height * width,
+            )
+        )
+        masks = _array_methods(masks).reshape(batch_size, -1, height, width)
 
         iou_pred = self.iou_prediction_head(iou_token_out)
         if self.pred_obj_scores:
@@ -206,19 +236,27 @@ class MaskDecoder(nn.Module):
             )
         return masks, iou_pred, mask_tokens_out, object_score_logits
 
-    def _get_stability_scores(self, mask_logits):
-        mask_logits = mask_logits.reshape(*mask_logits.shape[:-2], -1)
+    def _get_stability_scores(self, mask_logits: mx.array) -> mx.array:
+        mask_logits = _array_methods(mask_logits).reshape(
+            *mask_logits.shape[:-2], -1
+        )
         delta = self.dynamic_multimask_stability_delta
         area_i = mx.sum(mask_logits > delta, axis=-1).astype(mx.float32)
         area_u = mx.sum(mask_logits > -delta, axis=-1).astype(mx.float32)
         return mx.where(area_u > 0, area_i / area_u, 1.0)
 
-    def _dynamic_multimask_via_stability(self, all_mask_logits, all_iou_scores):
+    def _dynamic_multimask_via_stability(
+        self,
+        all_mask_logits: mx.array,
+        all_iou_scores: mx.array,
+    ) -> tuple[mx.array, mx.array]:
         multimask_logits = all_mask_logits[:, 1:, :, :]
         multimask_iou_scores = all_iou_scores[:, 1:]
         best_indices = mx.argmax(multimask_iou_scores, axis=-1)
-        best_mask = (
-            mx.arange(multimask_iou_scores.shape[1])[None, :] == best_indices[:, None]
+        best_mask = cast(
+            mx.array,
+            mx.arange(multimask_iou_scores.shape[1])[None, :]
+            == best_indices[:, None],
         )
         best_iou_scores = mx.sum(
             mx.where(
@@ -261,15 +299,17 @@ class MLP(nn.Module):
         super().__init__()
         self.num_layers = num_layers
         hidden = [hidden_dim] * (num_layers - 1)
-        self.layers = [
-            nn.Linear(in_dim, out_dim)
+        self.layers: list[ArrayModule] = [
+            cast(ArrayModule, nn.Linear(in_dim, out_dim))
             for in_dim, out_dim in zip([input_dim] + hidden, hidden + [output_dim])
         ]
         self.sigmoid_output = sigmoid_output
 
-    def __call__(self, x):
+    def __call__(self, x: mx.array) -> mx.array:
         for idx, layer in enumerate(self.layers):
-            x = nn.relu(layer(x)) if idx < self.num_layers - 1 else layer(x)
+            x = layer(x)
+            if idx < self.num_layers - 1:
+                x = mx.maximum(x, 0)
         if self.sigmoid_output:
             x = mx.sigmoid(x)
         return x

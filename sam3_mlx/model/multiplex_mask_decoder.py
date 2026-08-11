@@ -1,11 +1,36 @@
 from __future__ import annotations
 
-from typing import Any, List, Optional, Type
+from typing import TypedDict, cast
 
 import mlx.core as mx
-import mlx.nn as nn
+from mlx import nn
 
 from sam3_mlx.sam.common import Conv2dNCHW, ConvTranspose2dNCHW, LayerNorm2d
+from sam3_mlx.sam.tensor_protocols import (
+    ActivationFactory,
+    ArrayMethods,
+    ArrayModule,
+    MaskTransformer,
+    WeightedModule,
+)
+
+
+class MaskDecoderOutput(TypedDict):
+    masks: mx.array
+    iou_pred: mx.array
+    sam_tokens_out: mx.array
+    object_score_logits: mx.array
+
+
+class _PredictedMasks(TypedDict):
+    masks: mx.array
+    iou_pred: mx.array
+    mask_tokens_out: mx.array
+    object_score_logits: mx.array
+
+
+def _array_methods(array: mx.array) -> ArrayMethods:
+    return cast(ArrayMethods, array)
 
 
 class MultiplexMaskDecoder(nn.Module):
@@ -13,17 +38,17 @@ class MultiplexMaskDecoder(nn.Module):
         self,
         *,
         transformer_dim: int,
-        transformer: nn.Module,
+        transformer: MaskTransformer,
         multiplex_count: int,
         num_multimask_outputs: int = 3,
-        activation: Type[nn.Module] = nn.GELU,
+        activation: ActivationFactory = nn.GELU,
         iou_head_depth: int = 3,
         iou_head_hidden_dim: int = 256,
         use_high_res_features: bool = False,
         iou_prediction_use_sigmoid: bool = False,
-        dynamic_multimask_via_stability=False,
-        dynamic_multimask_stability_delta=0.05,
-        dynamic_multimask_stability_thresh=0.98,
+        dynamic_multimask_via_stability: bool = False,
+        dynamic_multimask_stability_delta: float = 0.05,
+        dynamic_multimask_stability_thresh: float = 0.98,
         pred_obj_scores: bool = False,
         pred_obj_scores_mlp: bool = False,
         use_multimask_token_for_obj_ptr: bool = False,
@@ -67,7 +92,7 @@ class MultiplexMaskDecoder(nn.Module):
                 self.obj_score_token = nn.Embedding(multiplex_count, transformer_dim)
 
         self.mask_tokens = nn.Embedding(self.num_mask_tokens, transformer_dim)
-        self.output_upscaling = [
+        self.output_upscaling: list[ArrayModule] = [
             ConvTranspose2dNCHW(
                 transformer_dim,
                 transformer_dim // 4,
@@ -134,12 +159,12 @@ class MultiplexMaskDecoder(nn.Module):
 
     def forward(
         self,
-        image_embeddings: Any,
-        image_pe: Any,
+        image_embeddings: mx.array,
+        image_pe: mx.array,
         multimask_output: bool,
-        high_res_features: Optional[List[Any]] = None,
-        extra_per_object_embeddings: Optional[Any] = None,
-    ) -> dict[str, Any]:
+        high_res_features: list[mx.array] | None = None,
+        extra_per_object_embeddings: mx.array | None = None,
+    ) -> MaskDecoderOutput:
         if self.num_multimask_outputs <= 0:
             assert not multimask_output, (
                 f"multimask_output must be False with {self.num_multimask_outputs=}"
@@ -180,11 +205,6 @@ class MultiplexMaskDecoder(nn.Module):
         else:
             sam_tokens_out = mask_tokens_out[:, :, 0:1]
 
-        del out["mask_tokens_out"]
-        out["masks"] = masks
-        out["iou_pred"] = iou_pred
-        out["sam_tokens_out"] = sam_tokens_out
-
         if multimask_output:
             expected_masks = (
                 self.num_mask_output_per_object
@@ -209,16 +229,21 @@ class MultiplexMaskDecoder(nn.Module):
             assert iou_pred.shape[2] == 1, f"{iou_pred.shape=}"
             assert sam_tokens_out.shape[2] == 1, f"{sam_tokens_out.shape=}"
 
-        return out
+        return {
+            "masks": masks,
+            "iou_pred": iou_pred,
+            "sam_tokens_out": sam_tokens_out,
+            "object_score_logits": out["object_score_logits"],
+        }
 
     def __call__(
         self,
-        image_embeddings: Any,
-        image_pe: Any,
+        image_embeddings: mx.array,
+        image_pe: mx.array,
         multimask_output: bool,
-        high_res_features: Optional[List[Any]] = None,
-        extra_per_object_embeddings: Optional[Any] = None,
-    ) -> dict[str, Any]:
+        high_res_features: list[mx.array] | None = None,
+        extra_per_object_embeddings: mx.array | None = None,
+    ) -> MaskDecoderOutput:
         return self.forward(
             image_embeddings=image_embeddings,
             image_pe=image_pe,
@@ -229,17 +254,17 @@ class MultiplexMaskDecoder(nn.Module):
 
     def predict_masks(
         self,
-        image_embeddings: Any,
-        image_pe: Any,
-        high_res_features: Optional[List[Any]] = None,
-        extra_per_object_embeddings: Optional[Any] = None,
-    ) -> dict[str, Any]:
+        image_embeddings: mx.array,
+        image_pe: mx.array,
+        high_res_features: list[mx.array] | None = None,
+        extra_per_object_embeddings: mx.array | None = None,
+    ) -> _PredictedMasks:
         batch_size = image_embeddings.shape[0]
-        token_list = []
+        token_list: list[mx.array] = []
         if self.pred_obj_scores and not self.decode_mask_attribute_with_shared_tokens:
-            token_list.append(self.obj_score_token.weight)
+            token_list.append(cast(WeightedModule, self.obj_score_token).weight)
         if not self.decode_mask_attribute_with_shared_tokens:
-            token_list.append(self.iou_token.weight)
+            token_list.append(cast(WeightedModule, self.iou_token).weight)
 
         if token_list:
             tokens = mx.concat(token_list, axis=0)
@@ -256,7 +281,7 @@ class MultiplexMaskDecoder(nn.Module):
         if extra_per_object_embeddings is not None:
             if self.decode_mask_with_shared_tokens:
                 mask_tokens = mx.broadcast_to(
-                    self.mask_tokens.weight.reshape(
+                    _array_methods(cast(WeightedModule, self.mask_tokens).weight).reshape(
                         1,
                         self.multiplex_count,
                         1,
@@ -271,7 +296,7 @@ class MultiplexMaskDecoder(nn.Module):
                 )
             else:
                 mask_tokens = mx.broadcast_to(
-                    self.mask_tokens.weight.reshape(
+                    _array_methods(cast(WeightedModule, self.mask_tokens).weight).reshape(
                         1,
                         self.multiplex_count,
                         self.num_mask_output_per_object,
@@ -285,14 +310,14 @@ class MultiplexMaskDecoder(nn.Module):
                     ),
                 )
             mask_tokens = mask_tokens + extra_per_object_embeddings[:, :, None, :]
-            mask_tokens = mask_tokens.reshape(
+            mask_tokens = _array_methods(mask_tokens).reshape(
                 batch_size,
                 -1,
                 self.transformer_dim,
             )
         else:
             mask_tokens = mx.broadcast_to(
-                self.mask_tokens.weight[None, :, :],
+                cast(WeightedModule, self.mask_tokens).weight[None, :, :],
                 (batch_size, self.num_mask_tokens, self.transformer_dim),
             )
 
@@ -307,6 +332,7 @@ class MultiplexMaskDecoder(nn.Module):
 
         hs, src = self.transformer(src, pos_src, tokens)
 
+        obj_score_token_out: mx.array | None = None
         if self.decode_mask_attribute_with_shared_tokens:
             assert hs.shape[1] == self.num_mask_tokens, (
                 f"{hs.shape=}, {self.num_mask_tokens=}"
@@ -327,18 +353,20 @@ class MultiplexMaskDecoder(nn.Module):
                 f"{hs.shape=}, {start=}, {self.num_mask_tokens=}"
             )
 
-        src = src.transpose(0, 2, 1).reshape(b, c, h, w)
+        src = _array_methods(
+            _array_methods(src).transpose(0, 2, 1)
+        ).reshape(b, c, h, w)
         upscaled_embedding = self._upscale(src, high_res_features)
 
         if self.decode_mask_with_shared_tokens:
-            mask_tokens_out = mask_tokens_out.reshape(
+            mask_tokens_out = _array_methods(mask_tokens_out).reshape(
                 batch_size,
                 self.multiplex_count,
                 1,
                 self.transformer_dim,
             )
         else:
-            mask_tokens_out = mask_tokens_out.reshape(
+            mask_tokens_out = _array_methods(mask_tokens_out).reshape(
                 batch_size,
                 self.multiplex_count,
                 self.num_mask_output_per_object,
@@ -350,7 +378,7 @@ class MultiplexMaskDecoder(nn.Module):
                 :, :, None, :
             ]
         else:
-            hyper_in_list = []
+            hyper_in_list: list[mx.array] = []
             for idx in range(self.num_mask_output_per_object):
                 token_slice = (
                     mask_tokens_out[:, :, 0, :]
@@ -362,8 +390,10 @@ class MultiplexMaskDecoder(nn.Module):
 
         b, c, h, w = upscaled_embedding.shape
         masks = (
-            hyper_in.reshape(b, -1, c) @ upscaled_embedding.reshape(b, c, h * w)
-        ).reshape(
+            _array_methods(hyper_in).reshape(b, -1, c)
+            @ _array_methods(upscaled_embedding).reshape(b, c, h * w)
+        )
+        masks = _array_methods(masks).reshape(
             b,
             self.multiplex_count,
             self.num_mask_output_per_object,
@@ -371,19 +401,21 @@ class MultiplexMaskDecoder(nn.Module):
             w,
         )
 
-        iou_pred = self.iou_prediction_head(iou_token_out).reshape(
+        iou_pred = _array_methods(self.iou_prediction_head(iou_token_out)).reshape(
             b,
             self.multiplex_count,
             self.num_mask_output_per_object,
         )
 
         if self.pred_obj_scores:
+            if obj_score_token_out is None:
+                raise ValueError("object score tokens are required for score prediction")
             if (
                 self.decode_mask_attribute_with_shared_tokens
                 and not self.decode_mask_with_shared_tokens
             ):
                 object_score_logits = mx.sum(
-                    self.pred_obj_score_head(obj_score_token_out).reshape(
+                    _array_methods(self.pred_obj_score_head(obj_score_token_out)).reshape(
                         b,
                         self.multiplex_count,
                         self.num_mask_output_per_object,
@@ -409,7 +441,7 @@ class MultiplexMaskDecoder(nn.Module):
     def _upscale(
         self,
         src: mx.array,
-        high_res_features: Optional[List[mx.array]],
+        high_res_features: list[mx.array] | None,
     ) -> mx.array:
         if not self.use_high_res_features:
             x = src
@@ -425,21 +457,25 @@ class MultiplexMaskDecoder(nn.Module):
         upscaled = act1(ln1(dc1(src) + feat_s1))
         return act2(dc2(upscaled) + feat_s0)
 
-    def _get_stability_scores(self, mask_logits: Any) -> Any:
-        mask_logits = mask_logits.reshape(*mask_logits.shape[:-2], -1)
+    def _get_stability_scores(self, mask_logits: mx.array) -> mx.array:
+        mask_logits = _array_methods(mask_logits).reshape(
+            *mask_logits.shape[:-2], -1
+        )
         stability_delta = self.dynamic_multimask_stability_delta
         area_i = mx.sum(mask_logits > stability_delta, axis=-1).astype(mx.float32)
         area_u = mx.sum(mask_logits > -stability_delta, axis=-1).astype(mx.float32)
         return mx.where(area_u > 0, area_i / area_u, mx.ones_like(area_u))
 
     def _dynamic_multimask_via_stability(
-        self, all_mask_logits: Any, all_iou_scores: Any
-    ) -> tuple[Any, Any]:
+        self,
+        all_mask_logits: mx.array,
+        all_iou_scores: mx.array,
+    ) -> tuple[mx.array, mx.array]:
         batch_size, multiplex_count = all_mask_logits.shape[:2]
-        flat_mask_logits = all_mask_logits.reshape(
+        flat_mask_logits = _array_methods(all_mask_logits).reshape(
             batch_size * multiplex_count, *all_mask_logits.shape[2:]
         )
-        flat_iou_scores = all_iou_scores.reshape(
+        flat_iou_scores = _array_methods(all_iou_scores).reshape(
             batch_size * multiplex_count, *all_iou_scores.shape[2:]
         )
 
@@ -470,10 +506,10 @@ class MultiplexMaskDecoder(nn.Module):
             best_multimask_iou_scores,
         )
         return (
-            mask_logits_out.reshape(
+            _array_methods(mask_logits_out).reshape(
                 batch_size, multiplex_count, *mask_logits_out.shape[1:]
             ),
-            iou_scores_out.reshape(
+            _array_methods(iou_scores_out).reshape(
                 batch_size, multiplex_count, *iou_scores_out.shape[1:]
             ),
         )
@@ -491,15 +527,15 @@ class MLP(nn.Module):
         super().__init__()
         self.num_layers = num_layers
         hidden_dims = [hidden_dim] * (num_layers - 1)
-        self.layers = [
-            nn.Linear(in_dim, out_dim)
+        self.layers: list[ArrayModule] = [
+            cast(ArrayModule, nn.Linear(in_dim, out_dim))
             for in_dim, out_dim in zip(
                 [input_dim] + hidden_dims, hidden_dims + [output_dim]
             )
         ]
         self.sigmoid_output = sigmoid_output
 
-    def forward(self, x: Any) -> Any:
+    def forward(self, x: mx.array) -> mx.array:
         for layer_idx, layer in enumerate(self.layers):
             x = layer(x)
             if layer_idx < self.num_layers - 1:
@@ -508,5 +544,5 @@ class MLP(nn.Module):
             x = mx.sigmoid(x)
         return x
 
-    def __call__(self, x: Any) -> Any:
+    def __call__(self, x: mx.array) -> mx.array:
         return self.forward(x)

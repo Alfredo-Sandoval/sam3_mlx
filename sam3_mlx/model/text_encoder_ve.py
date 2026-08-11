@@ -1,20 +1,60 @@
-from typing import Callable, List, Optional, Tuple, Union
+from collections.abc import Callable
+from typing import Protocol, TypedDict, cast
 
 import mlx.core as mx
-import mlx.nn as nn
+from mlx import nn
 
 from sam3_mlx._unsupported import raise_unsupported
 from sam3_mlx.model.model_misc import LayerScale
+from sam3_mlx.sam.tensor_protocols import (
+    ActivationFactory,
+    ArrayMethods,
+    ArrayModule,
+)
+
+
+class _AttentionModule(Protocol):
+    def __call__(
+        self,
+        queries: mx.array,
+        keys: mx.array,
+        values: mx.array,
+        *,
+        mask: mx.array | None = None,
+    ) -> mx.array: ...
+
+
+class _Tokenizer(Protocol):
+    def __call__(
+        self,
+        texts: str | list[str],
+        context_length: int | None = None,
+    ) -> mx.array: ...
+
+
+class _PreencodedTokens(TypedDict):
+    inputs_embeds: mx.array
+
+
+PreencodedText = tuple[mx.array, mx.array, _PreencodedTokens]
+NormFactory = Callable[[int], ArrayModule]
+
+
+def _array_methods(array: mx.array) -> ArrayMethods:
+    return cast(ArrayMethods, array)
 
 
 class MLP(nn.Module):
     def __init__(
-        self, d_model: int, mlp_width: int, act_layer: Callable[[], nn.Module] = nn.GELU
-    ):
+        self,
+        d_model: int,
+        mlp_width: int,
+        act_layer: ActivationFactory = nn.GELU,
+    ) -> None:
         super().__init__()
-        self.c_fc = nn.Linear(d_model, mlp_width)
+        self.c_fc = cast(ArrayModule, nn.Linear(d_model, mlp_width))
         self.gelu = act_layer()
-        self.c_proj = nn.Linear(mlp_width, d_model)
+        self.c_proj = cast(ArrayModule, nn.Linear(mlp_width, d_model))
 
     def __call__(self, x: mx.array) -> mx.array:
         x = self.c_fc(x)
@@ -29,13 +69,16 @@ class ResidualAttentionBlock(nn.Module):
         d_model: int,
         n_head: int,
         mlp_ratio: float = 4.0,
-        ls_init_value: Optional[float] = None,
-        act_layer: Callable[[], nn.Module] = nn.GELU,
-        norm_layer: Callable[[int], nn.Module] = nn.LayerNorm,
-    ):
+        ls_init_value: float | None = None,
+        act_layer: ActivationFactory = nn.GELU,
+        norm_layer: NormFactory = nn.LayerNorm,
+    ) -> None:
         super().__init__()
         # Attention
-        self.attn = nn.MultiHeadAttention(d_model, n_head, bias=True)
+        self.attn = cast(
+            _AttentionModule,
+            nn.MultiHeadAttention(d_model, n_head, bias=True),
+        )
 
         # LayerNorm, LayerScale
         self.ln_1 = norm_layer(d_model)
@@ -59,9 +102,9 @@ class ResidualAttentionBlock(nn.Module):
     def attention(
         self,
         q_x: mx.array,
-        k_x: Optional[mx.array] = None,
-        v_x: Optional[mx.array] = None,
-        attn_mask: Optional[mx.array] = None,
+        k_x: mx.array | None = None,
+        v_x: mx.array | None = None,
+        attn_mask: mx.array | None = None,
     ) -> mx.array:
         k_x = k_x if k_x is not None else q_x
         v_x = v_x if v_x is not None else q_x
@@ -75,16 +118,10 @@ class ResidualAttentionBlock(nn.Module):
     def __call__(
         self,
         q_x: mx.array,
-        k_x: Optional[mx.array] = None,
-        v_x: Optional[mx.array] = None,
-        attn_mask: Optional[mx.array] = None,
+        k_x: mx.array | None = None,
+        v_x: mx.array | None = None,
+        attn_mask: mx.array | None = None,
     ) -> mx.array:
-        k_x = (
-            self.ln_1_kv(k_x) if hasattr(self, "ln_1_kv") and k_x is not None else None
-        )
-        v_x = (
-            self.ln_1_kv(v_x) if hasattr(self, "ln_1_kv") and v_x is not None else None
-        )
         x = q_x + self.ls_1(
             self.attention(q_x=self.ln_1(q_x), k_x=k_x, v_x=v_x, attn_mask=attn_mask)
         )
@@ -99,12 +136,12 @@ class Transformer(nn.Module):
         layers: int,
         heads: int,
         mlp_ratio: float = 4.0,
-        ls_init_value: Optional[float] = None,
-        act_layer: Callable[[], nn.Module] = nn.GELU,
-        norm_layer: Callable[[int], nn.Module] = nn.LayerNorm,
-        compile_mode: Optional[str] = None,
+        ls_init_value: float | None = None,
+        act_layer: ActivationFactory = nn.GELU,
+        norm_layer: NormFactory = nn.LayerNorm,
+        compile_mode: str | None = None,
         use_act_checkpoint: bool = False,
-    ):
+    ) -> None:
         super().__init__()
         if compile_mode not in (None, False):
             raise_unsupported(
@@ -130,7 +167,7 @@ class Transformer(nn.Module):
     def __call__(
         self,
         x: mx.array,
-        attn_mask: Optional[mx.array] = None,
+        attn_mask: mx.array | None = None,
     ) -> mx.array:
         for _, r in enumerate(self.resblocks):
             x = r(
@@ -141,8 +178,10 @@ class Transformer(nn.Module):
 
 
 def text_global_pool(
-    x: mx.array, text: Optional[mx.array] = None, pool_type: str = "argmax"
-) -> Tuple[mx.array, mx.array]:
+    x: mx.array,
+    text: mx.array | None = None,
+    pool_type: str = "argmax",
+) -> tuple[mx.array, mx.array]:
     if pool_type == "first":
         pooled, tokens = x[:, 0], x[:, 1:]
     elif pool_type == "last":
@@ -165,18 +204,18 @@ class TextTransformer(nn.Module):
         heads: int = 8,
         layers: int = 12,
         mlp_ratio: float = 4.0,
-        ls_init_value: Optional[float] = None,
+        ls_init_value: float | None = None,
         output_dim: int = 512,
         no_causal_mask: bool = False,
         pool_type: str = "none",  # no pooling
         proj_bias: bool = False,
-        act_layer: Callable = nn.GELU,
-        norm_layer: Callable = nn.LayerNorm,
+        act_layer: ActivationFactory = nn.GELU,
+        norm_layer: NormFactory = nn.LayerNorm,
         output_tokens: bool = False,
         use_ln_post: bool = True,
-        compile_mode: Optional[str] = None,
+        compile_mode: str | None = None,
         use_act_checkpoint: bool = False,
-    ):
+    ) -> None:
         super().__init__()
         assert pool_type in ("first", "last", "argmax", "none")
         self.output_tokens = output_tokens
@@ -187,7 +226,10 @@ class TextTransformer(nn.Module):
         self.heads = heads
         self.pool_type = pool_type
 
-        self.token_embedding = nn.Embedding(self.vocab_size, width)
+        self.token_embedding = cast(
+            ArrayModule,
+            nn.Embedding(self.vocab_size, width),
+        )
         self.positional_embedding = mx.zeros((self.num_pos, width))
         self.transformer = Transformer(
             width=width,
@@ -200,14 +242,21 @@ class TextTransformer(nn.Module):
             compile_mode=compile_mode,
             use_act_checkpoint=use_act_checkpoint,
         )
-        self.ln_final = norm_layer(width) if use_ln_post else nn.Identity()
+        self.ln_final = (
+            norm_layer(width)
+            if use_ln_post
+            else cast(ArrayModule, nn.Identity())
+        )
         if no_causal_mask:
             self.attn_mask = None
         else:
             self.attn_mask = self.build_causal_mask()
 
         if proj_bias:
-            self.text_projection = nn.Linear(width, output_dim)
+            self.text_projection: ArrayModule | mx.array = cast(
+                ArrayModule,
+                nn.Linear(width, output_dim),
+            )
         else:
             self.text_projection = mx.zeros((width, output_dim))
 
@@ -218,7 +267,7 @@ class TextTransformer(nn.Module):
         mask = mx.triu(mask, k=1)
         return mask
 
-    def __call__(self, text: mx.array) -> Union[mx.array, Tuple[mx.array, mx.array]]:
+    def __call__(self, text: mx.array) -> mx.array | tuple[mx.array, mx.array]:
         seq_len = text.shape[1]
         x = self.token_embedding(text)  # [batch_size, n_ctx, d_model]
 
@@ -231,11 +280,10 @@ class TextTransformer(nn.Module):
 
         x = self.ln_final(x)
         pooled, tokens = text_global_pool(x, text, pool_type=self.pool_type)
-        if self.text_projection is not None:
-            if isinstance(self.text_projection, nn.Linear):
-                pooled = self.text_projection(pooled)
-            else:
-                pooled = pooled @ self.text_projection
+        if isinstance(self.text_projection, mx.array):
+            pooled = pooled @ self.text_projection
+        else:
+            pooled = self.text_projection(pooled)
         if self.output_tokens:
             return pooled, tokens
         return pooled
@@ -245,16 +293,16 @@ class VETextEncoder(nn.Module):
     def __init__(
         self,
         d_model: int,
-        tokenizer: Callable,
+        tokenizer: _Tokenizer,
         width: int = 1024,
         heads: int = 16,
         layers: int = 24,
         context_length: int = 32,
         vocab_size: int = 49408,
         use_ln_post: bool = True,
-        compile_mode: Optional[str] = None,
+        compile_mode: str | None = None,
         use_act_checkpoint: bool = True,
-    ):
+    ) -> None:
         super().__init__()
         if compile_mode not in (None, False):
             raise_unsupported(
@@ -278,14 +326,16 @@ class VETextEncoder(nn.Module):
             compile_mode=compile_mode,
             use_act_checkpoint=use_act_checkpoint,
         )
-        self.resizer = nn.Linear(self.encoder.width, d_model)
+        self.resizer = cast(ArrayModule, nn.Linear(self.encoder.width, d_model))
 
     def __call__(
         self,
-        text: Union[List[str], Tuple[mx.array, mx.array, dict]],
-        input_boxes: Optional[List] = None,
-    ) -> Tuple[mx.array, mx.array, mx.array]:
-        if isinstance(text[0], str):
+        text: list[str] | PreencodedText,
+        input_boxes: list[object] | None = None,
+    ) -> tuple[mx.array, mx.array, mx.array]:
+        if isinstance(text, list):
+            if not text:
+                raise ValueError("text must contain at least one prompt")
             # no use case for this
             assert input_boxes is None or len(input_boxes) == 0, "not supported"
 
@@ -293,19 +343,22 @@ class VETextEncoder(nn.Module):
             tokenized = self.tokenizer(
                 text, context_length=self.context_length
             )  # [b, seq_len]
-            text_attention_mask = (tokenized != 0).astype(mx.bool_)
+            text_attention_mask = cast(mx.array, tokenized != 0).astype(mx.bool_)
 
             # manually embed the tokens
             inputs_embeds = self.encoder.token_embedding(
                 tokenized
             )  # [b, seq_len, d=1024]
-            _, text_memory = self.encoder(tokenized)  # [b, seq_len, d=1024]
+            encoded = self.encoder(tokenized)
+            if not isinstance(encoded, tuple):
+                raise RuntimeError("text encoder must return token features")
+            _, text_memory = encoded  # [b, seq_len, d=1024]
 
             assert text_memory.shape[1] == inputs_embeds.shape[1]
             # Invert attention mask because its the opposite in pytorch transformer
             text_attention_mask = mx.not_equal(text_attention_mask, 1)
             # Transpose memory because pytorch's attention expects sequence first
-            text_memory = text_memory.transpose(1, 0, 2)
+            text_memory = _array_methods(text_memory).transpose(1, 0, 2)
             # Resize the encoder hidden states to be of the same d_model as the decoder
             text_memory_resized = self.resizer(text_memory)
         else:
@@ -320,5 +373,5 @@ class VETextEncoder(nn.Module):
         return (
             text_attention_mask,
             text_memory_resized,
-            inputs_embeds.transpose(1, 0, 2),
+            _array_methods(inputs_embeds).transpose(1, 0, 2),
         )

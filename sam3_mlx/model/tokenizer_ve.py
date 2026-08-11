@@ -12,8 +12,8 @@ import html
 import io
 import os
 import string
+from collections.abc import Callable, Sequence
 from functools import lru_cache
-from typing import List, Optional, Union
 
 import ftfy
 import regex as re
@@ -26,7 +26,7 @@ DEFAULT_CONTEXT_LENGTH = 77
 
 
 @lru_cache()
-def bytes_to_unicode():
+def bytes_to_unicode() -> dict[int, str]:
     """Return a dict mapping each UTF-8 byte value to a printable unicode character.
 
     The BPE vocab works over unicode strings, so bytes are remapped to printable
@@ -48,11 +48,11 @@ def bytes_to_unicode():
     return dict(zip(bs, cs))
 
 
-def get_pairs(word):
+def get_pairs(word: tuple[str, ...]) -> set[tuple[str, str]]:
     """Return set of symbol pairs in a word.
     Word is represented as tuple of symbols (symbols being variable-length strings).
     """
-    pairs = set()
+    pairs: set[tuple[str, str]] = set()
     prev_char = word[0]
     for char in word[1:]:
         pairs.add((prev_char, char))
@@ -60,45 +60,49 @@ def get_pairs(word):
     return pairs
 
 
-def basic_clean(text):
+def basic_clean(text: str) -> str:
     text = ftfy.fix_text(text)
     text = html.unescape(html.unescape(text))
     return text.strip()
 
 
-def whitespace_clean(text):
+def whitespace_clean(text: str) -> str:
     text = re.sub(r"\s+", " ", text)
     text = text.strip()
     return text
 
 
-def _clean_canonicalize(x):
+def _clean_canonicalize(x: str) -> str:
     # basic, remove whitespace, remove punctuation, lower case
     return canonicalize_text(basic_clean(x))
 
 
-def _clean_lower(x):
+def _clean_lower(x: str) -> str:
     # basic, remove whitespace, lower case
     return whitespace_clean(basic_clean(x)).lower()
 
 
-def _clean_whitespace(x):
+def _clean_whitespace(x: str) -> str:
     # basic, remove whitespace
     return whitespace_clean(basic_clean(x))
 
 
-def get_clean_fn(type: str):
-    if type == "canonicalize":
+def get_clean_fn(clean_type: str) -> Callable[[str], str]:
+    if clean_type == "canonicalize":
         return _clean_canonicalize
-    elif type == "lower":
+    elif clean_type == "lower":
         return _clean_lower
-    elif type == "whitespace":
+    elif clean_type == "whitespace":
         return _clean_whitespace
     else:
-        assert False, f"Invalid clean function ({type})."
+        raise AssertionError(f"Invalid clean function ({clean_type}).")
 
 
-def canonicalize_text(text, *, keep_punctuation_exact_string=None):
+def canonicalize_text(
+    text: str,
+    *,
+    keep_punctuation_exact_string: str | None = None,
+) -> str:
     """Returns canonicalized `text` (lowercase and punctuation removed).
     From: https://github.com/google-research/big_vision/blob/53f18caf27a9419231bbf08d3388b07671616d3d/big_vision/evaluators/proj/image_text/prompt_engineering.py#L94
     Args:
@@ -120,22 +124,22 @@ def canonicalize_text(text, *, keep_punctuation_exact_string=None):
     return text.strip()
 
 
-class SimpleTokenizer(object):
+class SimpleTokenizer:
     def __init__(
         self,
-        bpe_path: Union[str, os.PathLike],
-        additional_special_tokens: Optional[List[str]] = None,
-        context_length: Optional[int] = DEFAULT_CONTEXT_LENGTH,
+        bpe_path: str | os.PathLike[str],
+        additional_special_tokens: list[str] | None = None,
+        context_length: int | None = DEFAULT_CONTEXT_LENGTH,
         clean: str = "lower",
-    ):
+    ) -> None:
         self.byte_encoder = bytes_to_unicode()
         self.byte_decoder = {v: k for k, v in self.byte_encoder.items()}
         with open(bpe_path, "rb") as fh:
             bpe_bytes = io.BytesIO(fh.read())
-            merges = gzip.open(bpe_bytes).read().decode("utf-8").split("\n")
+            merge_lines = gzip.open(bpe_bytes).read().decode("utf-8").split("\n")
         # merges = gzip.open(bpe_path).read().decode("utf-8").split("\n")
-        merges = merges[1 : 49152 - 256 - 2 + 1]
-        merges = [tuple(merge.split()) for merge in merges]
+        merge_lines = merge_lines[1 : 49152 - 256 - 2 + 1]
+        merges = [tuple(merge.split()) for merge in merge_lines]
         vocab = list(bytes_to_unicode().values())
         vocab = vocab + [v + "</w>" for v in vocab]
         for merge in merges:
@@ -144,10 +148,12 @@ class SimpleTokenizer(object):
         if additional_special_tokens:
             special_tokens += additional_special_tokens
         vocab.extend(special_tokens)
-        self.encoder = dict(zip(vocab, range(len(vocab))))
-        self.decoder = {v: k for k, v in self.encoder.items()}
-        self.bpe_ranks = dict(zip(merges, range(len(merges))))
-        self.cache = {t: t for t in special_tokens}
+        self.encoder: dict[str, int] = dict(zip(vocab, range(len(vocab))))
+        self.decoder: dict[int, str] = {v: k for k, v in self.encoder.items()}
+        self.bpe_ranks: dict[tuple[str, ...], int] = dict(
+            zip(merges, range(len(merges)))
+        )
+        self.cache: dict[str, str] = {t: t for t in special_tokens}
         special = "|".join(special_tokens)
         self.pat = re.compile(
             special + r"""|'s|'t|'re|'ve|'m|'ll|'d|[\p{L}]+|[\p{N}]|[^\s\p{L}\p{N}]+""",
@@ -160,7 +166,7 @@ class SimpleTokenizer(object):
         self.context_length = context_length
         self.clean_fn = get_clean_fn(clean)
 
-    def bpe(self, token):
+    def bpe(self, token: str) -> str:
         if token in self.cache:
             return self.cache[token]
         word = tuple(token[:-1]) + (token[-1] + "</w>",)
@@ -172,7 +178,7 @@ class SimpleTokenizer(object):
             if bigram not in self.bpe_ranks:
                 break
             first, second = bigram
-            new_word = []
+            new_word: list[str] = []
             i = 0
             while i < len(word):
                 try:
@@ -188,8 +194,8 @@ class SimpleTokenizer(object):
                 else:
                     new_word.append(word[i])
                     i += 1
-            new_word = tuple(new_word)
-            word = new_word
+            merged_word = tuple(new_word)
+            word = merged_word
             if len(word) == 1:
                 break
             else:
@@ -198,8 +204,8 @@ class SimpleTokenizer(object):
         self.cache[token] = word
         return word
 
-    def encode(self, text):
-        bpe_tokens = []
+    def encode(self, text: str) -> list[int]:
+        bpe_tokens: list[int] = []
         text = self.clean_fn(text)
         for token in re.findall(self.pat, text):
             token = "".join(self.byte_encoder[b] for b in token.encode("utf-8"))
@@ -208,7 +214,7 @@ class SimpleTokenizer(object):
             )
         return bpe_tokens
 
-    def decode(self, tokens):
+    def decode(self, tokens: Sequence[int]) -> str:
         text = "".join([self.decoder[token] for token in tokens])
         text = (
             bytearray([self.byte_decoder[c] for c in text])
@@ -218,7 +224,9 @@ class SimpleTokenizer(object):
         return text
 
     def __call__(
-        self, texts: Union[str, List[str]], context_length: Optional[int] = None
+        self,
+        texts: str | list[str],
+        context_length: int | None = None,
     ) -> mx.array:
         """Returns the tokenized representation of given input string(s)
         Parameters
