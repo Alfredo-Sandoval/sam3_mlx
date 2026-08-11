@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib.metadata
 import platform
 from dataclasses import dataclass
-from typing import Any, Protocol, cast
+from typing import Any, Protocol, TypeGuard, cast
 
 import mlx.core as mx
 import numpy as np
@@ -28,6 +28,11 @@ class _MlxEval(Protocol):
 
 
 _mlx_eval = cast(_MlxEval, getattr(mx, "eval"))
+
+
+def is_mlx_array(value: object) -> TypeGuard[mx.array]:
+    """Narrow a runtime value to MLX's array type."""
+    return isinstance(value, mx.array)
 
 
 def runtime_info() -> MlxRuntimeInfo:
@@ -75,7 +80,7 @@ def to_numpy(
     if isinstance(value, np.ndarray):
         array = cast(NDArray[Any], value)
     else:
-        if isinstance(value, mx.array):
+        if is_mlx_array(value):
             evaluate_boundary(value)
         array = np.asarray(value)
     if dtype is not None:

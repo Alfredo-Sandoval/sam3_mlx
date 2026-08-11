@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from typing import Any
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from typing import Any, cast
 
 import mlx.core as mx
 
+from sam3_mlx.mlx_runtime import evaluate_boundary, is_mlx_array, to_numpy
 from sam3_mlx.model.data_misc import interpolate
 from sam3_mlx.model.io_utils import load_resource_as_video_frames
 from sam3_mlx.model.multiplex_utils import (
@@ -14,37 +16,36 @@ from sam3_mlx.model.multiplex_utils import (
 from sam3_mlx.model.sam3_tracker_utils import fill_holes_in_mask_scores
 from sam3_mlx.model.video_tracking_multiplex import (
     NO_OBJ_SCORE,
+    StageOutput,
     VideoTrackingDynamicMultiplex,
-    _is_mlx_array,
     concat_points,
 )
 
 
-def _eval_tree(*values: Any) -> None:
-    def _eval_value(value: Any) -> None:
-        if _is_mlx_array(value):
-            mx.eval(value)
-        elif isinstance(value, dict):
-            for item in value.values():
+def _eval_tree(*values: object) -> None:
+    def _eval_value(value: object) -> None:
+        if is_mlx_array(value):
+            evaluate_boundary(value)
+        elif isinstance(value, Mapping):
+            for item in cast(Mapping[object, object], value).values():
                 _eval_value(item)
         elif isinstance(value, (list, tuple)):
-            for item in value:
+            for item in cast(Sequence[object], value):
                 _eval_value(item)
 
     for value in values:
         _eval_value(value)
 
 
-def _coerce_obj_id_list(obj_ids: Any) -> list[Any]:
+def _coerce_obj_id_list(obj_ids: object) -> list[object]:
     if isinstance(obj_ids, (str, bytes)):
         return [obj_ids]
-    if _is_mlx_array(obj_ids):
-        mx.eval(obj_ids)
-        return obj_ids.reshape(-1).tolist()
-    try:
-        return list(obj_ids)
-    except TypeError:
-        return [obj_ids]
+    if is_mlx_array(obj_ids):
+        evaluate_boundary(obj_ids)
+        return cast(list[object], to_numpy(obj_ids).reshape(-1).tolist())
+    if isinstance(obj_ids, Iterable):
+        return list(cast(Iterable[object], obj_ids))
+    return [obj_ids]
 
 
 def _take_indices(value: Any, indices: list[int]) -> Any:
@@ -52,7 +53,8 @@ def _take_indices(value: Any, indices: list[int]) -> Any:
         return None
     index = mx.array(indices, dtype=mx.int64)
     if isinstance(value, list):
-        return [mx.take(item, index, axis=0) for item in value]
+        items = cast(list[mx.array], value)
+        return [mx.take(item, index, axis=0) for item in items]
     return mx.take(value, index, axis=0)
 
 
@@ -61,13 +63,17 @@ def _replace_indices(value: Any, indices: list[int], replacement: Any) -> Any:
         return value
     if len(indices) != replacement.shape[0]:
         raise ValueError("indices length must match replacement batch")
-    replacements = {int(index): row for index, row in zip(indices, replacement)}
-    rows = []
-    for row_idx in range(value.shape[0]):
+    replacement_array = cast(mx.array, replacement)
+    value_array = cast(mx.array, value)
+    replacements: dict[int, mx.array] = {
+        int(index): row for index, row in zip(indices, replacement_array)
+    }
+    rows: list[mx.array] = []
+    for row_idx in range(value_array.shape[0]):
         if row_idx in replacements:
             rows.append(replacements[row_idx][None])
         else:
-            rows.append(value[row_idx : row_idx + 1])
+            rows.append(value_array[row_idx : row_idx + 1])
     return mx.concatenate(rows, axis=0)
 
 
@@ -77,7 +83,7 @@ def _init_multiplex_demo_state(
     video_width: int,
     num_frames: int,
     images: Any = None,
-    cached_features: dict[int, Any] | None = None,
+    cached_features: object | None = None,
 ) -> dict[str, Any]:
     if int(video_height) <= 0 or int(video_width) <= 0:
         raise ValueError("video_height and video_width must be positive integers.")
@@ -87,7 +93,7 @@ def _init_multiplex_demo_state(
         cached_features = {}
     if not isinstance(cached_features, dict):
         raise TypeError("cached_features must be a dict keyed by frame index.")
-
+    cached_features = cast(dict[int, Any], cached_features)
     return {
         "images": images,
         "num_frames": int(num_frames),
@@ -251,8 +257,8 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
         if obj_ids is None:
             return list(inference_state["obj_ids"]), None
         requested_obj_ids = _coerce_obj_id_list(obj_ids)
-        seen = set()
-        duplicates = []
+        seen: set[object] = set()
+        duplicates: list[object] = []
         for obj_id in requested_obj_ids:
             if obj_id in seen:
                 duplicates.append(obj_id)
@@ -306,8 +312,12 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
             and isinstance(backbone_out["interactive"], dict)
             and "vision_feats" in backbone_out["interactive"]
         ):
-            return backbone_out
-        return self._prepare_backbone_features(backbone_out)
+            return cast(dict[str, Any], backbone_out)
+        prepare = cast(
+            Callable[[Any], dict[str, Any]],
+            getattr(self, "_prepare_backbone_features"),
+        )
+        return prepare(backbone_out)
 
     def _get_image_feature(
         self,
@@ -315,20 +325,15 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
         frame_idx: int,
         batch_size: int,
     ) -> tuple[Any, dict[str, Any]]:
-        cached = inference_state["cached_features"].get(frame_idx)
+        cached: object = inference_state["cached_features"].get(frame_idx)
         if cached is None:
-            if self.backbone is None:
-                raise RuntimeError(
-                    f"Image features for frame {frame_idx} are not cached and "
-                    "this tracker was built without a backbone."
-                )
             images = inference_state.get("images")
             if images is None:
                 raise RuntimeError(
                     f"Image features for frame {frame_idx} are not cached and "
                     "inference_state does not contain images."
                 )
-            if _is_mlx_array(images):
+            if is_mlx_array(images):
                 image = images[frame_idx : frame_idx + 1].astype(mx.float32)
             else:
                 image = mx.array(images[frame_idx], dtype=mx.float32)
@@ -343,9 +348,12 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
             inference_state["cached_features"] = {frame_idx: (image, backbone_out)}
             cached = (image, backbone_out)
 
-        if not (isinstance(cached, tuple) and len(cached) == 2):
+        if not isinstance(cached, tuple):
             raise TypeError("cached_features values must be (image, backbone_out).")
-        image, backbone_out = cached
+        cached_items = cast(tuple[object, ...], cached)
+        if len(cached_items) != 2:
+            raise TypeError("cached_features values must be (image, backbone_out).")
+        image, backbone_out = cast(tuple[mx.array, Any], cached_items)
         features = self._prepare_demo_backbone_features(backbone_out)
         _eval_tree(image)
         return image, features
@@ -412,7 +420,7 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
 
     def _get_maskmem_pos_enc(
         self, inference_state: dict[str, Any], current_out: dict[str, Any]
-    ) -> list[Any] | None:
+    ) -> list[mx.array] | None:
         """Cache ``maskmem_pos_enc`` once and re-expand it to the batch size.
 
         ``maskmem_pos_enc`` does not depend on the object index, so the demo
@@ -424,12 +432,12 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
         if out_maskmem_pos_enc is None:
             return None
         if "maskmem_pos_enc" not in model_constants:
-            assert isinstance(out_maskmem_pos_enc, list)
+            out_maskmem_pos_enc = cast(list[mx.array], out_maskmem_pos_enc)
             # only keep the slice for one object, since it's the same across objects
             maskmem_pos_enc = [x[0:1] for x in out_maskmem_pos_enc]
             model_constants["maskmem_pos_enc"] = maskmem_pos_enc
         else:
-            maskmem_pos_enc = model_constants["maskmem_pos_enc"]
+            maskmem_pos_enc = cast(list[mx.array], model_constants["maskmem_pos_enc"])
         batch_size = out_maskmem_pos_enc[0].shape[0]
         return [mx.broadcast_to(x, (batch_size, *x.shape[1:])) for x in maskmem_pos_enc]
 
@@ -437,7 +445,7 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
         self,
         *,
         inference_state: dict[str, Any],
-        output_dict: dict[str, dict[int, Any]],
+        output_dict: dict[str, dict[int, StageOutput]],
         frame_idx: int,
         batch_size: int,
         is_init_cond_frame: bool,
@@ -455,7 +463,7 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
         prefer_new_buckets: bool = False,
         reconditioning: bool = False,
         objects_to_interact: list[int] | None = None,
-    ) -> tuple[dict[str, Any], Any]:
+    ) -> tuple[StageOutput, Any]:
         image, backbone_features = self._get_image_feature(
             inference_state,
             frame_idx,
@@ -573,6 +581,10 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
                 prefer_new_buckets=prefer_new_buckets,
                 reconditioning=reconditioning,
             )
+        if "pred_masks" not in current_out:
+            raise RuntimeError(
+                "Tracking must produce pred_masks for the current frame."
+            )
         pred_masks = current_out["pred_masks"]
         _eval_tree(current_out, pred_masks)
         return current_out, pred_masks
@@ -607,9 +619,13 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
         self,
         inference_state: dict[str, Any],
         frame_idx: int,
-        current_out: dict[str, Any],
+        current_out: StageOutput,
         storage_key: str,
     ) -> None:
+        if "pred_masks" not in current_out:
+            raise RuntimeError("Per-object output requires pred_masks.")
+        if "object_score_logits" not in current_out:
+            raise RuntimeError("Per-object output requires object_score_logits.")
         for obj_idx, obj_output_dict in inference_state["output_dict_per_obj"].items():
             obj_slice = slice(obj_idx, obj_idx + 1)
             obj_out = {
@@ -675,7 +691,7 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
             raise ValueError(f"frame_idx {frame_idx} is outside the video frame range.")
         points = (
             points.astype(mx.float32)
-            if _is_mlx_array(points)
+            if is_mlx_array(points)
             else mx.array(
                 points,
                 dtype=mx.float32,
@@ -683,7 +699,7 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
         )
         labels = (
             labels.astype(mx.int32)
-            if _is_mlx_array(labels)
+            if is_mlx_array(labels)
             else mx.array(
                 labels,
                 dtype=mx.int32,
@@ -800,7 +816,7 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
             )
             prev_out = None
             for container in (obj_temp_output_dict, obj_output_dict):
-                searched = set()
+                searched: set[str] = set()
                 for candidate_key in search_keys:
                     if candidate_key in searched:
                         continue
@@ -844,6 +860,8 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
             if existing_multi_object_edit or existing_multi_object_gap_fill
             else None,
         )
+        if "pred_masks" not in current_out:
+            raise RuntimeError("Point interaction must produce pred_masks.")
         _, video_res_masks = self._get_orig_video_res_output(
             inference_state,
             current_out["pred_masks"],
@@ -884,9 +902,11 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
         obj_ids: Any,
         masks: Any,
         add_mask_to_memory: bool = False,
+        are_masks_from_pts: bool = False,
+        *,
         reconditioning: bool = False,
     ) -> tuple[int, list[Any], None, Any]:
-        del add_mask_to_memory
+        del add_mask_to_memory, are_masks_from_pts
         obj_ids = _coerce_obj_id_list(obj_ids)
         if len(obj_ids) == 0:
             raise ValueError("obj_ids must contain at least one object id.")
@@ -900,7 +920,7 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
         ]
         masks = (
             masks.astype(mx.float32)
-            if _is_mlx_array(masks)
+            if is_mlx_array(masks)
             else mx.array(
                 masks,
                 dtype=mx.float32,
@@ -987,6 +1007,8 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
             reconditioning=reconditioning,
         )
 
+        if "pred_masks" not in current_out:
+            raise RuntimeError("Mask interaction must produce pred_masks.")
         _, video_res_masks = self._get_orig_video_res_output(
             inference_state,
             current_out["pred_masks"],
@@ -1042,7 +1064,9 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
             preflight = getattr(self, "propagate_in_video_preflight", None)
             if preflight is not None:
                 preflight(inference_state, run_mem_encoder=run_mem_encoder)
-        output_dict = inference_state["output_dict"]
+        output_dict = cast(
+            dict[str, dict[int, StageOutput]], inference_state["output_dict"]
+        )
         consolidated_frame_inds = inference_state["consolidated_frame_inds"]
         if len(output_dict["cond_frame_outputs"]) == 0:
             raise RuntimeError("No points are provided; please add points first")
@@ -1068,12 +1092,16 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
             if frame_idx in consolidated_frame_inds["cond_frame_outputs"]:
                 storage_key = "cond_frame_outputs"
                 current_out = output_dict[storage_key][frame_idx]
+                if "pred_masks" not in current_out:
+                    raise RuntimeError("Stored tracking output is missing pred_masks.")
                 pred_masks = current_out["pred_masks"]
                 if clear_non_cond_mem:
                     self._clear_non_cond_mem_around_input(inference_state, frame_idx)
             elif frame_idx in consolidated_frame_inds["non_cond_frame_outputs"]:
                 storage_key = "non_cond_frame_outputs"
                 current_out = output_dict[storage_key][frame_idx]
+                if "pred_masks" not in current_out:
+                    raise RuntimeError("Stored tracking output is missing pred_masks.")
                 pred_masks = current_out["pred_masks"]
             else:
                 storage_key = "non_cond_frame_outputs"
@@ -1270,7 +1298,7 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
             for old_idx, obj_id in zip(old_obj_idxs_to_rm, requested_obj_ids)
             if old_idx is not None
         ]
-        updated_frames = []
+        updated_frames: list[tuple[int, Any]] = []
         if not used_pairs:
             return list(inference_state["obj_ids"]), updated_frames
 
@@ -1287,7 +1315,7 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
             for obj_id in removed_obj_ids:
                 user_refined_map.pop(obj_id, None)
 
-        all_obj_input_frames_inds = set()
+        all_obj_input_frames_inds: set[int] = set()
         for old_obj_idx, obj_id in used_pairs:
             point_frames = set(inference_state["point_inputs_per_obj"][old_obj_idx])
             mask_frames = set(inference_state["mask_inputs_per_obj"][old_obj_idx])
@@ -1422,16 +1450,17 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
 class Sam3VideoTrackingMultiplexDemo(VideoTrackingMultiplexDemo):
     def init_state(
         self,
+        video_path: Any = None,
+        offload_video_to_cpu: bool = False,
+        offload_state_to_cpu: bool = False,
+        async_loading_frames: bool = False,
+        use_torchcodec: bool = False,
+        use_cv2: bool = False,
+        *,
         video_height: int | None = None,
         video_width: int | None = None,
         num_frames: int | None = None,
         cached_features: Any = None,
-        offload_video_to_cpu: bool = False,
-        offload_state_to_cpu: bool = False,
-        video_path: Any = None,
-        async_loading_frames: bool = False,
-        use_torchcodec: bool = False,
-        use_cv2: bool = False,
     ) -> Any:
         if video_path is not None:
             return _load_multiplex_demo_state_from_resource(
