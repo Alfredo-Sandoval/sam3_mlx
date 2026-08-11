@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping, MutableMapping, Sequence
+from collections.abc import Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import fields, is_dataclass
-from typing import Any, Protocol, TypeAlias, TypeGuard, TypeVar, cast
+from typing import (
+    Any,
+    Literal,
+    NotRequired,
+    Protocol,
+    TypeAlias,
+    TypeGuard,
+    TypedDict,
+    TypeVar,
+    cast,
+)
 
 import mlx.core as mx
 import numpy as np
@@ -33,12 +43,41 @@ from sam3_mlx.mlx_runtime import to_numpy
 from sam3_mlx.perflib import masks_ops
 
 
-DUMMY_OUTPUT = "DUMMY_OUTPUT"
+DUMMY_OUTPUT: Literal["DUMMY_OUTPUT"] = "DUMMY_OUTPUT"
 NumpyArray: TypeAlias = NDArray[np.generic]
 FloatArray: TypeAlias = NDArray[np.float32]
 TrackerArray: TypeAlias = mx.array | NumpyArray
 ObjectIdCollection: TypeAlias = Sequence[int] | set[int]
 RecursiveValue = TypeVar("RecursiveValue")
+
+
+class RawFrameOutput(TypedDict):
+    obj_id_to_mask: dict[int, object]
+    obj_id_to_score: dict[int, object]
+    obj_id_to_sam2_score: NotRequired[Mapping[int, object]]
+    removed_obj_ids: NotRequired[ObjectIdCollection]
+    suppressed_obj_ids: NotRequired[ObjectIdCollection]
+    frame_stats: NotRequired[object]
+    unconfirmed_obj_ids: NotRequired[ObjectIdCollection]
+
+
+PostprocessedOutput: TypeAlias = dict[str, object]
+PostprocessBatchItem: TypeAlias = tuple[
+    RawFrameOutput,
+    ObjectIdCollection | None,
+    ObjectIdCollection | None,
+    ObjectIdCollection | None,
+]
+PendingPropagationOutput: TypeAlias = tuple[int, RawFrameOutput, set[int]]
+PropagationOutput: TypeAlias = PostprocessedOutput | Literal["DUMMY_OUTPUT"]
+PropagationYield: TypeAlias = tuple[int, PropagationOutput]
+
+
+class GeneratorState(TypedDict):
+    hotstart_buffer: list[tuple[int, RawFrameOutput]]
+    hotstart_removed_obj_ids: set[int]
+    unconfirmed_obj_ids_per_frame: dict[int, ObjectIdCollection]
+    postprocess_yield_list: list[PendingPropagationOutput]
 
 
 class _ArrayMethods(Protocol):
@@ -51,6 +90,16 @@ class _MlxUnaryArrayCall(Protocol):
 
 class _MlxMasksToBoxesCall(Protocol):
     def __call__(self, masks: mx.array, obj_ids: list[int]) -> object: ...
+
+
+class _NonOverlappingConstraintsCall(Protocol):
+    def __call__(
+        self,
+        masks: mx.array,
+        scores: mx.array,
+        *,
+        background_value: int,
+    ) -> object: ...
 
 
 class _NoArgCall(Protocol):
@@ -90,6 +139,32 @@ def _masks_to_boxes(masks: mx.array, obj_ids: list[int]) -> mx.array:
     result: object = cast(_MlxMasksToBoxesCall, method)(masks, obj_ids)
     if not _is_mlx_array(result):
         raise TypeError("masks_to_boxes must return an MLX array for MLX inputs")
+    return result
+
+
+def _apply_non_overlapping_constraints(
+    tracker: object,
+    masks: mx.array,
+    scores: mx.array,
+) -> mx.array:
+    method: object = getattr(
+        tracker,
+        "_apply_object_wise_non_overlapping_constraints",
+        None,
+    )
+    if not callable(method):
+        raise TypeError(
+            "_apply_object_wise_non_overlapping_constraints must be callable"
+        )
+    result: object = cast(_NonOverlappingConstraintsCall, method)(
+        masks,
+        scores,
+        background_value=0,
+    )
+    if not _is_mlx_array(result):
+        raise TypeError(
+            "_apply_object_wise_non_overlapping_constraints must return an MLX array"
+        )
     return result
 
 
@@ -182,8 +257,8 @@ def _empty_postprocessed_output(
     frame_stats: Any,
     *,
     include_prod_outputs: bool,
-) -> dict[str, Any]:
-    output = {
+) -> PostprocessedOutput:
+    output: PostprocessedOutput = {
         "out_obj_ids": np.zeros(0, dtype=np.int64),
         "out_probs": np.zeros(0, dtype=np.float32),
         "out_boxes_xywh": np.zeros((0, 4), dtype=np.float32),
@@ -453,11 +528,11 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
     def _postprocess_output(
         self,
         inference_state: dict[str, Any],
-        out: dict[str, Any],
+        out: RawFrameOutput,
         removed_obj_ids: ObjectIdCollection | None = None,
         suppressed_obj_ids: ObjectIdCollection | None = None,
         unconfirmed_obj_ids: ObjectIdCollection | None = None,
-    ) -> dict[str, Any]:
+    ) -> PostprocessedOutput:
         obj_id_to_mask = out["obj_id_to_mask"]
         curr_obj_ids = sorted(obj_id_to_mask.keys())
         height = int(inference_state["orig_height"])
@@ -499,7 +574,7 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
             )
 
         keep_indices = np.flatnonzero(keep).astype(np.int64)
-        kept_obj_ids = [curr_obj_ids[index] for index in keep_indices.tolist()]
+        kept_obj_ids = [curr_obj_ids[int(index)] for index in keep_indices]
         kept_masks = mx.take(masks, mx.array(keep_indices, dtype=mx.int64), axis=0)
 
         kept_probs = np.array(
@@ -530,16 +605,16 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
             self.tracker,
             "_apply_object_wise_non_overlapping_constraints",
         ):
-            constrained = self.tracker._apply_object_wise_non_overlapping_constraints(
+            constrained = _apply_non_overlapping_constraints(
+                self.tracker,
                 kept_masks[:, None, :, :],
                 kept_sam2_probs[:, None],
-                background_value=0,
             )
             kept_masks = (constrained[:, 0, :, :] > 0).astype(mx.bool_)
 
         out_centers = _mask_centers(kept_masks) if self.running_in_prod else None
         out_binary_masks = _array_to_numpy(kept_masks, dtype=bool)
-        outputs = {
+        outputs: PostprocessedOutput = {
             "out_obj_ids": np.array(kept_obj_ids, dtype=np.int64),
             "out_probs": kept_probs,
             "out_boxes_xywh": _array_to_numpy(out_boxes_xywh, dtype=np.float32),
@@ -554,8 +629,8 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         self,
         height: int,
         width: int,
-        batched_outs,
-    ) -> list[dict[str, Any]]:
+        batched_outs: Sequence[PostprocessBatchItem],
+    ) -> list[PostprocessedOutput]:
         inference_state = {
             "orig_height": height,
             "orig_width": width,
@@ -575,7 +650,7 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         """Mark the model as compiled for propagation; ``mx.compile`` is not used in the MLX runtime."""
         self._compiled_for_propagation = True
 
-    def _new_generator_state(self) -> dict[str, Any]:
+    def _new_generator_state(self) -> GeneratorState:
         return {
             "hotstart_buffer": [],
             "hotstart_removed_obj_ids": set(),
@@ -590,8 +665,8 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         num_frames: int,
         reverse: bool,
         unconfirmed_status_delay: int,
-        unconfirmed_obj_ids_per_frame: dict[int, Any],
-    ) -> Any:
+        unconfirmed_obj_ids_per_frame: Mapping[int, ObjectIdCollection],
+    ) -> ObjectIdCollection | None:
         unconfirmed_status_frame_idx = (
             yield_frame_idx + unconfirmed_status_delay
             if not reverse
@@ -606,12 +681,12 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
     def _postprocess_propagation_batch(
         self,
         inference_state: dict[str, Any],
-        batch_to_process,
+        batch_to_process: Sequence[PendingPropagationOutput],
         *,
         reverse: bool,
         unconfirmed_status_delay: int,
-        unconfirmed_obj_ids_per_frame: dict[int, Any],
-    ):
+        unconfirmed_obj_ids_per_frame: Mapping[int, ObjectIdCollection],
+    ) -> list[PropagationYield]:
         if self.rank != 0:
             return [
                 (yield_frame_idx, DUMMY_OUTPUT)
@@ -621,8 +696,8 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         height = int(inference_state["orig_height"])
         width = int(inference_state["orig_width"])
         num_frames = int(inference_state["num_frames"])
-        batched_outs = []
-        frame_indices = []
+        batched_outs: list[PostprocessBatchItem] = []
+        frame_indices: list[int] = []
         for yield_frame_idx, yield_out, removed_obj_ids_snapshot in batch_to_process:
             suppressed_obj_ids = yield_out.get("suppressed_obj_ids", None)
             unconfirmed_obj_ids = self._unconfirmed_ids_for_yield_frame(
@@ -709,7 +784,7 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         frame_idx: int,
         reverse: bool,
         is_instance_processing: bool = False,
-    ) -> dict[str, Any]:
+    ) -> RawFrameOutput:
         del is_instance_processing
         input_batch = inference_state["input_batch"]
         tracker_states_local = inference_state["sam2_inference_states"]
@@ -745,7 +820,7 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         if self.rank == 0:
             self._cache_frame_outputs(inference_state, frame_idx, obj_id_to_mask)
 
-        out = {
+        out: RawFrameOutput = {
             "obj_id_to_mask": obj_id_to_mask,
             "obj_id_to_score": obj_id_to_score,
             "obj_id_to_sam2_score": tracker_metadata_new[
@@ -775,10 +850,10 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         max_frame_num_to_track: int | None = None,
         reverse: bool = False,
         is_instance_processing: bool = False,
-        generator_state: dict[str, Any] | None = None,
+        generator_state: GeneratorState | None = None,
         flush_hotstart_at_end: bool = True,
         persist_generator_state: bool = False,
-    ):
+    ) -> Iterator[PropagationYield]:
         self._compile_model()
         processing_order, end_frame_idx = self._get_processing_order(
             inference_state,
