@@ -49,6 +49,7 @@ scripts/*
 !scripts/validate_runtime_release_hardened.py
 !scripts/run_image_parity.py
 !scripts/run_upstream_image_oracle.py
+!scripts/_oracle_runtime.py
 !scripts/validate_checkpoint_lineage.py
 !scripts/run_hardened_image_parity.py
 !scripts/run_upstream_image_oracle_hardened.py

@@ -81,6 +81,10 @@ norecursedirs = [
 
 [tool.pyright]
 typeCheckingMode = "strict"
+exclude = [
+    ".venv",
+    "third_party",
+]
 
 [dependency-groups]
 dev = [

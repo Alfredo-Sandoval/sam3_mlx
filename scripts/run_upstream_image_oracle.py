@@ -13,14 +13,30 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from importlib import import_module
 import json
-import sys
 import time
-import types
 from pathlib import Path
-from typing import Any
+from typing import cast
 
 import numpy as np
+
+from _oracle_runtime import (
+    ConstructionAdapters,
+    OracleCase,
+    OracleModel,
+    OracleModelBuilder,
+    OracleProcessor,
+    OracleProcessorFactory,
+    OracleState,
+    TorchRuntime,
+    install_cpu_oracle_adapters,
+    restore_construction_adapters,
+    run_prompt,
+    save_oracle_arrays,
+    set_official_global_rope_grid,
+    validate_case_specs,
+)
 
 
 def _sha256(path: Path) -> str:
@@ -31,75 +47,6 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _install_cpu_oracle_adapters(torch) -> dict[str, Any]:
-    edt_module = types.ModuleType("sam3.model.edt")
-
-    def unavailable_edt(*_args, **_kwargs):
-        raise RuntimeError("Triton EDT is unavailable in the image-only CPU oracle.")
-
-    edt_module.edt_triton = unavailable_edt
-    sys.modules["sam3.model.edt"] = edt_module
-
-    originals = {
-        "zeros": torch.zeros,
-        "arange": torch.arange,
-        "pin_memory": torch.Tensor.pin_memory,
-    }
-
-    def _cpu_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
-        updated = dict(kwargs)
-        if str(updated.get("device", "")).startswith("cuda"):
-            updated["device"] = "cpu"
-        return updated
-
-    torch.zeros = lambda *args, **kwargs: originals["zeros"](
-        *args, **_cpu_kwargs(kwargs)
-    )
-    torch.arange = lambda *args, **kwargs: originals["arange"](
-        *args, **_cpu_kwargs(kwargs)
-    )
-    torch.Tensor.pin_memory = lambda tensor, *_args, **_kwargs: tensor
-    return originals
-
-
-def _restore_construction_adapters(torch, originals: dict[str, Any]) -> None:
-    torch.zeros = originals["zeros"]
-    torch.arange = originals["arange"]
-
-
-def _run_prompt(processor, state: dict[str, Any], spec: dict[str, Any]):
-    processor.reset_all_prompts(state)
-    prompt = spec["prompt"]
-    if prompt is not None:
-        state = processor.set_text_prompt(prompt, state)
-    for geometric_prompt in spec["geometric_prompts"]:
-        state = processor.add_geometric_prompt(
-            geometric_prompt["box"],
-            geometric_prompt["label"],
-            state,
-        )
-    return state
-
-
-def _set_official_global_rope_grid(model, resolution: int) -> None:
-    """Recompute the official global-attention RoPE grid for a processor size."""
-
-    grid_size = resolution // 14
-    trunk = model.backbone.vision_backbone.trunk
-    for block in trunk.blocks:
-        if block.window_size != 0 or not block.attn.use_rope:
-            continue
-        attention = block.attn
-        scale_pos = 1.0
-        if attention.rope_interp:
-            scale_pos = attention.rope_pt_size[0] / grid_size
-        attention.freqs_cis = attention.compute_cis(
-            end_x=grid_size,
-            end_y=grid_size,
-            scale_pos=scale_pos,
-        )
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, required=True)
@@ -108,32 +55,44 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--confidence-threshold", type=float, default=0.5)
     args = parser.parse_args()
+    checkpoint = cast(Path, args.checkpoint)
+    image_path = cast(Path, args.image)
+    cases_path = cast(Path, args.cases)
+    output_path = cast(Path, args.out)
+    confidence_threshold = cast(float, args.confidence_threshold)
 
     import torch
     from PIL import Image
 
-    originals = _install_cpu_oracle_adapters(torch)
-    import sam3.model_builder as model_builder
-    from sam3.model.sam3_image_processor import Sam3Processor
+    torch_runtime = cast(TorchRuntime, torch)
+    originals: ConstructionAdapters = install_cpu_oracle_adapters(torch_runtime)
+    model_builder = import_module("sam3.model_builder")
+    processor_class = getattr(
+        import_module("sam3.model.sam3_image_processor"), "Sam3Processor"
+    )
 
+    builder = cast(OracleModelBuilder, model_builder)
+    processor_factory = cast(OracleProcessorFactory, processor_class)
     load_started = time.perf_counter()
-    model = model_builder.build_sam3_image_model(
-        checkpoint_path=str(args.checkpoint),
+    model: OracleModel = builder.build_sam3_image_model(
+        checkpoint_path=str(checkpoint),
         load_from_HF=False,
         device="cpu",
         enable_inst_interactivity=False,
     )
-    _restore_construction_adapters(torch, originals)
+    restore_construction_adapters(torch_runtime, originals)
     load_s = time.perf_counter() - load_started
 
-    image = Image.open(args.image).convert("RGB")
-    specs = json.loads(args.cases.read_text())
+    image = Image.open(image_path).convert("RGB")
+    specs: list[OracleCase] = validate_case_specs(
+        json.loads(cases_path.read_text(encoding="utf-8"))
+    )
     arrays: dict[str, np.ndarray] = {}
-    metadata: dict[str, Any] = {
+    metadata: dict[str, object] = {
         "cold_load_s": load_s,
         "precision": "torch.cpu.autocast.bfloat16",
-        "image_sha256": _sha256(args.image),
-        "case_spec_sha256": _sha256(args.cases),
+        "image_sha256": _sha256(image_path),
+        "case_spec_sha256": _sha256(cases_path),
         "cases": [],
         "cpu_adapters": [
             "sam3.model.edt replaced with fail-fast unused stub",
@@ -146,20 +105,19 @@ def main() -> None:
         ],
     }
 
-    states: dict[int, dict[str, Any]] = {}
-    processors: dict[int, Any] = {}
-    torch.Tensor.pin_memory = lambda tensor, *_args, **_kwargs: tensor
+    states: dict[int, OracleState] = {}
+    processors: dict[int, OracleProcessor] = {}
     try:
-        with torch.autocast("cpu", dtype=torch.bfloat16):
+        with torch_runtime.autocast("cpu", dtype=torch_runtime.bfloat16):
             for index, spec in enumerate(specs):
-                resolution = int(spec["resolution"])
+                resolution = spec["resolution"]
                 if resolution not in states:
-                    _set_official_global_rope_grid(model, resolution)
-                    processor = Sam3Processor(
+                    set_official_global_rope_grid(model, resolution)
+                    processor = processor_factory(
                         model,
                         device="cpu",
                         resolution=resolution,
-                        confidence_threshold=args.confidence_threshold,
+                        confidence_threshold=confidence_threshold,
                     )
                     started = time.perf_counter()
                     states[resolution] = processor.set_image(image)
@@ -170,7 +128,7 @@ def main() -> None:
                     image_latency_s = 0.0
 
                 started = time.perf_counter()
-                state = _run_prompt(processor, states[resolution], spec)
+                state = run_prompt(processor, states[resolution], spec)
                 prompt_latency_s = time.perf_counter() - started
                 prefix = f"case_{index}"
                 arrays[f"{prefix}_masks"] = (
@@ -182,7 +140,8 @@ def main() -> None:
                 arrays[f"{prefix}_scores"] = (
                     state["scores"].detach().float().cpu().numpy()
                 )
-                metadata["cases"].append(
+                cases_metadata = cast(list[object], metadata["cases"])
+                cases_metadata.append(
                     {
                         "name": spec["name"],
                         "resolution": resolution,
@@ -202,12 +161,12 @@ def main() -> None:
                     flush=True,
                 )
     finally:
-        torch.Tensor.pin_memory = originals["pin_memory"]
+        torch_runtime.Tensor.pin_memory = originals.pin_memory
 
     arrays["metadata_json"] = np.array(json.dumps(metadata, sort_keys=True))
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(args.out, **arrays)
-    print(json.dumps({"wrote": str(args.out), **metadata}, indent=2))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    save_oracle_arrays(output_path, arrays)
+    print(json.dumps({"wrote": str(output_path), **metadata}, indent=2))
 
 
 if __name__ == "__main__":
