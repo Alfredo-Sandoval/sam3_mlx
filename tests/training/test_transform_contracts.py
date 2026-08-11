@@ -4,7 +4,14 @@ import pytest
 from PIL import Image as PILImage
 
 from sam3_mlx.mlx_runtime import to_numpy
-from sam3_mlx.train.data.sam3_image_dataset import Datapoint, Image
+from sam3_mlx.train.data.collator import collate_fn_api
+from sam3_mlx.train.data.sam3_image_dataset import (
+    Datapoint,
+    FindQueryLoaded,
+    Image,
+    InferenceMetadata,
+    Object,
+)
 from sam3_mlx.train.transforms.basic import TargetDict, resize
 from sam3_mlx.train.transforms.basic_for_api import ToTensorAPI
 
@@ -47,3 +54,47 @@ def test_to_tensor_api_rejects_non_pil_non_mlx_image_data():
 
     with pytest.raises(TypeError, match="Unsupported image type"):
         ToTensorAPI()(datapoint)
+
+
+def test_collator_converts_optional_prompt_builders_to_mlx_arrays() -> None:
+    image = Image(
+        data=mx.zeros((3, 4, 4), dtype=mx.float32),
+        objects=[
+            Object(
+                bbox=mx.array([0.1, 0.2, 0.3, 0.4], dtype=mx.float32),
+                area=0.12,
+                object_id=0,
+            )
+        ],
+        size=(4, 4),
+    )
+    query = FindQueryLoaded(
+        query_text="target",
+        image_id=0,
+        object_ids_output=[0],
+        is_exhaustive=True,
+        input_bbox=mx.array([0.2, 0.3, 0.4, 0.5], dtype=mx.float32),
+        input_bbox_label=mx.array([1], dtype=mx.int64),
+        input_points=mx.array([[0.25, 0.75, 1.0]], dtype=mx.float32),
+        inference_metadata=InferenceMetadata(
+            coco_image_id=1,
+            original_image_id=1,
+            original_category_id=2,
+            original_size=(4, 4),
+            object_id=0,
+            frame_index=0,
+        ),
+    )
+
+    collated = collate_fn_api(
+        [Datapoint(find_queries=[query], images=[image])], "batch"
+    )
+    stage = collated["batch"].find_inputs[0]
+
+    assert isinstance(stage.input_boxes, mx.array)
+    assert isinstance(stage.input_boxes_label, mx.array)
+    assert isinstance(stage.input_boxes_mask, mx.array)
+    assert isinstance(stage.input_points, mx.array)
+    assert isinstance(stage.input_points_mask, mx.array)
+    assert stage.input_boxes.shape == (1, 1, 4)
+    assert stage.input_points.shape == (1, 1, 3)

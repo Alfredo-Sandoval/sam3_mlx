@@ -24,11 +24,11 @@ class _ArrayMethods(Protocol):
     def transpose(self, *axes: int) -> mx.array: ...
 
 
-def _reshape(array: mx.array, *shape: int) -> mx.array:
+def reshape_array(array: mx.array, *shape: int) -> mx.array:
     return cast(_ArrayMethods, array).reshape(*shape)
 
 
-def _transpose(array: mx.array, *axes: int) -> mx.array:
+def transpose_array(array: mx.array, *axes: int) -> mx.array:
     return cast(_ArrayMethods, array).transpose(*axes)
 
 
@@ -174,14 +174,14 @@ def _interpolate_bilinear_antialias_nchw(
     rows: list[mx.array] = []
     for indices_np, weights_np in y_weights:
         indices = mx.array(indices_np, dtype=mx.int64)
-        weights = _reshape(mx.array(weights_np, dtype=input.dtype), 1, 1, -1, 1)
+        weights = reshape_array(mx.array(weights_np, dtype=input.dtype), 1, 1, -1, 1)
         rows.append(mx.sum(mx.take(input, indices, axis=2) * weights, axis=2))
     resized_h = mx.stack(rows, axis=2)
 
     cols: list[mx.array] = []
     for indices_np, weights_np in x_weights:
         indices = mx.array(indices_np, dtype=mx.int64)
-        weights = _reshape(mx.array(weights_np, dtype=input.dtype), 1, 1, 1, -1)
+        weights = reshape_array(mx.array(weights_np, dtype=input.dtype), 1, 1, 1, -1)
         cols.append(mx.sum(mx.take(resized_h, indices, axis=3) * weights, axis=3))
     return mx.stack(cols, axis=3)
 
@@ -280,14 +280,14 @@ def interpolate(
             )
         return _interpolate_bilinear_antialias_nchw(input, out_hw)
 
-    x = _transpose(input, 0, 2, 3, 1)
+    x = transpose_array(input, 0, 2, 3, 1)
     upsample_layer = nn.Upsample(
         scale_factor=final_scale,
         mode=mlx_mode,
         align_corners=False if align_corners is None else align_corners,
     )
     x = upsample_layer(x)
-    return _transpose(x, 0, 3, 1, 2)
+    return transpose_array(x, 0, 3, 1, 2)
 
 
 @dataclass
@@ -311,16 +311,16 @@ class FindStage:
     text_ids: MyTensor
     text_ids__type = mx.int64
 
-    input_boxes: MyTensor
+    input_boxes: MyTensor | None
     input_boxes__type = mx.float32
-    input_boxes_mask: MyTensor
+    input_boxes_mask: MyTensor | None
     input_boxes_mask__type = mx.bool_
-    input_boxes_label: MyTensor
+    input_boxes_label: MyTensor | None
     input_boxes_label__type = mx.int64
 
-    input_points: MyTensor
+    input_points: MyTensor | None
     input_points__type = mx.float32
-    input_points_mask: MyTensor
+    input_points_mask: MyTensor | None
     input_points_mask__type = mx.bool_
 
     # We track the object ids referred to by this query.
@@ -407,11 +407,7 @@ def convert_my_tensors(obj: object) -> object:
         dtype = cast(mx.Dtype, getattr(obj, field.name + "__type"))
         if isinstance(value, mx.array):
             setattr(obj, field.name, value.astype(dtype))
-        elif (
-            isinstance(value, list)
-            and value
-            and isinstance(value[0], mx.array)
-        ):
+        elif isinstance(value, list) and value and isinstance(value[0], mx.array):
             array_values = cast(list[mx.array], value)
             stack_dim = (
                 1
@@ -433,6 +429,4 @@ def _is_mytensor_field(field_type: object) -> bool:
     if field_type == MyTensor:
         return True
     field_args = get_args(field_type)
-    return mx.array in field_args and any(
-        get_origin(arg) is list for arg in field_args
-    )
+    return mx.array in field_args and any(get_origin(arg) is list for arg in field_args)

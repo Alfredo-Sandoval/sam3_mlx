@@ -1,22 +1,37 @@
 from functools import lru_cache, partial
 from numbers import Integral
-from typing import Dict, List
-import PIL
+from collections.abc import Callable, Mapping
+from typing import Any, NoReturn, Protocol, cast
 from PIL import Image
 import numpy as np
+import numpy.typing as npt
 import mlx.core as mx
 
 from sam3_mlx._device import is_mlx_runtime_device
 from sam3_mlx._unsupported import raise_unsupported
 from sam3_mlx.model import box_ops
-from sam3_mlx.model.data_misc import FindStage, interpolate
+from sam3_mlx.model.data_misc import (
+    FindStage,
+    IndexArray,
+    ResizeWeights,
+    WeightArray,
+    interpolate,
+    reshape_array,
+    transpose_array,
+)
+from sam3_mlx.model.geometry_encoders import Prompt
+from sam3_mlx.model.sam3_image import Output, Sam3Image
 
 SAM3_IMAGE_PATCH_SIZE = 14
 
 
 def _raise_processor_unsupported(
-    feature: str, *, reason: str, detail: str, alternative=None
-):
+    feature: str,
+    *,
+    reason: str,
+    detail: str,
+    alternative: str | None = None,
+) -> NoReturn:
     raise_unsupported(
         feature,
         reason=reason,
@@ -41,7 +56,7 @@ def _single_image_keep_indices(out_probs: mx.array, threshold: float) -> mx.arra
     return _score_keep_indices(out_probs[0], threshold)
 
 
-def _validate_processor_resolution(resolution) -> int:
+def _validate_processor_resolution(resolution: object) -> int:
     if isinstance(resolution, bool) or not isinstance(resolution, Integral):
         raise ValueError(
             "Processor resolution must be a positive integer multiple of "
@@ -56,17 +71,15 @@ def _validate_processor_resolution(resolution) -> int:
     return resolution
 
 
-def _readonly_array(value: np.ndarray) -> np.ndarray:
+def _readonly_array(value: npt.NDArray[Any]) -> npt.NDArray[Any]:
     value.setflags(write=False)
     return value
 
 
 @lru_cache(maxsize=128)
-def _resize_weights_1d(
-    in_size: int, out_size: int
-) -> tuple[tuple[np.ndarray, np.ndarray], ...]:
+def _resize_weights_1d(in_size: int, out_size: int) -> ResizeWeights:
     scale = in_size / out_size
-    weights_by_output = []
+    weights_by_output: list[tuple[IndexArray, WeightArray]] = []
     if out_size < in_size:
         support = scale
         for out_index in range(out_size):
@@ -99,7 +112,9 @@ def _resize_weights_1d(
     return tuple(weights_by_output)
 
 
-def _fused_multiply_add_float32(multiplicand, multiplier, addend):
+def _fused_multiply_add_float32(
+    multiplicand: object, multiplier: object, addend: object
+) -> npt.NDArray[np.float32]:
     return np.asarray(
         np.asarray(multiplicand, dtype=np.float64)
         * np.asarray(multiplier, dtype=np.float64)
@@ -109,9 +124,9 @@ def _fused_multiply_add_float32(multiplicand, multiplier, addend):
 
 
 def _resize_uint8_bilinear_like_torchvision(
-    image: np.ndarray,
+    image: npt.NDArray[np.uint8],
     size: tuple[int, int],
-) -> np.ndarray:
+) -> npt.NDArray[np.uint8]:
     """Resize HWC uint8 RGB data like Torchvision tensor Resize(bilinear)."""
 
     out_h, out_w = size
@@ -175,7 +190,10 @@ def _resize_uint8_bilinear_like_torchvision(
     return np.rint(resized).clip(0, 255).astype(np.uint8)
 
 
-def transform(image_path_or_pil, resolution):
+def transform(
+    image_path_or_pil: str | Image.Image | npt.NDArray[Any],
+    resolution: object,
+) -> mx.array:
     resolution = _validate_processor_resolution(resolution)
     if isinstance(image_path_or_pil, str):
         img = Image.open(image_path_or_pil).convert("RGB")
@@ -189,14 +207,16 @@ def transform(image_path_or_pil, resolution):
     )
     img_mx = mx.array(img_np, dtype=mx.float32) / 255.0  # [H, W, C]
     img_mx = (img_mx - 0.5) / 0.5
-    return img_mx.transpose(2, 0, 1)  # [H, W, C] -> [C, H, W]
+    return transpose_array(img_mx, 2, 0, 1)  # [H, W, C] -> [C, H, W]
 
 
-def _as_pil_rgb_image(image):
-    if isinstance(image, PIL.Image.Image):
+def _as_pil_rgb_image(
+    image: object,
+) -> Image.Image:
+    if isinstance(image, Image.Image):
         return image if image.mode == "RGB" else image.convert("RGB")
     if isinstance(image, np.ndarray):
-        array = np.asarray(image)
+        array = np.asarray(cast(Any, image))
         if array.ndim not in (2, 3):
             raise ValueError("Image NumPy arrays must have shape HxW or HxWxC.")
         if array.ndim == 3 and array.shape[-1] not in (1, 3, 4):
@@ -235,7 +255,11 @@ _IMAGE_LANGUAGE_KEYS = (
 )
 
 
-def _batch_original_sizes(state: Dict):
+ProcessorState = dict[str, Any]
+OriginalSizes = list[tuple[int, int]]
+
+
+def _batch_original_sizes(state: ProcessorState) -> OriginalSizes | None:
     has_heights = "original_heights" in state
     has_widths = "original_widths" in state
     if has_heights != has_widths:
@@ -244,8 +268,8 @@ def _batch_original_sizes(state: Dict):
         )
     if not has_heights:
         return None
-    heights = state["original_heights"]
-    widths = state["original_widths"]
+    heights = cast(list[int], state["original_heights"])
+    widths = cast(list[int], state["original_widths"])
     if len(heights) != len(widths):
         raise ValueError(
             "original_heights and original_widths must have the same length."
@@ -255,7 +279,7 @@ def _batch_original_sizes(state: Dict):
     return list(zip(heights, widths))
 
 
-def _clear_prompt_and_result_keys(state: Dict) -> None:
+def _clear_prompt_and_result_keys(state: ProcessorState) -> None:
     """Remove prompts and prediction outputs from a mutable processor state."""
     if "backbone_out" in state:
         for key in _IMAGE_LANGUAGE_KEYS:
@@ -265,7 +289,7 @@ def _clear_prompt_and_result_keys(state: Dict) -> None:
         state.pop(key, None)
 
 
-def _clear_image_dependent_state(state: Dict) -> None:
+def _clear_image_dependent_state(state: ProcessorState) -> None:
     """Invalidate prompts, outputs, and size metadata before replacing an image.
 
     Reused states must not retain geometric prompts, opposite batch size keys, or
@@ -276,7 +300,7 @@ def _clear_image_dependent_state(state: Dict) -> None:
         state.pop(key, None)
 
 
-def _normalize_processor_device(device) -> str:
+def _normalize_processor_device(device: object) -> str:
     if is_mlx_runtime_device(device):
         return "mlx"
     _raise_processor_unsupported(
@@ -290,8 +314,41 @@ def _normalize_processor_device(device) -> str:
     )
 
 
+class _ArrayLayer(Protocol):
+    def __call__(self, value: mx.array) -> mx.array: ...
+
+
+class _MaskDecoder(Protocol):
+    conv_s0: _ArrayLayer
+    conv_s1: _ArrayLayer
+
+
+class _InteractiveModel(Protocol):
+    sam_mask_decoder: _MaskDecoder
+
+
+class _InteractivePredictor(Protocol):
+    model: _InteractiveModel
+
+
+def _evaluate_processor_state(state: ProcessorState) -> None:
+    evaluate = cast(Callable[[object], None], getattr(mx, "eval"))
+    evaluate(state)
+
+
+def _dummy_prompt(model: object, *, num_prompts: int = 1) -> Prompt:
+    factory = cast(Callable[..., Prompt], getattr(model, "_get_dummy_prompt"))
+    return factory(num_prompts=num_prompts)
+
+
 class Sam3Processor:
-    def __init__(self, model, resolution=1008, device="mlx", confidence_threshold=0.5):
+    def __init__(
+        self,
+        model: Sam3Image,
+        resolution: object = 1008,
+        device: object = "mlx",
+        confidence_threshold: float = 0.5,
+    ) -> None:
         runtime_device = _normalize_processor_device(device)
         if not 0.0 <= confidence_threshold <= 1.0:
             raise ValueError("Confidence threshold must be between 0.0 and 1.0.")
@@ -311,7 +368,7 @@ class Sam3Processor:
             input_points_mask=None,
         )
 
-    def _find_stage_for_state(self, state: Dict):
+    def _find_stage_for_state(self, state: ProcessorState) -> FindStage:
         sizes = _batch_original_sizes(state)
         if sizes is None:
             return self.find_stage
@@ -326,41 +383,46 @@ class Sam3Processor:
             input_points_mask=None,
         )
 
-    def _patch_interactive_backbone_features(self, backbone_out):
+    def _patch_interactive_backbone_features(
+        self, backbone_out: Mapping[str, object]
+    ) -> None:
         inst_interactivity_en = self.model.inst_interactive_predictor is not None
         if not inst_interactivity_en or "sam2_backbone_out" not in backbone_out:
             return
-        sam2_backbone_out = backbone_out["sam2_backbone_out"]
-        sam2_backbone_out["backbone_fpn"][0] = (
-            self.model.inst_interactive_predictor.model.sam_mask_decoder.conv_s0(
-                sam2_backbone_out["backbone_fpn"][0]
-            )
-        )
-        sam2_backbone_out["backbone_fpn"][1] = (
-            self.model.inst_interactive_predictor.model.sam_mask_decoder.conv_s1(
-                sam2_backbone_out["backbone_fpn"][1]
-            )
-        )
+        predictor = cast(_InteractivePredictor, self.model.inst_interactive_predictor)
+        sam2_backbone_out = cast(dict[str, Any], backbone_out["sam2_backbone_out"])
+        backbone_fpn = cast(list[mx.array], sam2_backbone_out["backbone_fpn"])
+        backbone_fpn[0] = predictor.model.sam_mask_decoder.conv_s0(backbone_fpn[0])
+        backbone_fpn[1] = predictor.model.sam_mask_decoder.conv_s1(backbone_fpn[1])
 
-    def set_image(self, image, state=None):
+    def set_image(
+        self,
+        image: Image.Image | npt.NDArray[Any],
+        state: ProcessorState | None = None,
+    ) -> ProcessorState:
         if state is None:
             state = {}
         else:
             _clear_image_dependent_state(state)
 
-        image = _as_pil_rgb_image(image)
-        width, height = image.size
+        pil_image = _as_pil_rgb_image(image)
+        width, height = pil_image.size
 
-        image = self.transform(image)[None]
+        image_tensor = self.transform(pil_image)[None]
 
         state["original_height"] = height
         state["original_width"] = width
-        state["backbone_out"] = self.model.backbone.forward_image(image)
-        mx.eval(state)
-        self._patch_interactive_backbone_features(state["backbone_out"])
+        backbone_out = self.model.backbone.forward_image(image_tensor)
+        state["backbone_out"] = backbone_out
+        _evaluate_processor_state(state)
+        self._patch_interactive_backbone_features(backbone_out)
         return state
 
-    def set_image_batch(self, images: List[np.ndarray], state=None):
+    def set_image_batch(
+        self,
+        images: object,
+        state: ProcessorState | None = None,
+    ) -> ProcessorState:
         """Sets an image batch and computes batched backbone features."""
 
         if state is None:
@@ -369,27 +431,28 @@ class Sam3Processor:
             _clear_image_dependent_state(state)
         if not isinstance(images, list):
             raise ValueError("Images must be a list of PIL images or NumPy arrays.")
-        if len(images) == 0:
+        typed_images = cast(list[Image.Image | npt.NDArray[Any]], images)
+        if len(typed_images) == 0:
             raise ValueError("Images list must not be empty.")
-
-        pil_images = [_as_pil_rgb_image(image) for image in images]
+        pil_images = [_as_pil_rgb_image(image) for image in typed_images]
         state["original_heights"] = [image.height for image in pil_images]
         state["original_widths"] = [image.width for image in pil_images]
 
         image_batch = mx.stack([self.transform(image) for image in pil_images], axis=0)
-        state["backbone_out"] = self.model.backbone.forward_image(image_batch)
-        mx.eval(state)
-        self._patch_interactive_backbone_features(state["backbone_out"])
+        backbone_out = self.model.backbone.forward_image(image_batch)
+        state["backbone_out"] = backbone_out
+        _evaluate_processor_state(state)
+        self._patch_interactive_backbone_features(backbone_out)
         return state
 
     def set_text_prompt(
         self,
         prompt: str,
-        state: Dict,
+        state: ProcessorState,
         *,
         run_grounding: bool = True,
-        text_outputs=None,
-    ):
+        text_outputs: dict[str, mx.array] | None = None,
+    ) -> ProcessorState:
         if "backbone_out" not in state:
             raise ValueError("You must call set_image before set_text_prompt")
 
@@ -403,19 +466,19 @@ class Sam3Processor:
         if "geometric_prompt" not in state:
             sizes = _batch_original_sizes(state)
             num_prompts = len(sizes) if sizes is not None else 1
-            state["geometric_prompt"] = self.model._get_dummy_prompt(
-                num_prompts=num_prompts
+            state["geometric_prompt"] = _dummy_prompt(
+                self.model, num_prompts=num_prompts
             )
         return self._forward_grounding(state) if run_grounding else state
 
     def add_geometric_prompt(
         self,
-        box: List,
+        box: list[float],
         label: bool,
-        state: Dict,
+        state: ProcessorState,
         *,
         run_grounding: bool = True,
-    ):
+    ) -> ProcessorState:
         """Adds a box prompt and run the inference.
         The image needs to be set, but not necessarily the text prompt.
         The box is assumed to be in [center_x, center_y, width, height] format and normalized in [0, 1] range.
@@ -445,23 +508,24 @@ class Sam3Processor:
             state["backbone_out"].update(dummy_text_outputs)
 
         if "geometric_prompt" not in state:
-            state["geometric_prompt"] = self.model._get_dummy_prompt()
+            state["geometric_prompt"] = _dummy_prompt(self.model)
 
         # adding a batch and sequence dimension
-        boxes = mx.array(box, dtype=mx.float32).reshape(1, 1, 4)
-        labels = mx.array([label], dtype=mx.bool_).reshape(1, 1)
-        state["geometric_prompt"].append_boxes(boxes, labels)
+        boxes = reshape_array(mx.array(box, dtype=mx.float32), 1, 1, 4)
+        labels = reshape_array(mx.array([label], dtype=mx.bool_), 1, 1)
+        geometric_prompt = cast(Prompt, state["geometric_prompt"])
+        geometric_prompt.append_boxes(boxes, labels)
 
         return self._forward_grounding(state) if run_grounding else state
 
     def add_point_prompt(
         self,
-        point: List,
+        point: list[float],
         label: bool,
-        state: Dict,
+        state: ProcessorState,
         *,
         run_grounding: bool = True,
-    ):
+    ) -> ProcessorState:
         """Adds a point prompt and run inference on the current image.
 
         The point is expected in normalized ``[x, y]`` image coordinates.
@@ -487,22 +551,25 @@ class Sam3Processor:
             state["backbone_out"].update(dummy_text_outputs)
 
         if "geometric_prompt" not in state:
-            state["geometric_prompt"] = self.model._get_dummy_prompt()
+            state["geometric_prompt"] = _dummy_prompt(self.model)
 
-        points = mx.array(point, dtype=mx.float32).reshape(1, 1, 2)
-        labels = mx.array([label], dtype=mx.bool_).reshape(1, 1)
-        state["geometric_prompt"].append_points(points, labels)
+        points = reshape_array(mx.array(point, dtype=mx.float32), 1, 1, 2)
+        labels = reshape_array(mx.array([label], dtype=mx.bool_), 1, 1)
+        geometric_prompt = cast(Prompt, state["geometric_prompt"])
+        geometric_prompt.append_points(points, labels)
         return self._forward_grounding(state) if run_grounding else state
 
-    def run_grounding(self, state: Dict):
+    def run_grounding(self, state: ProcessorState) -> ProcessorState:
         """Execute one grounding pass after prompt mutation is complete."""
         return self._forward_grounding(state)
 
-    def reset_all_prompts(self, state: Dict):
+    def reset_all_prompts(self, state: ProcessorState) -> None:
         """Removes all the prompts and results"""
         _clear_prompt_and_result_keys(state)
 
-    def set_confidence_threshold(self, threshold: float, state=None):
+    def set_confidence_threshold(
+        self, threshold: float, state: ProcessorState | None = None
+    ) -> ProcessorState | None:
         if not 0.0 <= threshold <= 1.0:
             raise ValueError("Confidence threshold must be between 0.0 and 1.0.")
         self.confidence_threshold = float(threshold)
@@ -510,21 +577,22 @@ class Sam3Processor:
             return self._forward_grounding(state)
         return state
 
-    def _forward_grounding(self, state: Dict):
+    def _forward_grounding(self, state: ProcessorState) -> ProcessorState:
         batch_sizes = _batch_original_sizes(state)
 
-        outputs = self.model.forward_grounding(
+        outputs: Output = self.model.forward_grounding(
             backbone_out=state["backbone_out"],
             find_input=self._find_stage_for_state(state),
             geometric_prompt=state["geometric_prompt"],
             find_target=None,
         )
 
-        out_bbox = outputs["pred_boxes"]
-        out_logits = outputs["pred_logits"]
-        out_masks = outputs["pred_masks"]
+        out_bbox = cast(mx.array, outputs["pred_boxes"])
+        out_logits = cast(mx.array, outputs["pred_logits"])
+        out_masks = cast(mx.array, outputs["pred_masks"])
         out_probs = mx.sigmoid(out_logits)
-        presence_score = mx.sigmoid(outputs["presence_logit_dec"])[:, None]
+        presence_logit = cast(mx.array, outputs["presence_logit_dec"])
+        presence_score = mx.sigmoid(presence_logit)[:, None]
         out_probs = (out_probs * presence_score).squeeze(-1)
 
         if batch_sizes is not None:
@@ -552,7 +620,7 @@ class Sam3Processor:
         out_probs = out_probs[0][keep_indices]
         out_masks = out_masks[0][keep_indices]
         out_bbox = out_bbox[0][keep_indices]
-        seg_mask = outputs.get("semantic_seg")
+        seg_mask = cast(mx.array | None, outputs.get("semantic_seg"))
 
         # convert box to [x0, y0, x1, y1] format
         boxes = box_ops.box_cxcywh_to_xyxy(out_bbox)
@@ -581,14 +649,14 @@ class Sam3Processor:
 
     def _forward_grounding_batch_outputs(
         self,
-        state: Dict,
+        state: ProcessorState,
         *,
-        outputs: Dict,
+        outputs: Output,
         out_bbox: mx.array,
         out_masks: mx.array,
         out_probs: mx.array,
-        original_sizes,
-    ):
+        original_sizes: OriginalSizes,
+    ) -> ProcessorState:
         batch_size = len(original_sizes)
         if out_probs.shape[0] != batch_size:
             raise ValueError(
@@ -596,12 +664,14 @@ class Sam3Processor:
                 f"got outputs batch {out_probs.shape[0]} and {batch_size} sizes."
             )
 
-        boxes_by_image = []
-        masks_logits_by_image = []
-        masks_by_image = []
-        scores_by_image = []
-        semantic_seg = outputs.get("semantic_seg")
-        semantic_seg_by_image = [] if semantic_seg is not None else None
+        boxes_by_image: list[mx.array] = []
+        masks_logits_by_image: list[mx.array] = []
+        masks_by_image: list[mx.array] = []
+        scores_by_image: list[mx.array] = []
+        semantic_seg = cast(mx.array | None, outputs.get("semantic_seg"))
+        semantic_seg_by_image: list[mx.array] | None = (
+            [] if semantic_seg is not None else None
+        )
 
         for batch_idx, (img_h, img_w) in enumerate(original_sizes):
             keep_indices = _score_keep_indices(
@@ -630,6 +700,7 @@ class Sam3Processor:
             scores_by_image.append(image_scores)
 
             if semantic_seg_by_image is not None:
+                assert semantic_seg is not None
                 semantic_seg_by_image.append(
                     interpolator(semantic_seg[batch_idx : batch_idx + 1])
                 )
