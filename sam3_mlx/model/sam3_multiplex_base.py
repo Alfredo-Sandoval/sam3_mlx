@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from enum import Enum
 import math
 import os
-from typing import Any, TypeAlias, TypeGuard, TypeVar, cast
+from typing import Any, NoReturn, Protocol, TypeAlias, TypeGuard, TypeVar, cast
 
 import mlx.core as mx
 from mlx import nn
@@ -19,6 +20,7 @@ from sam3_mlx.model.sam3_tracker_utils import fill_holes_in_mask_scores, mask_to
 from sam3_mlx.model.sam3_video_base import (
     LazyAssociateDetTrkResult,
     Sam3VideoBase,
+    TrackerArray,
     _associate_det_trk_compilable,
     realize_adt_result,
 )
@@ -27,7 +29,35 @@ from sam3_mlx.model.multiplex_utils import raise_unsupported_multiplex_runtime
 
 SAM3_COLLECTIVE_OP_TIMEOUT_SEC = 180
 NumpyArray: TypeAlias = NDArray[np.generic]
+IntArray: TypeAlias = NDArray[np.int64]
 MetadataValue = TypeVar("MetadataValue")
+
+
+class _MultiplexControllerView(Protocol):
+    allowed_bucket_capacity: int
+    training: bool
+
+
+class _BucketStateView(Protocol):
+    num_buckets: int
+
+
+def _require_multiplex_controller(tracker: object) -> _MultiplexControllerView:
+    controller: object = getattr(tracker, "multiplex_controller", None)
+    allowed_bucket_capacity: object = getattr(
+        controller, "allowed_bucket_capacity", None
+    )
+    training: object = getattr(controller, "training", None)
+    if not isinstance(allowed_bucket_capacity, int) or not isinstance(training, bool):
+        raise TypeError(
+            "multiplex trackers must expose a controller with integer "
+            "allowed_bucket_capacity and boolean training attributes"
+        )
+    return cast(_MultiplexControllerView, controller)
+
+
+def _is_bucket_state(value: object) -> TypeGuard[_BucketStateView]:
+    return isinstance(getattr(value, "num_buckets", None), int)
 
 
 def _is_mlx_array(value: object) -> TypeGuard[mx.array]:
@@ -38,6 +68,10 @@ def _array_to_numpy(
     value: object, *, dtype: DTypeLike | None = None
 ) -> NumpyArray:
     return cast(NumpyArray, to_numpy(value, dtype=dtype, copy=False))
+
+
+def _int_array(value: object) -> IntArray:
+    return cast(IntArray, _array_to_numpy(value, dtype=np.int64))
 
 
 def _score_to_float(value: object) -> float:
@@ -85,6 +119,22 @@ def _copy_metadata_value(value: MetadataValue) -> MetadataValue:
     if isinstance(value, set):
         return cast(MetadataValue, set(cast(set[object], value)))
     return value
+
+
+def _tracker_state_layout(
+    state: object,
+) -> tuple[_BucketStateView | None, IntArray]:
+    if not isinstance(state, Mapping):
+        return None, np.array([], dtype=np.int64)
+    state_mapping = cast(Mapping[object, object], state)
+    multiplex_state = state_mapping.get("multiplex_state")
+    bucket_state = multiplex_state if _is_bucket_state(multiplex_state) else None
+    state_obj_ids = state_mapping.get("obj_ids")
+    if state_obj_ids is None and multiplex_state is not None:
+        state_obj_ids = getattr(multiplex_state, "object_ids", None)
+    if state_obj_ids is None:
+        return bucket_state, np.array([], dtype=np.int64)
+    return bucket_state, _int_array(state_obj_ids).reshape(-1)
 
 
 def _torch_bool_argsort_desc_np(values: np.ndarray) -> np.ndarray:
@@ -353,9 +403,9 @@ class MaskletConfirmationStatus(Enum):
 class Sam3MultiplexTrackerPredictor(nn.Module):
     def __init__(
         self,
-        config_file: Any,
-        checkpoint_file: Any = None,
-        hydra_overrides: Any = None,
+        config_file: object,
+        checkpoint_file: object = None,
+        hydra_overrides: object = None,
         per_obj_inference: bool = False,
         fill_hole_area: int = 0,
         use_fa3: bool = False,
@@ -364,18 +414,20 @@ class Sam3MultiplexTrackerPredictor(nn.Module):
         is_multiplex: bool = False,
         is_multiplex_dynamic: bool = False,
         use_memory_selection: bool = False,
-    ):
+    ) -> None:
         del config_file, checkpoint_file, hydra_overrides, per_obj_inference
         del fill_hole_area, use_fa3, use_rope_real, keep_first_cond_frame
         del is_multiplex, is_multiplex_dynamic, use_memory_selection
         super().__init__()
         raise_unsupported_multiplex_runtime("Sam3MultiplexTrackerPredictor")
 
-    def forward(self, *args: Any, **kwargs: Any) -> Any:
+    def forward(self, *args: object, **kwargs: object) -> NoReturn:
         del args, kwargs
         raise_unsupported_multiplex_runtime("Sam3MultiplexTrackerPredictor.forward")
 
-    def add_output_per_object(self, *args: Any, **kwargs: Any) -> Any:
+    def add_output_per_object(
+        self, *args: object, **kwargs: object
+    ) -> NoReturn:
         del args, kwargs
         raise_unsupported_multiplex_runtime(
             "Sam3MultiplexTrackerPredictor.add_output_per_object"
@@ -387,8 +439,8 @@ class Sam3MultiplexBase(Sam3VideoBase):
         self,
         tracker: Any,
         detector: Any,
-        ckpt_path: Any = None,
-        sam3_ckpt_path: Any = None,
+        ckpt_path: object = None,
+        sam3_ckpt_path: object = None,
         score_threshold_detection: float = 0.5,
         image_only_det_thresh: float = 0.5,
         det_nms_thresh: float = 0.0,
@@ -425,8 +477,8 @@ class Sam3MultiplexBase(Sam3VideoBase):
         running_in_prod: bool = False,
         use_batched_grounding: bool = False,
         batched_grounding_batch_size: int = 1,
-        **kwargs: Any,
-    ):
+        **kwargs: object,
+    ) -> None:
         if kwargs:
             names = ", ".join(sorted(kwargs))
             raise TypeError(
@@ -493,11 +545,16 @@ class Sam3MultiplexBase(Sam3VideoBase):
         self._frame_count = 0
         self._profile_save_dir = os.getenv("PROFILE_SAVE_DIR", "/tmp/profiling")
         self._profiling_enabled = os.getenv("ENABLE_PROFILING", "0").lower() == "1"
+        multiplex_controller = (
+            _require_multiplex_controller(self.tracker)
+            if self.is_multiplex
+            else None
+        )
 
         if max_num_objects > 0:
             multiplex_divisor = (
-                self.tracker.multiplex_controller.allowed_bucket_capacity
-                if self.is_multiplex
+                multiplex_controller.allowed_bucket_capacity
+                if multiplex_controller is not None
                 else 1
             )
             self.num_obj_for_compile = math.ceil(
@@ -515,13 +572,11 @@ class Sam3MultiplexBase(Sam3VideoBase):
         self.use_batched_grounding = use_batched_grounding
         self.batched_grounding_batch_size = batched_grounding_batch_size
 
-        if self.is_multiplex:
-            assert not self.tracker.multiplex_controller.training, (
+        if multiplex_controller is not None:
+            assert not multiplex_controller.training, (
                 "This model class should only be used for eval."
             )
-            self.bucket_capacity = (
-                self.tracker.multiplex_controller.allowed_bucket_capacity
-            )
+            self.bucket_capacity = multiplex_controller.allowed_bucket_capacity
 
     def _initialize_metadata(self) -> dict[str, Any]:
         """Initialize the SAM3 masklet metadata structure."""
@@ -609,7 +664,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
 
     def _post_execution_phase_hook(
         self,
-        tracker_states_local: list[Any],
+        tracker_states_local: Sequence[object],
         tracker_metadata_new: dict[str, Any] | None,
     ) -> None:
         """Update multiplex bucket counts after a local execution phase."""
@@ -618,42 +673,27 @@ class Sam3MultiplexBase(Sam3VideoBase):
                 self._count_buckets_in_states(tracker_states_local)
             )
 
-    def _count_buckets_in_states(self, tracker_states_local: list[Any]) -> int:
+    def _count_buckets_in_states(
+        self, tracker_states_local: Sequence[object]
+    ) -> int:
         """Count dynamic multiplex buckets across local tracker states."""
         if not self.is_multiplex:
             return 0
         total_buckets = 0
         for state in tracker_states_local:
-            if "multiplex_state" in state:
-                total_buckets += int(state["multiplex_state"].num_buckets)
+            bucket_state, _ = _tracker_state_layout(state)
+            if bucket_state is not None:
+                total_buckets += bucket_state.num_buckets
         return total_buckets
 
     def _tracker_state_obj_ids_array(
         self,
-        tracker_states_local: list[Any],
-    ) -> np.ndarray:
+        tracker_states_local: Sequence[object],
+    ) -> IntArray:
         obj_ids: list[int] = []
         for state in tracker_states_local:
-            if not isinstance(state, dict):
-                continue
-            multiplex_state = state.get("multiplex_state")
-            state_obj_ids = state.get("obj_ids")
-            if state_obj_ids is None and multiplex_state is not None:
-                state_obj_ids = getattr(multiplex_state, "object_ids", [])
-            if state_obj_ids is None:
-                state_obj_ids = []
-            if _is_mlx_array(state_obj_ids) or isinstance(state_obj_ids, np.ndarray):
-                obj_ids.extend(
-                    int(obj_id)
-                    for obj_id in _array_to_numpy(
-                        state_obj_ids,
-                        dtype=np.int64,
-                    )
-                    .reshape(-1)
-                    .tolist()
-                )
-            else:
-                obj_ids.extend(int(obj_id) for obj_id in state_obj_ids)
+            _, state_obj_ids = _tracker_state_layout(state)
+            obj_ids.extend(state_obj_ids.tolist())
         return np.asarray(obj_ids, dtype=np.int64)
 
     def _align_hotstart_gpu_metadata_to_object_ids(
@@ -752,7 +792,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
 
     def _sync_execution_phase_metadata(
         self,
-        tracker_states_local: list[Any],
+        tracker_states_local: Sequence[object],
         tracker_metadata_new: dict[str, Any],
         *,
         frame_idx: int,
@@ -791,29 +831,16 @@ class Sam3MultiplexBase(Sam3VideoBase):
 
     def _count_execution_phase_buckets(
         self,
-        tracker_states_local: list[Any],
+        tracker_states_local: Sequence[object],
     ) -> int:
         num_unpacked_objects = 0
         num_packed_buckets = 0
         for state in tracker_states_local:
-            if not isinstance(state, dict):
-                continue
-            multiplex_state = state.get("multiplex_state")
-            state_obj_ids = state.get("obj_ids")
-            if state_obj_ids is None and multiplex_state is not None:
-                state_obj_ids = getattr(multiplex_state, "object_ids", [])
-            if state_obj_ids is None:
-                state_obj_ids = []
-            if _is_mlx_array(state_obj_ids) or isinstance(state_obj_ids, np.ndarray):
-                obj_count = int(
-                    _array_to_numpy(state_obj_ids, dtype=np.int64).reshape(-1).size
-                )
+            bucket_state, state_obj_ids = _tracker_state_layout(state)
+            if bucket_state is not None:
+                num_packed_buckets += bucket_state.num_buckets
             else:
-                obj_count = len(state_obj_ids)
-            if multiplex_state is not None:
-                num_packed_buckets += int(multiplex_state.num_buckets)
-            else:
-                num_unpacked_objects += obj_count
+                num_unpacked_objects += int(state_obj_ids.size)
         num_unpacked_buckets = (
             math.ceil(num_unpacked_objects / self.bucket_capacity)
             if num_unpacked_objects > 0
@@ -4121,18 +4148,17 @@ class Sam3MultiplexBase(Sam3VideoBase):
 
     def _associate_det_trk(
         self,
-        det_masks: Any,
-        det_scores: Any,
-        det_keep: Any,
-        trk_masks: Any,
-        trk_obj_ids: np.ndarray,
+        det_masks: TrackerArray,
+        det_scores: TrackerArray,
+        det_keep: TrackerArray,
+        trk_masks: TrackerArray,
+        trk_obj_ids: IntArray,
         default_det_thresh: float | None = None,
     ) -> LazyAssociateDetTrkResult:
         if not _is_floating_array(det_masks):
             raise TypeError("det_masks must be floating-point mask logits.")
         if not _is_floating_array(trk_masks):
             raise TypeError("trk_masks must be floating-point mask logits.")
-        trk_obj_ids = np.asarray(trk_obj_ids)
         if trk_masks.shape[0] != len(trk_obj_ids):
             raise ValueError(
                 "trk_masks and trk_obj_ids must have the same length, "
@@ -4167,16 +4193,24 @@ class Sam3MultiplexBase(Sam3VideoBase):
 
         if det_masks_mx.shape[-2:] != trk_masks_mx.shape[-2:]:
             if np.prod(det_masks_mx.shape[-2:]) < np.prod(trk_masks_mx.shape[-2:]):
+                det_spatial_size = (
+                    int(det_masks_mx.shape[-2]),
+                    int(det_masks_mx.shape[-1]),
+                )
                 trk_masks_mx = interpolate(
                     trk_masks_mx[:, None, :, :],
-                    size=det_masks_mx.shape[-2:],
+                    size=det_spatial_size,
                     mode="bilinear",
                     align_corners=False,
                 )[:, 0, :, :]
             else:
+                trk_spatial_size = (
+                    int(trk_masks_mx.shape[-2]),
+                    int(trk_masks_mx.shape[-1]),
+                )
                 det_masks_mx = interpolate(
                     det_masks_mx[:, None, :, :],
-                    size=trk_masks_mx.shape[-2:],
+                    size=trk_spatial_size,
                     mode="bilinear",
                     align_corners=False,
                 )[:, 0, :, :]
