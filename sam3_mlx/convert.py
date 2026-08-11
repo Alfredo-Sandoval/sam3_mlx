@@ -2,20 +2,124 @@ import argparse
 import hashlib
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
+from importlib import import_module
 from importlib.metadata import version
 from pathlib import Path
-from typing import Dict, Union, Optional
+from typing import NotRequired, Protocol, Required, TypedDict, cast
 
 import mlx.core as mx
-from huggingface_hub import snapshot_download
+import numpy as np
+import numpy.typing as npt
 
 
 MLX_COMMUNITY_REPO = "mlx-community/sam3-image"
 PYTORCH_REPO = "facebook/sam3"
 CONVERSION_MANIFEST = "conversion-manifest.json"
 _COMMIT_REVISION_PATTERN = re.compile(r"[0-9a-fA-F]{40}")
+
+
+type JsonValue = (
+    str | int | float | bool | None | list[JsonValue] | dict[str, JsonValue]
+)
+
+
+class _SnapshotDownload(Protocol):
+    def __call__(
+        self,
+        *,
+        repo_id: str,
+        allow_patterns: Sequence[str],
+        revision: str,
+        local_dir: str | None = None,
+    ) -> str: ...
+
+
+class _TorchTensor(Protocol):
+    def numpy(self) -> npt.NDArray[np.generic]: ...
+
+
+class _TransposableArray(Protocol):
+    def transpose(self, *axes: int) -> mx.array: ...
+
+
+class _SaveSafetensors(Protocol):
+    def __call__(self, path: str, arrays: dict[str, mx.array]) -> object: ...
+
+
+class _TorchModule(Protocol):
+    def load(
+        self,
+        path: str,
+        *,
+        map_location: str,
+        weights_only: bool,
+    ) -> object: ...
+
+
+class _CliArgs(Protocol):
+    mlx_repo: str
+    source_revision: str | None
+    pytorch_repo: str
+    mlx_path: str | None
+    convert: bool
+
+
+class ConversionProvenance(TypedDict):
+    status: Required[str]
+    repo: Required[str]
+    revision: Required[str]
+    architecture: Required[str]
+    output_sha256: Required[str]
+    manifest_path: Required[str | None]
+    manifest: NotRequired[dict[str, JsonValue]]
+
+
+class _WeightIndex(TypedDict):
+    metadata: dict[str, int]
+    weight_map: dict[str, str]
+
+
+snapshot_download = cast(
+    _SnapshotDownload,
+    getattr(import_module("huggingface_hub"), "snapshot_download"),
+)
+
+
+def _torch_weights(value: object) -> dict[str, _TorchTensor]:
+    if not isinstance(value, Mapping):
+        raise ValueError("SAM3 PyTorch checkpoint payload must be a mapping.")
+    result: dict[str, _TorchTensor] = {}
+    for key, tensor in cast(Mapping[object, object], value).items():
+        if not isinstance(key, str):
+            raise TypeError("checkpoint weight keys must be strings")
+        if not callable(getattr(tensor, "numpy", None)):
+            raise TypeError(f"checkpoint weight {key!r} must expose numpy()")
+        result[key] = cast(_TorchTensor, tensor)
+    return result
+
+
+def _json_value(value: object) -> JsonValue:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, list):
+        return [_json_value(item) for item in cast(list[object], value)]
+    if isinstance(value, dict):
+        result: dict[str, JsonValue] = {}
+        for key, item in cast(dict[object, object], value).items():
+            if not isinstance(key, str):
+                raise ValueError("JSON object keys must be strings")
+            result[key] = _json_value(item)
+        return result
+    raise ValueError(f"unsupported JSON value type: {type(value).__name__}")
+
+
+def _json_object(text: str, source: str) -> dict[str, JsonValue]:
+    value = _json_value(json.loads(text))
+    if not isinstance(value, dict):
+        raise ValueError(f"{source} must contain a JSON object.")
+    return value
 
 
 @dataclass(frozen=True)
@@ -82,7 +186,7 @@ SAM3_IMAGE_CONV2D_WEIGHTS = frozenset(
 )
 
 
-def normalize_sam3_image_weight_layout(key: str, value):
+def normalize_sam3_image_weight_layout(key: str, value: mx.array) -> mx.array:
     """Map known PyTorch conv kernels into MLX's channels-last kernel layout."""
 
     if (
@@ -91,7 +195,7 @@ def normalize_sam3_image_weight_layout(key: str, value):
         and value.shape[2] == 2
         and value.shape[3] == 2
     ):
-        return value.transpose(1, 2, 3, 0)
+        return cast(_TransposableArray, value).transpose(1, 2, 3, 0)
 
     if (
         key in SAM3_IMAGE_CONV2D_WEIGHTS
@@ -99,17 +203,17 @@ def normalize_sam3_image_weight_layout(key: str, value):
         and value.shape[2] == value.shape[3]
         and value.shape[1] != value.shape[2]
     ):
-        return value.transpose(0, 2, 3, 1)
+        return cast(_TransposableArray, value).transpose(0, 2, 3, 1)
 
     return value
 
 
 def load_from_hub(
     hf_repo: str = DEFAULT_MLX_CHECKPOINT.repo,
-    local_dir: Optional[str] = None,
-    revision: Optional[str] = None,
+    local_dir: str | None = None,
+    revision: str | None = None,
     *,
-    expected_output_sha256: Optional[str] = None,
+    expected_output_sha256: str | None = None,
     expected_architecture: str = "sam3-image",
     verify_provenance: bool = True,
 ) -> Path:
@@ -121,16 +225,20 @@ def load_from_hub(
         )
     revision = _validate_source_revision(revision)
 
-    download_kwargs = {
-        "repo_id": hf_repo,
-        "allow_patterns": ["*.safetensors", "*.json"],
-        "revision": revision,
-    }
-
     if local_dir:
-        download_kwargs["local_dir"] = local_dir
-
-    model_path = Path(snapshot_download(**download_kwargs))
+        snapshot_path = snapshot_download(
+            repo_id=hf_repo,
+            allow_patterns=["*.safetensors", "*.json"],
+            revision=revision,
+            local_dir=local_dir,
+        )
+    else:
+        snapshot_path = snapshot_download(
+            repo_id=hf_repo,
+            allow_patterns=["*.safetensors", "*.json"],
+            revision=revision,
+        )
+    model_path = Path(snapshot_path)
     weights_file = model_path / "model.safetensors"
 
     if not weights_file.exists():
@@ -163,13 +271,13 @@ def load_from_hub(
 
 
 def validate_hub_checkpoint_provenance(
-    checkpoint_dir: Union[str, Path],
+    checkpoint_dir: str | Path,
     *,
     expected_repo: str,
     expected_revision: str,
     expected_output_sha256: str,
     expected_architecture: str = "sam3-image",
-) -> dict:
+) -> ConversionProvenance:
     """Validate a downloaded MLX checkpoint before model mutation.
 
     Always checks the weights digest against the package/caller pin. When a
@@ -193,7 +301,7 @@ def validate_hub_checkpoint_provenance(
         )
 
     manifest_file = checkpoint_dir / CONVERSION_MANIFEST
-    provenance: dict = {
+    provenance: ConversionProvenance = {
         "status": "package-pinned",
         "repo": expected_repo,
         "revision": expected_revision,
@@ -204,7 +312,7 @@ def validate_hub_checkpoint_provenance(
     if not manifest_file.exists():
         return provenance
 
-    manifest = json.loads(manifest_file.read_text())
+    manifest = _json_object(manifest_file.read_text(), "conversion-manifest.json")
     expected = {
         "architecture": expected_architecture,
         "artifact_repo": expected_repo,
@@ -231,16 +339,20 @@ def validate_hub_checkpoint_provenance(
     return provenance
 
 
-def save_weights(save_path: Union[str, Path], weights: Dict[str, mx.array]) -> Path:
+def save_weights(save_path: str | Path, weights: dict[str, mx.array]) -> Path:
     if isinstance(save_path, str):
         save_path = Path(save_path)
     save_path.mkdir(parents=True, exist_ok=True)
 
     total_size = sum(v.nbytes for v in weights.values())
-    index_data = {"metadata": {"total_size": total_size}, "weight_map": {}}
+    index_data: _WeightIndex = {
+        "metadata": {"total_size": total_size},
+        "weight_map": {},
+    }
 
     model_path = save_path / "model.safetensors"
-    mx.save_safetensors(str(model_path), weights)
+    save_safetensors = cast(_SaveSafetensors, getattr(mx, "save_safetensors"))
+    save_safetensors(str(model_path), weights)
 
     for weight_name in weights.keys():
         index_data["weight_map"][weight_name] = "model.safetensors"
@@ -254,7 +366,7 @@ def save_weights(save_path: Union[str, Path], weights: Dict[str, mx.array]) -> P
     return model_path
 
 
-def download(hf_repo, *, revision: str):
+def download(hf_repo: str, *, revision: str) -> Path:
     return Path(
         snapshot_download(
             repo_id=hf_repo,
@@ -264,7 +376,7 @@ def download(hf_repo, *, revision: str):
     )
 
 
-def update_attn_keys(key, mlx_weights):
+def update_attn_keys(key: str, mlx_weights: MutableMapping[str, mx.array]) -> None:
     value = mlx_weights[key]
     del mlx_weights[key]
 
@@ -291,19 +403,24 @@ def update_attn_keys(key, mlx_weights):
         mlx_weights.update(new_dict)
 
 
-def _unwrap_checkpoint_payload(payload):
-    if isinstance(payload, Mapping) and isinstance(payload.get("model"), Mapping):
-        return payload["model"]
-    return payload
+def _unwrap_checkpoint_payload(payload: object) -> object:
+    if isinstance(payload, Mapping):
+        mapping = cast(Mapping[object, object], payload)
+        model = mapping.get("model")
+        if isinstance(model, Mapping):
+            return cast(Mapping[object, object], model)
+    return cast(object, payload)
 
 
-def _remap_official_checkpoint_keys(weights):
+def _remap_official_checkpoint_keys[T](
+    weights: Mapping[str, T],
+) -> Mapping[str, T]:
     if not any(
         k.startswith("sam3_model.") or k.startswith("sam2_predictor.") for k in weights
     ):
         return weights
 
-    remapped = {}
+    remapped: dict[str, T] = {}
     for key, value in weights.items():
         if key.startswith("sam3_model."):
             key = "detector." + key[len("sam3_model.") :]
@@ -313,10 +430,12 @@ def _remap_official_checkpoint_keys(weights):
     return remapped
 
 
-def _convert_checkpoint_weights(weights, *, source_label: str):
-    mlx_weights = dict()
-    ignored_keys = []
-    unmapped_keys = []
+def _convert_checkpoint_weights(
+    weights: Mapping[str, _TorchTensor], *, source_label: str
+) -> tuple[dict[str, mx.array], tuple[str, ...]]:
+    mlx_weights: dict[str, mx.array] = {}
+    ignored_keys: list[str] = []
+    unmapped_keys: list[str] = []
     for k, v in weights.items():
         source_key = k
         if k.startswith("tracker."):
@@ -376,15 +495,12 @@ def _convert_checkpoint_weights(weights, *, source_label: str):
     return mlx_weights, tuple(sorted(ignored_keys))
 
 
-def convert(model_path):
-    import torch
-
+def convert(model_path: Path) -> tuple[dict[str, mx.array], tuple[str, ...]]:
+    torch = cast(_TorchModule, import_module("torch"))
     weight_file = str(model_path / "sam3.pt")
     weights = torch.load(weight_file, map_location="cpu", weights_only=True)
     weights = _unwrap_checkpoint_payload(weights)
-    if not isinstance(weights, Mapping):
-        raise ValueError("SAM3 PyTorch checkpoint payload must be a mapping.")
-    weights = _remap_official_checkpoint_keys(dict(weights))
+    weights = _remap_official_checkpoint_keys(_torch_weights(weights))
     return _convert_checkpoint_weights(weights, source_label=weight_file)
 
 
@@ -403,7 +519,7 @@ def _write_conversion_manifest(
     source_revision: str,
     source_checkpoint: Path,
     output_checkpoint: Path,
-    weights: Dict[str, mx.array],
+    weights: Mapping[str, mx.array],
     ignored_keys: tuple[str, ...],
 ) -> Path:
     dtype_counts: dict[str, int] = {}
@@ -434,7 +550,7 @@ def _validate_cached_conversion(
     source_repo: str,
     source_revision: str,
 ) -> None:
-    manifest = json.loads(manifest_file.read_text())
+    manifest = _json_object(manifest_file.read_text(), "conversion-manifest.json")
     expected = {
         "source_repo": source_repo,
         "source_revision": source_revision,
@@ -466,7 +582,7 @@ def _validate_source_revision(source_revision: str) -> str:
 
 def download_and_convert(
     hf_repo: str = PYTORCH_REPO,
-    mlx_path: Union[str, Path] = "sam3-mod-weights",
+    mlx_path: str | Path = "sam3-mod-weights",
     force: bool = False,
     *,
     source_revision: str,
@@ -552,7 +668,7 @@ if __name__ == "__main__":
         action="store_true",
         help="Convert from PyTorch weights instead of loading pre-converted MLX weights",
     )
-    args = parser.parse_args()
+    args = cast(_CliArgs, parser.parse_args())
 
     if args.convert:
         if not args.source_revision:
