@@ -53,6 +53,19 @@ class DetectionOutput(TypedDict):
     bbox: NotRequired[mx.array]
 
 
+class TrackerUpdatePlan(TypedDict):
+    new_det_fa_inds: IntArray
+    new_det_obj_ids: IntArray
+    new_det_gpu_ids: IntArray
+    unmatched_trk_obj_ids: object
+    det_to_matched_trk_obj_ids: dict[int, object]
+    obj_ids_newly_removed: NotRequired[set[int]]
+    num_obj_dropped_due_to_limit: int
+    trk_id_to_max_iou_high_conf_det: dict[int, int]
+    reconditioned_obj_ids: set[int]
+    tracker_low_res_masks_global: NotRequired[TrackerArray]
+
+
 class _MultiplexControllerView(Protocol):
     allowed_bucket_capacity: int
     training: bool
@@ -438,6 +451,15 @@ def _tracker_state_layout(
     if state_obj_ids is None:
         return bucket_state, np.array([], dtype=np.int64)
     return bucket_state, _int_array(state_obj_ids).reshape(-1)
+
+
+def _tracker_state_object_ids(state: object) -> list[int]:
+    if not isinstance(state, Mapping):
+        return []
+    object_ids = cast(Mapping[object, object], state).get("obj_ids")
+    if object_ids is None:
+        return []
+    return _int_array(object_ids).reshape(-1).tolist()
 
 
 def _torch_bool_argsort_desc_np(values: np.ndarray) -> np.ndarray:
@@ -1776,12 +1798,12 @@ class Sam3MultiplexBase(Sam3VideoBase):
         tracker_low_res_masks_global: Any,
         tracker_obj_scores_global: Any,
         tracker_metadata_prev: dict[str, Any],
-        sam2_update_plan: dict[str, Any] | None = None,
+        sam2_update_plan: dict[str, Any] | TrackerUpdatePlan | None = None,
         orig_vid_height: int = 0,
         orig_vid_width: int = 0,
         reconditioned_obj_ids: set[int] | None = None,
-        det_to_matched_trk_obj_ids: dict[int, Any] | None = None,
-        tracker_update_plan: dict[str, Any] | None = None,
+        det_to_matched_trk_obj_ids: object = None,
+        tracker_update_plan: dict[str, Any] | TrackerUpdatePlan | None = None,
     ) -> dict[int, Any]:
         del frame_idx, num_frames, reverse, tracker_obj_scores_global
         del det_to_matched_trk_obj_ids
@@ -3034,13 +3056,13 @@ class Sam3MultiplexBase(Sam3VideoBase):
         num_frames: int,
         reverse: bool,
         det_out: DetectionOutput,
-        det_keep: Any,
-        tracker_low_res_masks_global: Any,
-        tracker_obj_scores_global: Any,
+        det_keep: TrackerArray,
+        tracker_low_res_masks_global: TrackerArray,
+        tracker_obj_scores_global: TrackerArray,
         tracker_metadata_prev: dict[str, Any],
-        tracker_states_local: list[Any],
+        tracker_states_local: list[TrackerState],
         is_image_only: bool = False,
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
+    ) -> tuple[TrackerUpdatePlan, dict[str, Any]]:
         if self.rank != 0 or self.world_size != 1:
             raise_unsupported_multiplex_runtime(
                 "Sam3MultiplexBase.run_tracker_update_planning_phase(distributed)"
@@ -3068,8 +3090,9 @@ class Sam3MultiplexBase(Sam3VideoBase):
         hotstart_to_remove = None
         hotstart_to_suppress = None
         hotstart_gpu_metadata_new = None
-        hotstart_planning_enabled = not hasattr(self, "_warm_up_complete") or bool(
-            self._warm_up_complete
+        warm_up_complete: object = getattr(self, "_warm_up_complete", None)
+        hotstart_planning_enabled = (
+            not hasattr(self, "_warm_up_complete") or bool(warm_up_complete)
         )
         if self.is_multiplex and hotstart_planning_enabled:
             (
@@ -3089,7 +3112,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
             tracker_metadata_prev,
             det_masks,
         )
-        new_det_obj_ids, new_det_gpu_ids, num_obj_dropped_due_to_limit = (
+        new_det_obj_ids_raw, new_det_gpu_ids_raw, num_obj_dropped_due_to_limit = (
             adt_result.get_new_det_gpu_ids(
                 tracker_metadata_prev,
                 is_image_only,
@@ -3097,6 +3120,9 @@ class Sam3MultiplexBase(Sam3VideoBase):
                 self,
             )
         )
+        new_det_obj_ids = _int_array(new_det_obj_ids_raw).reshape(-1)
+        new_det_gpu_ids = _int_array(new_det_gpu_ids_raw).reshape(-1)
+        obj_ids_newly_removed: set[int]
         if hotstart_planning_enabled:
             obj_ids_newly_removed, rank0_metadata_new = self._process_hotstart(
                 frame_idx=frame_idx,
@@ -3307,15 +3333,18 @@ class Sam3MultiplexBase(Sam3VideoBase):
                 )
             )
 
-        sam2_update_plan = {
-            "new_det_fa_inds": adt_result.new_det_fa_inds,
+        sam2_update_plan: TrackerUpdatePlan = {
+            "new_det_fa_inds": _int_array(adt_result.new_det_fa_inds).reshape(-1),
             "new_det_obj_ids": new_det_obj_ids,
             "new_det_gpu_ids": new_det_gpu_ids,
             "unmatched_trk_obj_ids": adt_result.unmatched_trk_obj_ids,
-            "det_to_matched_trk_obj_ids": adt_result.det_to_matched_trk_obj_ids,
+            "det_to_matched_trk_obj_ids": {
+                int(det_idx): obj_ids
+                for det_idx, obj_ids in adt_result.det_to_matched_trk_obj_ids.items()
+            },
             "obj_ids_newly_removed": obj_ids_newly_removed,
             "num_obj_dropped_due_to_limit": int(num_obj_dropped_due_to_limit),
-            "trk_id_to_max_iou_high_conf_det": (
+            "trk_id_to_max_iou_high_conf_det": dict(
                 adt_result.trk_id_to_max_iou_high_conf_det
             ),
             "reconditioned_obj_ids": reconditioned_obj_ids,
@@ -3579,10 +3608,10 @@ class Sam3MultiplexBase(Sam3VideoBase):
 
     def _tracker_update_memories(
         self,
-        sam2_inference_states: list[Any],
+        sam2_inference_states: list[TrackerState],
         frame_idx: int,
         tracker_metadata: dict[str, Any],
-        low_res_masks: Any,
+        low_res_masks: TrackerArray,
     ) -> None:
         if len(sam2_inference_states) == 0:
             return
@@ -3617,9 +3646,8 @@ class Sam3MultiplexBase(Sam3VideoBase):
             )
 
         expected_num_objects = sum(
-            len(state.get("obj_ids", []))
+            len(_tracker_state_object_ids(state))
             for state in sam2_inference_states
-            if isinstance(state, dict)
         )
         if low_res_masks_mx.shape[0] != expected_num_objects:
             raise ValueError(
@@ -3654,7 +3682,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
             all_object_ids: list[int] = []
             object_id_to_state_idx: dict[int, int] = {}
             for state_idx, sam2_state in enumerate(sam2_inference_states):
-                obj_ids = [int(obj_id) for obj_id in sam2_state.get("obj_ids", [])]
+                obj_ids = _tracker_state_object_ids(sam2_state)
                 all_object_ids.extend(obj_ids)
                 for obj_id in obj_ids:
                     object_id_to_state_idx[obj_id] = state_idx
@@ -3676,7 +3704,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
             )
         )
         for state_idx, sam2_state in enumerate(sam2_inference_states):
-            num_obj_per_state = len(sam2_state.get("obj_ids", []))
+            num_obj_per_state = len(_tracker_state_object_ids(sam2_state))
             if num_obj_per_state == 0:
                 continue
             if dynamic_multiplex:
@@ -3726,16 +3754,25 @@ class Sam3MultiplexBase(Sam3VideoBase):
                 local_maskmem_features, local_maskmem_pos_enc = encoded_mem
                 local_image_features = local_image_pos_enc = None
 
-            output_dict = sam2_state.get("output_dict")
-            if output_dict is None:
+            output_dict_value = sam2_state.get("output_dict")
+            if not isinstance(output_dict_value, Mapping):
                 raise ValueError(
                     "SAM2 state must contain output_dict for memory update."
                 )
+            output_dict = cast(Mapping[object, object], output_dict_value)
             for storage_key in ("cond_frame_outputs", "non_cond_frame_outputs"):
-                storage_outputs = output_dict.get(storage_key, {})
+                storage_outputs_value = output_dict.get(storage_key, {})
+                if not isinstance(storage_outputs_value, Mapping):
+                    raise TypeError(f"output_dict {storage_key} must be a mapping")
+                storage_outputs = cast(
+                    Mapping[object, object], storage_outputs_value
+                )
                 if frame_idx not in storage_outputs:
                     continue
-                current_out = storage_outputs[frame_idx]
+                current_out_value = storage_outputs[frame_idx]
+                if not isinstance(current_out_value, dict):
+                    raise TypeError("stored tracker frame outputs must be dictionaries")
+                current_out = cast(dict[str, object], current_out_value)
                 current_out["maskmem_features"] = local_maskmem_features
                 current_out["maskmem_pos_enc"] = [pos for pos in local_maskmem_pos_enc]
                 if self.is_multiplex:
@@ -4069,13 +4106,13 @@ class Sam3MultiplexBase(Sam3VideoBase):
         num_frames: int,
         reverse: bool,
         det_out: DetectionOutput,
-        tracker_states_local: list[Any],
-        tracker_update_plan: dict[str, Any],
+        tracker_states_local: list[TrackerState],
+        tracker_update_plan: TrackerUpdatePlan,
         orig_vid_height: int,
         orig_vid_width: int,
         feature_cache: FeatureCache,
         tracker_metadata_new: dict[str, Any] | None = None,
-    ) -> list[Any]:
+    ) -> list[TrackerState]:
         new_det_fa_inds = np.asarray(
             tracker_update_plan["new_det_fa_inds"],
             dtype=np.int64,
@@ -4094,7 +4131,10 @@ class Sam3MultiplexBase(Sam3VideoBase):
         tracker_low_res_masks_global = tracker_update_plan.get(
             "tracker_low_res_masks_global"
         )
-        obj_ids_newly_removed = tracker_update_plan.get("obj_ids_newly_removed", set())
+        no_removed_objects: set[int] = set()
+        obj_ids_newly_removed = tracker_update_plan.get(
+            "obj_ids_newly_removed", no_removed_objects
+        )
         if (
             tracker_low_res_masks_global is not None
             and tracker_states_local
@@ -4109,9 +4149,8 @@ class Sam3MultiplexBase(Sam3VideoBase):
                 memory_metadata = tracker_metadata_new
                 if memory_metadata is None:
                     num_local_objects = sum(
-                        len(state.get("obj_ids", []))
+                        len(_tracker_state_object_ids(state))
                         for state in tracker_states_local
-                        if isinstance(state, dict)
                     )
                     memory_metadata = {
                         "num_obj_per_gpu": np.array(
@@ -4126,10 +4165,9 @@ class Sam3MultiplexBase(Sam3VideoBase):
                 ):
                     memory_obj_ids = np.array(
                         [
-                            int(obj_id)
+                            obj_id
                             for state in tracker_states_local
-                            if isinstance(state, dict)
-                            for obj_id in state.get("obj_ids", [])
+                            for obj_id in _tracker_state_object_ids(state)
                         ],
                         dtype=np.int64,
                     )
@@ -4141,14 +4179,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
                             {},
                         ),
                     }
-                    remove_set = {
-                        int(obj_id)
-                        for obj_id in (
-                            sorted(obj_ids_newly_removed)
-                            if isinstance(obj_ids_newly_removed, set)
-                            else np.asarray(obj_ids_newly_removed).reshape(-1).tolist()
-                        )
-                    }
+                    remove_set = obj_ids_newly_removed
                     to_remove_mask = mx.array(
                         [
                             int(obj_id) in remove_set
