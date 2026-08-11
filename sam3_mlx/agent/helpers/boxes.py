@@ -3,15 +3,26 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterator, Sequence
 from enum import IntEnum, unique
-from typing import List, Tuple, Union
+from typing import cast
 
 import numpy as np
+from numpy.typing import NDArray
 
 from sam3_mlx._unsupported import raise_unsupported
 
 
-_RawBoxType = Union[List[float], Tuple[float, ...], np.ndarray]
+type FloatArray = NDArray[np.float32]
+type BoolArray = NDArray[np.bool_]
+type RawBox = list[float] | tuple[float, ...] | NDArray[np.generic]
+type BoxIndex = int | slice | Sequence[int] | NDArray[np.integer] | BoolArray
+
+
+def validate_box_size(value: tuple[int, int]) -> tuple[int, int]:
+    if any(isinstance(dimension, bool) for dimension in value):
+        raise TypeError("box_size dimensions must be integers, not bool.")
+    return value
 
 
 @unique
@@ -25,14 +36,11 @@ class BoxMode(IntEnum):
     XYWHA_ABS = 4
 
     @staticmethod
-    def convert(
-        box: _RawBoxType, from_mode: "BoxMode", to_mode: "BoxMode"
-    ) -> _RawBoxType:
+    def convert(box: RawBox, from_mode: "BoxMode", to_mode: "BoxMode") -> RawBox:
         """Convert boxes between official SAM3/Detectron box formats."""
         if from_mode == to_mode:
             return box
 
-        original_type = type(box)
         single_box = isinstance(box, (list, tuple))
         arr = np.asarray(box, dtype=np.float64)
         if single_box:
@@ -87,14 +95,15 @@ class BoxMode(IntEnum):
             )
 
         if single_box:
-            return original_type(arr.reshape(-1).tolist())
+            values = [float(value) for value in arr.reshape(-1).tolist()]
+            return tuple(values) if isinstance(box, tuple) else values
         return arr
 
 
 class Boxes:
     """A NumPy-backed list of boxes in ``XYXY`` absolute coordinates."""
 
-    def __init__(self, tensor):
+    def __init__(self, tensor: object):
         tensor = np.asarray(tensor, dtype=np.float32)
         if tensor.size == 0:
             tensor = tensor.reshape((-1, 4)).astype(np.float32)
@@ -105,28 +114,28 @@ class Boxes:
     def clone(self) -> "Boxes":
         return Boxes(self.tensor.copy())
 
-    def to(self, device):
+    def to(self, device: object) -> "Boxes":
         if str(device) not in ("cpu", "None"):
             raise ValueError("NumPy Boxes only support CPU storage")
         return self.clone()
 
-    def area(self) -> np.ndarray:
+    def area(self) -> FloatArray:
         box = self.tensor
-        return (box[:, 2] - box[:, 0]) * (box[:, 3] - box[:, 1])
+        return cast(FloatArray, (box[:, 2] - box[:, 0]) * (box[:, 3] - box[:, 1]))
 
-    def clip(self, box_size: Tuple[int, int]) -> None:
+    def clip(self, box_size: tuple[int, int]) -> None:
         if not np.isfinite(self.tensor).all():
             raise AssertionError("Box tensor contains infinite or NaN!")
-        h, w = box_size
+        h, w = validate_box_size(box_size)
         self.tensor[:, 0::2] = np.clip(self.tensor[:, 0::2], 0, w)
         self.tensor[:, 1::2] = np.clip(self.tensor[:, 1::2], 0, h)
 
-    def nonempty(self, threshold: float = 0.0) -> np.ndarray:
+    def nonempty(self, threshold: float = 0.0) -> BoolArray:
         widths = self.tensor[:, 2] - self.tensor[:, 0]
         heights = self.tensor[:, 3] - self.tensor[:, 1]
         return (widths > threshold) & (heights > threshold)
 
-    def __getitem__(self, item) -> "Boxes":
+    def __getitem__(self, item: BoxIndex) -> "Boxes":
         if isinstance(item, int):
             return Boxes(self.tensor[item].reshape(1, -1))
         selected = self.tensor[item]
@@ -143,9 +152,9 @@ class Boxes:
         return "Boxes(" + str(self.tensor) + ")"
 
     def inside_box(
-        self, box_size: Tuple[int, int], boundary_threshold: int = 0
-    ) -> np.ndarray:
-        height, width = box_size
+        self, box_size: tuple[int, int], boundary_threshold: int = 0
+    ) -> BoolArray:
+        height, width = validate_box_size(box_size)
         return (
             (self.tensor[..., 0] >= -boundary_threshold)
             & (self.tensor[..., 1] >= -boundary_threshold)
@@ -153,32 +162,33 @@ class Boxes:
             & (self.tensor[..., 3] < height + boundary_threshold)
         )
 
-    def get_centers(self) -> np.ndarray:
-        return (self.tensor[:, :2] + self.tensor[:, 2:]) / 2
+    def get_centers(self) -> FloatArray:
+        return cast(FloatArray, (self.tensor[:, :2] + self.tensor[:, 2:]) / 2)
 
     def scale(self, scale_x: float, scale_y: float) -> None:
         self.tensor[:, 0::2] *= scale_x
         self.tensor[:, 1::2] *= scale_y
 
     @classmethod
-    def cat(cls, boxes_list: List["Boxes"]) -> "Boxes":
+    def cat(cls, boxes_list: Sequence[object]) -> "Boxes":
         if not isinstance(boxes_list, (list, tuple)):
             raise AssertionError("boxes_list must be a list or tuple")
         if len(boxes_list) == 0:
             return cls(np.empty((0, 4), dtype=np.float32))
         if not all(isinstance(box, Boxes) for box in boxes_list):
             raise AssertionError("All entries must be Boxes")
-        return cls(np.concatenate([box.tensor for box in boxes_list], axis=0))
+        typed_boxes = cast(Sequence[Boxes], boxes_list)
+        return cls(np.concatenate([box.tensor for box in typed_boxes], axis=0))
 
     @property
-    def device(self):
+    def device(self) -> str:
         return "cpu"
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[FloatArray]:
         yield from self.tensor
 
 
-def pairwise_intersection(boxes1: Boxes, boxes2: Boxes) -> np.ndarray:
+def pairwise_intersection(boxes1: Boxes, boxes2: Boxes) -> FloatArray:
     boxes1_arr, boxes2_arr = boxes1.tensor, boxes2.tensor
     width_height = np.minimum(boxes1_arr[:, None, 2:], boxes2_arr[:, 2:]) - np.maximum(
         boxes1_arr[:, None, :2], boxes2_arr[:, :2]
@@ -187,7 +197,7 @@ def pairwise_intersection(boxes1: Boxes, boxes2: Boxes) -> np.ndarray:
     return width_height.prod(axis=2)
 
 
-def pairwise_iou(boxes1: Boxes, boxes2: Boxes) -> np.ndarray:
+def pairwise_iou(boxes1: Boxes, boxes2: Boxes) -> FloatArray:
     area1 = boxes1.area()
     area2 = boxes2.area()
     inter = pairwise_intersection(boxes1, boxes2)
@@ -195,13 +205,13 @@ def pairwise_iou(boxes1: Boxes, boxes2: Boxes) -> np.ndarray:
     return np.where((inter > 0) & (denom > 0), inter / denom, 0.0)
 
 
-def pairwise_ioa(boxes1: Boxes, boxes2: Boxes) -> np.ndarray:
+def pairwise_ioa(boxes1: Boxes, boxes2: Boxes) -> FloatArray:
     area2 = boxes2.area()
     inter = pairwise_intersection(boxes1, boxes2)
     return np.where((inter > 0) & (area2 > 0), inter / area2, 0.0)
 
 
-def pairwise_point_box_distance(points, boxes: Boxes):
+def pairwise_point_box_distance(points: object, boxes: Boxes) -> FloatArray:
     points = np.asarray(points, dtype=np.float32)
     x = points[:, None, 0]
     y = points[:, None, 1]
@@ -212,7 +222,7 @@ def pairwise_point_box_distance(points, boxes: Boxes):
     return np.stack([x - x0, y - y0, x1 - x, y1 - y], axis=2)
 
 
-def matched_pairwise_iou(boxes1: Boxes, boxes2: Boxes) -> np.ndarray:
+def matched_pairwise_iou(boxes1: Boxes, boxes2: Boxes) -> FloatArray:
     if len(boxes1) != len(boxes2):
         raise AssertionError(
             f"boxlists should have the same number of entries, got {len(boxes1)}, {len(boxes2)}"

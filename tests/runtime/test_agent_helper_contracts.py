@@ -9,8 +9,10 @@ from sam3_mlx.agent.agent_core import agent_inference
 from sam3_mlx.agent.client_llm import send_generate_request
 from sam3_mlx.agent.contracts import Message
 from sam3_mlx.agent.helpers.keypoints import Keypoints
+from sam3_mlx.agent.helpers.boxes import BoxMode, Boxes
 from sam3_mlx.agent.helpers.masks import BitMasks, ROIMasks
 from sam3_mlx.agent.helpers.rle import rle_decode, rle_encode
+from sam3_mlx.agent.helpers.rotated_boxes import RotatedBoxes
 from sam3_mlx.agent.helpers.som_utils import Color, ColorPalette, rgb_to_hex
 
 
@@ -100,3 +102,21 @@ def test_agent_integer_limits_reject_booleans_before_external_calls(
         )
     with pytest.raises(TypeError, match="max_tokens"):
         send_generate_request([], max_tokens=True)
+
+
+def test_agent_box_conversion_preserves_sequence_container_and_values() -> None:
+    as_list = BoxMode.convert([2.0, 3.0, 4.0, 5.0], BoxMode.XYWH_ABS, BoxMode.XYXY_ABS)
+    as_tuple = BoxMode.convert((2.0, 3.0, 4.0, 5.0), BoxMode.XYWH_ABS, BoxMode.XYXY_ABS)
+
+    assert as_list == [2.0, 3.0, 6.0, 8.0]
+    assert as_tuple == (2.0, 3.0, 6.0, 8.0)
+
+
+def test_agent_box_dimensions_reject_booleans() -> None:
+    boxes = Boxes(np.array([[0.0, 0.0, 2.0, 2.0]], dtype=np.float32))
+    rotated = RotatedBoxes(np.array([[1.0, 1.0, 2.0, 2.0, 0.0]], dtype=np.float32))
+
+    with pytest.raises(TypeError, match="box_size dimensions"):
+        boxes.clip((True, 4))
+    with pytest.raises(TypeError, match="box_size dimensions"):
+        rotated.clip((4, False))
