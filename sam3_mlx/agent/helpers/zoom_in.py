@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import math
+import os
+from collections.abc import Mapping, Sequence
+from typing import IO, cast
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -11,21 +14,44 @@ from sam3_mlx.agent.helpers.rle import rle_decode, rle_to_bbox
 from sam3_mlx.agent.helpers.som_utils import ColorPalette
 
 
+def _mapping(value: object, name: str) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{name} must be a mapping.")
+    mapping = cast(Mapping[object, object], value)
+    if not all(isinstance(key, str) for key in mapping):
+        raise TypeError(f"{name} must use string keys.")
+    return cast(Mapping[str, object], mapping)
+
+
+def _label_text(object_data: Mapping[str, object]) -> str:
+    labels_value = object_data.get("labels")
+    if not labels_value:
+        return ""
+    if isinstance(labels_value, str | bytes) or not isinstance(labels_value, Sequence):
+        raise TypeError("labels must be a sequence of mappings.")
+    labels = cast(Sequence[object], labels_value)
+    label = _mapping(labels[0], "labels[0]")
+    noun_phrase = label.get("noun_phrase", "")
+    if not isinstance(noun_phrase, str):
+        raise TypeError("labels[0].noun_phrase must be a string.")
+    return noun_phrase
+
+
 def render_zoom_in(
-    object_data,
-    image_file,
+    object_data: Mapping[str, object],
+    image_file: Image.Image | str | os.PathLike[str] | IO[bytes],
     show_box: bool = True,
     show_text: bool = False,
     show_holes: bool = True,
     mask_alpha: float = 0.15,
-):
+) -> tuple[Image.Image, str]:
     """Render a crop panel and a zoomed mask panel; return ``(PIL.Image, color_hex)``."""
     img = (
         image_file.convert("RGB")
         if isinstance(image_file, Image.Image)
         else Image.open(image_file).convert("RGB")
     )
-    segmentation = object_data["segmentation"]
+    segmentation = _mapping(object_data["segmentation"], "segmentation")
     mask = rle_decode(segmentation)
     bbox_xywh = rle_to_bbox(segmentation)
     x, y, w, h = bbox_xywh
@@ -56,8 +82,7 @@ def render_zoom_in(
         ]
         crop_draw.rectangle(rel_box, outline=color, width=2)
     if show_text:
-        labels = object_data.get("labels") or [{"noun_phrase": ""}]
-        crop_draw.text((2, 2), labels[0].get("noun_phrase", ""), fill=color)
+        crop_draw.text((2, 2), _label_text(object_data), fill=color)
 
     zoom = img.crop(crop_box).convert("RGBA")
     crop_mask = mask[crop_box[1] : crop_box[3], crop_box[0] : crop_box[2]]

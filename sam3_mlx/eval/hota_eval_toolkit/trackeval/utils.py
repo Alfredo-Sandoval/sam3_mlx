@@ -16,7 +16,10 @@ _DETAIL = (
     reason="eval-stack",
     detail=_DETAIL,
 )
-def init_config(config, default_config, name=None):
+def init_config(
+    config: object, default_config: object, name: str | None = None
+) -> None:
+    del config, default_config, name
     return None
 
 
@@ -25,7 +28,8 @@ def init_config(config, default_config, name=None):
     reason="eval-stack",
     detail=_DETAIL,
 )
-def update_config(config):
+def update_config(config: object) -> None:
+    del config
     return None
 
 
@@ -34,7 +38,7 @@ def update_config(config):
     reason="eval-stack",
     detail=_DETAIL,
 )
-def get_code_path():
+def get_code_path() -> None:
     return None
 
 
@@ -43,7 +47,8 @@ def get_code_path():
     reason="eval-stack",
     detail=_DETAIL,
 )
-def validate_metrics_list(metrics_list):
+def validate_metrics_list(metrics_list: object) -> None:
+    del metrics_list
     return None
 
 
@@ -52,7 +57,10 @@ def validate_metrics_list(metrics_list):
     reason="eval-stack",
     detail=_DETAIL,
 )
-def write_summary_results(summaries, cls, output_folder):
+def write_summary_results(
+    summaries: object, cls: object, output_folder: object
+) -> None:
+    del summaries, cls, output_folder
     return None
 
 
@@ -61,7 +69,8 @@ def write_summary_results(summaries, cls, output_folder):
     reason="eval-stack",
     detail=_DETAIL,
 )
-def write_detailed_results(details, cls, output_folder):
+def write_detailed_results(details: object, cls: object, output_folder: object) -> None:
+    del details, cls, output_folder
     return None
 
 
@@ -70,7 +79,8 @@ def write_detailed_results(details, cls, output_folder):
     reason="eval-stack",
     detail=_DETAIL,
 )
-def load_detail(file):
+def load_detail(file: object) -> None:
+    del file
     return None
 
 

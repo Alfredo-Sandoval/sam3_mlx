@@ -7,6 +7,8 @@ from typing import cast
 import numpy as np
 import pytest
 
+from sam3_mlx._unsupported import Sam3MlxUnsupportedError
+from sam3_mlx.train.data.sam3_video_dataset import VideoGroundingDataset
 from sam3_mlx.train.utils import checkpoint_utils, distributed, train_utils
 from sam3_mlx.train.data.torch_dataset import TorchDataset
 from sam3_mlx.train.trainer import OptimAMPConf, OptimConf
@@ -88,6 +90,14 @@ class _EpochDataset:
 
     def set_epoch(self, epoch: int) -> None:
         self.set_epochs.append(epoch)
+
+
+def test_video_grounding_dataset_remains_fail_fast() -> None:
+    with pytest.raises(Sam3MlxUnsupportedError, match="Full training datasets") as exc:
+        VideoGroundingDataset("annotations.json", frames=4)
+
+    assert exc.value.feature == "VideoGroundingDataset"
+    assert exc.value.reason == "training-loop"
 
 
 def test_checkpoint_pattern_filters_preserve_values_and_empty_exclusion_identity():

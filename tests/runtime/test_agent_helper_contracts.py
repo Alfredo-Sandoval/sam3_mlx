@@ -5,15 +5,20 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from sam3_mlx._unsupported import Sam3MlxUnsupportedError
 from sam3_mlx.agent.agent_core import agent_inference
 from sam3_mlx.agent.client_llm import send_generate_request
 from sam3_mlx.agent.contracts import Message
+from sam3_mlx.agent.helpers.color_map import colormap, random_colors
 from sam3_mlx.agent.helpers.keypoints import Keypoints
 from sam3_mlx.agent.helpers.boxes import BoxMode, Boxes
 from sam3_mlx.agent.helpers.masks import BitMasks, ROIMasks
+from sam3_mlx.agent.helpers.memory import retry_if_backend_oom
 from sam3_mlx.agent.helpers.rle import rle_decode, rle_encode
+from sam3_mlx.agent.helpers.roi_align import ROIAlign
 from sam3_mlx.agent.helpers.rotated_boxes import RotatedBoxes
 from sam3_mlx.agent.helpers.som_utils import Color, ColorPalette, rgb_to_hex
+from sam3_mlx.agent.helpers.zoom_in import render_zoom_in
 
 
 def test_agent_rle_helpers_preserve_uncompressed_counts_contract() -> None:
@@ -58,6 +63,56 @@ def test_agent_color_helpers_keep_palette_contract() -> None:
     assert color.as_rgb() == (0, 255, 127)
     assert rgb_to_hex(color.as_rgb()) == "#00ff7f"
     assert ColorPalette([color]).by_idx(3) is color
+
+
+def test_agent_color_map_rejects_boolean_integer_boundaries() -> None:
+    np.testing.assert_array_equal(colormap(rgb=True, maximum=1)[0], [1, 1, 0])
+
+    with pytest.raises(AssertionError):
+        colormap(maximum=True)
+    with pytest.raises(TypeError, match="N must be an integer"):
+        random_colors(True)
+
+
+def test_backend_oom_wrapper_preserves_call_and_exception_behavior() -> None:
+    def divide(numerator: int, denominator: int = 1) -> float:
+        return numerator / denominator
+
+    wrapped = retry_if_backend_oom(divide)
+
+    assert wrapped(6, denominator=3) == 2.0
+    with pytest.raises(ZeroDivisionError):
+        wrapped(1, denominator=0)
+
+
+def test_roi_align_remains_repr_only_and_fail_fast() -> None:
+    roi_align = ROIAlign((3, 5), spatial_scale=0.25, sampling_ratio=2)
+
+    assert repr(roi_align) == (
+        "ROIAlign(output_size=(3, 5), spatial_scale=0.25, "
+        "sampling_ratio=2, aligned=True)"
+    )
+    with pytest.raises(Sam3MlxUnsupportedError, match="external LLM services") as exc:
+        roi_align.forward(object(), object())
+    assert exc.value.feature == "agent.helpers.roi_align.ROIAlign.forward"
+
+
+def test_render_zoom_in_accepts_typed_rle_and_path(tmp_path: Path) -> None:
+    image_path = tmp_path / "image.png"
+    Image.new("RGB", (10, 10), "white").save(image_path)
+    mask = np.zeros((1, 10, 10), dtype=bool)
+    mask[:, 3:6, 2:5] = True
+    object_data = {
+        "segmentation": rle_encode(mask)[0],
+        "labels": [{"noun_phrase": "target"}],
+    }
+
+    rendered, color_hex = render_zoom_in(object_data, image_path, show_text=True)
+
+    assert rendered.mode == "RGB"
+    assert rendered.width == 20
+    assert rendered.height == 10
+    assert color_hex.startswith("#") and len(color_hex) == 7
 
 
 class _NoMaskGenerator:
