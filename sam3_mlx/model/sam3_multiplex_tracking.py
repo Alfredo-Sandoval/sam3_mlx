@@ -154,6 +154,20 @@ def _integer_value(value: object, *, name: str) -> int:
     raise TypeError(f"{name} must be an integer")
 
 
+def _mapping_view(value: object, *, name: str) -> Mapping[object, object]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{name} must be a mapping")
+    return cast(Mapping[object, object], value)
+
+
+def _int_keyed_object_dict(value: object, *, name: str) -> dict[int, object]:
+    source = _mapping_view(value, name=name)
+    return {
+        _integer_value(key, name=f"{name} keys"): item
+        for key, item in source.items()
+    }
+
+
 def _is_mlx_array(value: object) -> TypeGuard[mx.array]:
     return value.__class__.__module__.startswith("mlx.")
 
@@ -1417,11 +1431,20 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         self,
         inference_state: dict[str, Any],
     ) -> None:
-        for sam2_state in inference_state.get("sam2_inference_states", []):
-            if not isinstance(sam2_state, Mapping):
+        sam2_states_raw: object = inference_state.get("sam2_inference_states", [])
+        if not isinstance(sam2_states_raw, Sequence) or isinstance(
+            sam2_states_raw,
+            str,
+        ):
+            raise_unsupported_multiplex_runtime(
+                "Sam3MultiplexTracking.remove_object(existing-tracker-states)"
+            )
+        for sam2_state_raw in cast(Sequence[object], sam2_states_raw):
+            if not isinstance(sam2_state_raw, Mapping):
                 raise_unsupported_multiplex_runtime(
                     "Sam3MultiplexTracking.remove_object(existing-tracker-states)"
                 )
+            sam2_state = cast(Mapping[object, object], sam2_state_raw)
             multiplex_state = sam2_state.get("multiplex_state")
             has_packed_ids = (
                 multiplex_state is not None
@@ -1521,8 +1544,11 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
                 )
 
         for frame_outputs in inference_state.get("cached_frame_outputs", {}).values():
-            if isinstance(frame_outputs, dict):
-                frame_outputs.pop(obj_id_int, None)
+            if isinstance(frame_outputs, MutableMapping):
+                cast(MutableMapping[object, object], frame_outputs).pop(
+                    obj_id_int,
+                    None,
+                )
 
         rank0_metadata.setdefault("removed_obj_ids", set()).add(obj_id_int)
         for suppressed_obj_ids in rank0_metadata.setdefault(
@@ -1574,6 +1600,8 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
                 frame_idx=frame_idx,
                 strict=strict,
             )
+        if frame_idx is None:
+            raise TypeError("frame_idx cannot be None without SAM2 tracker states")
         num_frames = int(inference_state["num_frames"])
         frame_idx = int(frame_idx)
         if not 0 <= frame_idx < num_frames:
@@ -1626,8 +1654,11 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
             ).add(obj_id_int)
 
         for frame_outputs in cached_frame_outputs.values():
-            if isinstance(frame_outputs, dict):
-                frame_outputs.pop(obj_id_int, None)
+            if isinstance(frame_outputs, MutableMapping):
+                cast(MutableMapping[object, object], frame_outputs).pop(
+                    obj_id_int,
+                    None,
+                )
 
         keep_mask = active_ids != obj_id_int
         kept_ids = active_ids[keep_mask]
@@ -1668,16 +1699,29 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
             frame_idx=frame_idx,
         )
 
-        remaining_masks = cached_frame_outputs.get(frame_idx, {})
-        framewise_scores = {}
+        remaining_masks = _int_keyed_object_dict(
+            cached_frame_outputs.get(frame_idx, {}),
+            name="cached frame outputs",
+        )
+        framewise_scores: dict[int, object] = {}
         for score_key in (
             "obj_id_to_sam2_score_frame_wise",
             "obj_id_to_tracker_score_frame_wise",
         ):
-            framewise_scores.update(
-                tracker_metadata.get(score_key, {}).get(frame_idx, {})
+            scores_by_frame = _mapping_view(
+                tracker_metadata.get(score_key, {}),
+                name=score_key,
             )
-        score_map = tracker_metadata.get("obj_id_to_score", {})
+            framewise_scores.update(
+                _int_keyed_object_dict(
+                    scores_by_frame.get(frame_idx, {}),
+                    name=f"{score_key}[{frame_idx}]",
+                )
+            )
+        score_map = _int_keyed_object_dict(
+            tracker_metadata.get("obj_id_to_score", {}),
+            name="obj_id_to_score",
+        )
         out_scores = {
             remaining_obj_id: framewise_scores.get(
                 remaining_obj_id,
