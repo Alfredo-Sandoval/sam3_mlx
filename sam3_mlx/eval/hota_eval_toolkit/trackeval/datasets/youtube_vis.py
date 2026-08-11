@@ -6,5 +6,6 @@ from sam3_mlx.eval._unsupported import raise_unsupported
 
 
 class YouTubeVIS:
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
         raise_unsupported("eval.hota_eval_toolkit.trackeval.datasets.YouTubeVIS")

@@ -6,5 +6,6 @@ from sam3_mlx.eval._unsupported import raise_unsupported
 
 
 class COCO:
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
         raise_unsupported("eval.teta_eval_toolkit.datasets.COCO")

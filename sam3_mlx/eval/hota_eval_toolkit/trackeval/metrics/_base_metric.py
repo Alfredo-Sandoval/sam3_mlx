@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Never
+
 from sam3_mlx._unsupported import raise_unsupported
 
 
@@ -10,7 +12,7 @@ _DETAIL = (
 )
 
 
-def _raise(method: str):
+def _raise(method: str) -> Never:
     raise_unsupported(
         f"sam3_mlx.eval.hota_eval_toolkit.trackeval.metrics._BaseMetric.{method}",
         reason="eval-stack",
@@ -18,7 +20,7 @@ def _raise(method: str):
     )
 
 
-class _BaseMetric:
+class _BaseMetric:  # pyright: ignore[reportUnusedClass]
     fields: list[str] = []
     summary_fields: list[str] = []
     integer_fields: list[str] = []
@@ -28,53 +30,78 @@ class _BaseMetric:
     float_array_fields: list[str] = []
     plottable = False
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
         _raise("__init__")
 
-    def eval_sequence(self, data):
+    def eval_sequence(self, data: object) -> Never:
+        del data
         _raise("eval_sequence")
 
-    def combine_sequences(self, all_res):
+    def combine_sequences(self, all_res: object) -> Never:
+        del all_res
         _raise("combine_sequences")
 
-    def combine_classes_class_averaged(self, all_res, ignore_empty_classes=False):
+    def combine_classes_class_averaged(
+        self, all_res: object, ignore_empty_classes: bool = False
+    ) -> Never:
+        del all_res, ignore_empty_classes
         _raise("combine_classes_class_averaged")
 
-    def combine_classes_det_averaged(self, all_res):
+    def combine_classes_det_averaged(self, all_res: object) -> Never:
+        del all_res
         _raise("combine_classes_det_averaged")
 
-    def plot_single_tracker_results(self, all_res, tracker, output_folder, cls):
+    def plot_single_tracker_results(
+        self, all_res: object, tracker: object, output_folder: object, cls: object
+    ) -> Never:
+        del all_res, tracker, output_folder, cls
         _raise("plot_single_tracker_results")
 
     @classmethod
-    def get_name(cls):
+    def get_name(cls) -> str:
         return cls.__name__
 
     @staticmethod
-    def _combine_sum(all_res, field):
+    def _combine_sum(all_res: object, field: object) -> Never:
+        del all_res, field
         _raise("_combine_sum")
 
     @staticmethod
-    def _combine_weighted_av(all_res, field, comb_res, weight_field):
+    def _combine_weighted_av(
+        all_res: object, field: object, comb_res: object, weight_field: object
+    ) -> Never:
+        del all_res, field, comb_res, weight_field
         _raise("_combine_weighted_av")
 
     def print_table(
-        self, table_res, tracker, cls, res_field="COMBINED_SEQ", output_lable="COMBINED"
-    ):
+        self,
+        table_res: object,
+        tracker: object,
+        cls: object,
+        res_field: str = "COMBINED_SEQ",
+        output_lable: str = "COMBINED",
+    ) -> Never:
+        del table_res, tracker, cls, res_field, output_lable
         _raise("print_table")
 
-    def _summary_row(self, results_):
+    def _summary_row(self, results_: object) -> Never:
+        del results_
         _raise("_summary_row")
 
     @staticmethod
-    def _row_print(*argv):
+    def _row_print(*argv: object) -> Never:
+        del argv
         _raise("_row_print")
 
-    def summary_results(self, table_res):
+    def summary_results(self, table_res: object) -> Never:
+        del table_res
         _raise("summary_results")
 
-    def detailed_results(self, table_res):
+    def detailed_results(self, table_res: object) -> Never:
+        del table_res
         _raise("detailed_results")
 
-    def _detailed_row(self, res):
+    def _detailed_row(self, res: object) -> Never:
+        del res
         _raise("_detailed_row")

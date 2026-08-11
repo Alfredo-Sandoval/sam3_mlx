@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+from typing import Never
+
 from sam3_mlx.eval._unsupported import raise_unsupported
 
 
-class _BaseMetric:
+class _BaseMetric:  # pyright: ignore[reportUnusedClass]
     fields: list[str] = []
 
     @staticmethod
-    def get_name():
+    def get_name() -> str:
         return "_BaseMetric"
 
-    def eval_sequence(self, data):
+    def eval_sequence(self, data: object) -> Never:
+        del data
         raise_unsupported("eval.teta_eval_toolkit.metrics._BaseMetric.eval_sequence")
