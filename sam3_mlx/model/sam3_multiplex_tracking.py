@@ -3,10 +3,11 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import fields, is_dataclass
-from typing import Any
+from typing import Any, Protocol, TypeAlias, TypeGuard, cast
 
 import mlx.core as mx
 import numpy as np
+from numpy.typing import DTypeLike, NDArray
 
 from sam3_mlx._unsupported import raise_unsupported
 from sam3_mlx.model.data_misc import (
@@ -27,16 +28,56 @@ from sam3_mlx.model.sam3_multiplex_base import (
 )
 from sam3_mlx.model.sam3_tracker_base import NO_OBJ_SCORE
 from sam3_mlx.model.sam3_tracker_utils import fill_holes_in_mask_scores
-from sam3_mlx.model.box_ops import box_xywh_to_cxcywh, box_xyxy_to_xywh
+from sam3_mlx.model import box_ops
 from sam3_mlx.mlx_runtime import to_numpy
-from sam3_mlx.perflib.masks_ops import masks_to_boxes
+from sam3_mlx.perflib import masks_ops
 
 
 DUMMY_OUTPUT = "DUMMY_OUTPUT"
+NumpyArray: TypeAlias = NDArray[np.generic]
+FloatArray: TypeAlias = NDArray[np.float32]
+TrackerArray: TypeAlias = mx.array | NumpyArray
+ObjectIdCollection: TypeAlias = Sequence[int] | set[int]
 
 
-def _is_mlx_array(value: Any) -> bool:
+class _ArrayMethods(Protocol):
+    def reshape(self, *shape: int) -> mx.array: ...
+
+
+class _MlxUnaryArrayCall(Protocol):
+    def __call__(self, value: mx.array) -> object: ...
+
+
+class _MlxMasksToBoxesCall(Protocol):
+    def __call__(self, masks: mx.array, obj_ids: list[int]) -> object: ...
+
+
+def _is_mlx_array(value: object) -> TypeGuard[mx.array]:
     return value.__class__.__module__.startswith("mlx.")
+
+
+def _reshape(array: mx.array, *shape: int) -> mx.array:
+    return cast(_ArrayMethods, array).reshape(*shape)
+
+
+def _call_mlx_unary_array(target: object, name: str, value: mx.array) -> mx.array:
+    method: object = getattr(target, name, None)
+    if not callable(method):
+        raise TypeError(f"{name} must be callable")
+    result: object = cast(_MlxUnaryArrayCall, method)(value)
+    if not _is_mlx_array(result):
+        raise TypeError(f"{name} must return an MLX array for MLX inputs")
+    return result
+
+
+def _masks_to_boxes(masks: mx.array, obj_ids: list[int]) -> mx.array:
+    method: object = getattr(masks_ops, "masks_to_boxes", None)
+    if not callable(method):
+        raise TypeError("masks_to_boxes must be callable")
+    result: object = cast(_MlxMasksToBoxesCall, method)(masks, obj_ids)
+    if not _is_mlx_array(result):
+        raise TypeError("masks_to_boxes must return an MLX array for MLX inputs")
+    return result
 
 
 def _mlx_to(data: Any, *args: Any, **kwargs: Any) -> Any:
@@ -63,8 +104,10 @@ def _mlx_to(data: Any, *args: Any, **kwargs: Any) -> Any:
     return data.astype(dtype) if dtype is not None else data
 
 
-def _array_to_numpy(value: Any, *, dtype=None) -> np.ndarray:
-    return to_numpy(value, dtype=dtype, copy=False)
+def _array_to_numpy(
+    value: object, *, dtype: DTypeLike | None = None
+) -> NumpyArray:
+    return cast(NumpyArray, to_numpy(value, dtype=dtype, copy=False))
 
 
 HOTSTART_GPU_METADATA_KEYS = (
@@ -82,7 +125,7 @@ def _copy_first_axis_slice(value: Any, start: int, stop: int) -> Any:
     if _is_mlx_array(sliced):
         return mx.array(sliced)
     if isinstance(sliced, np.ndarray):
-        return sliced.copy()
+        return cast(NumpyArray, sliced.copy())
     clone = getattr(sliced, "clone", None)
     if callable(clone):
         return clone()
@@ -140,11 +183,11 @@ def _empty_postprocessed_output(
 
 
 def _hidden_obj_ids(
-    removed_obj_ids: Any,
-    suppressed_obj_ids: Any,
-    unconfirmed_obj_ids: Any,
-) -> set[Any]:
-    hidden = set()
+    removed_obj_ids: Sequence[int] | set[int] | None,
+    suppressed_obj_ids: Sequence[int] | set[int] | None,
+    unconfirmed_obj_ids: Sequence[int] | set[int] | None,
+) -> set[int]:
+    hidden: set[int] = set()
     if suppressed_obj_ids is not None:
         hidden.update(suppressed_obj_ids)
     if removed_obj_ids is not None:
@@ -154,25 +197,28 @@ def _hidden_obj_ids(
     return hidden
 
 
-def _mask_centers(binary_masks: Any) -> np.ndarray:
+def _mask_centers(binary_masks: TrackerArray) -> FloatArray:
     binary_masks = (
         binary_masks if _is_mlx_array(binary_masks) else mx.array(binary_masks)
     )
     if binary_masks.shape[0] == 0:
-        return np.zeros((0, 2), dtype=np.float32)
+        return cast(FloatArray, np.zeros((0, 2), dtype=np.float32))
     height, width = binary_masks.shape[-2:]
     masks_f32 = binary_masks.astype(mx.float32)
-    y = mx.arange(height, dtype=mx.float32).reshape(1, height, 1)
-    x = mx.arange(width, dtype=mx.float32).reshape(1, 1, width)
+    y = _reshape(mx.arange(height, dtype=mx.float32), 1, height, 1)
+    x = _reshape(mx.arange(width, dtype=mx.float32), 1, 1, width)
     mass = mx.maximum(mx.sum(masks_f32, axis=(1, 2)), mx.array(1e-6, dtype=mx.float32))
     center_x = mx.sum(masks_f32 * x, axis=(1, 2)) / mass / width
     center_y = mx.sum(masks_f32 * y, axis=(1, 2)) / mass / height
-    return _array_to_numpy(mx.stack([center_x, center_y], axis=1), dtype=np.float32)
+    return cast(
+        FloatArray,
+        _array_to_numpy(mx.stack([center_x, center_y], axis=1), dtype=np.float32),
+    )
 
 
-def _point_count(points: Any) -> int:
+def _point_count(points: TrackerArray | Sequence[object]) -> int:
     if _is_mlx_array(points):
-        shape = tuple(points.shape)
+        shape = tuple(cast(Sequence[int], points.shape))
         if not shape:
             return 0
         if len(shape) >= 2 and shape[-1] in (2, 3):
@@ -185,7 +231,7 @@ def recursive_to(data: Any, *args: Any, **kwargs: Any) -> Any:
     if _is_mlx_array(data):
         return _mlx_to(data, *args, **kwargs)
     if isinstance(data, np.ndarray):
-        return data
+        return cast(NumpyArray, data)
     if isinstance(data, Mapping):
         ret = type(data)()
         for key, value in data.items():
@@ -339,14 +385,14 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         inference_state: dict[str, Any],
         frame_idx: int,
         obj_id_to_mask: dict[Any, Any],
-        suppressed_obj_ids=None,
-        removed_obj_ids=None,
-        unconfirmed_obj_ids=None,
+        suppressed_obj_ids: ObjectIdCollection | None = None,
+        removed_obj_ids: ObjectIdCollection | None = None,
+        unconfirmed_obj_ids: ObjectIdCollection | None = None,
     ) -> None:
         if "cached_frame_outputs" not in inference_state:
             inference_state["cached_frame_outputs"] = {}
         filtered_obj_id_to_mask = obj_id_to_mask.copy()
-        objects_to_exclude = set()
+        objects_to_exclude: set[int] = set()
         if suppressed_obj_ids is not None:
             objects_to_exclude.update(suppressed_obj_ids)
         if removed_obj_ids is not None:
@@ -381,9 +427,9 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         self,
         inference_state: dict[str, Any],
         out: dict[str, Any],
-        removed_obj_ids=None,
-        suppressed_obj_ids=None,
-        unconfirmed_obj_ids=None,
+        removed_obj_ids: ObjectIdCollection | None = None,
+        suppressed_obj_ids: ObjectIdCollection | None = None,
+        unconfirmed_obj_ids: ObjectIdCollection | None = None,
     ) -> dict[str, Any]:
         obj_id_to_mask = out["obj_id_to_mask"]
         curr_obj_ids = sorted(obj_id_to_mask.keys())
@@ -445,8 +491,10 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
             dtype=mx.float32,
         )
 
-        out_boxes_xyxy = masks_to_boxes(kept_masks, kept_obj_ids)
-        out_boxes_xywh = box_xyxy_to_xywh(out_boxes_xyxy) / mx.array(
+        out_boxes_xyxy = _masks_to_boxes(kept_masks, kept_obj_ids)
+        out_boxes_xywh = _call_mlx_unary_array(
+            box_ops, "box_xyxy_to_xywh", out_boxes_xyxy
+        ) / mx.array(
             [width, height, width, height],
             dtype=mx.float32,
         )
@@ -1602,7 +1650,9 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
                     "box_labels must have shape (N,) and match boxes_xywh; "
                     f"got {box_labels_mx.shape} for {boxes_xywh_mx.shape[0]} boxes."
                 )
-            boxes_cxcywh = box_xywh_to_cxcywh(boxes_xywh_mx)
+            boxes_cxcywh = _call_mlx_unary_array(
+                box_ops, "box_xywh_to_cxcywh", boxes_xywh_mx
+            )
             boxes_in_range = mx.all(
                 (boxes_xywh_mx >= 0.0)
                 & (boxes_xywh_mx <= 1.0)
