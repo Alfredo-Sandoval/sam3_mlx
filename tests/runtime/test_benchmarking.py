@@ -5,10 +5,12 @@ import pytest
 from sam3_mlx.benchmarking import (
     BenchmarkOperation,
     IMAGE_BENCHMARK_SCHEMA,
+    SUBSTAGE_TIMING_MODE,
     RegressionThreshold,
     TimingProtocol,
     aggregate_stage_group,
     compare_benchmark_artifacts,
+    eager_isolated_substage_fields,
     percentile,
     profile_operations,
     should_escalate_resolution,
@@ -125,6 +127,17 @@ def test_should_escalate_resolution_uses_empty_or_margin_criterion() -> None:
         should_escalate_resolution(
             [0.9], confidence_threshold=0.5, min_score_margin=-0.1
         )
+
+
+def test_substage_fields_label_eager_isolated_not_compiled_graph() -> None:
+    fields = eager_isolated_substage_fields(model_compile_policy="mlx-compiled-visual")
+
+    assert fields == {
+        "model_compile_policy": "mlx-compiled-visual",
+        "timing_mode": SUBSTAGE_TIMING_MODE,
+    }
+    assert SUBSTAGE_TIMING_MODE == "eager-isolated-modules"
+    assert "compile_policy" not in fields
 
 
 def test_profile_operations_and_group_aggregates_reuse_timing_protocol() -> None:

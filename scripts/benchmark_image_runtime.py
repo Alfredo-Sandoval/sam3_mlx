@@ -31,6 +31,7 @@ from sam3_mlx.benchmarking import (  # noqa: E402
     TimingProtocol,
     aggregate_stage_group,
     compare_benchmark_artifacts,
+    eager_isolated_substage_fields,
     profile_operations,
     summarize_samples,
     synchronized_samples,
@@ -264,7 +265,7 @@ def _profile_vision_substages(
     return {
         "schema_version": IMAGE_BENCHMARK_SUBSTAGE_SCHEMA,
         "resolution": resolution,
-        "compile_policy": compile_policy,
+        **eager_isolated_substage_fields(model_compile_policy=compile_policy),
         "warmup_runs": protocol.warmup_runs,
         "repetitions": protocol.repetitions,
         "preprocessing": timed["preprocessing"],
@@ -499,7 +500,10 @@ def _parse_args() -> argparse.Namespace:
         "--profile-substages",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Measure synchronized vision substages (default: disabled).",
+        help=(
+            "Measure synchronized eager-isolated vision substages "
+            "(default: disabled; not a compiled-graph breakdown)."
+        ),
     )
     parser.add_argument(
         "--compile",

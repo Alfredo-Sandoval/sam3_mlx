@@ -16,6 +16,16 @@ T = TypeVar("T")
 IMAGE_BENCHMARK_SCHEMA = "sam3_mlx.image_runtime_benchmark.v1"
 IMAGE_BENCHMARK_COMPARISON_SCHEMA = "sam3_mlx.image_runtime_comparison.v1"
 IMAGE_BENCHMARK_SUBSTAGE_SCHEMA = "sam3_mlx.image_runtime_substages.v1"
+SUBSTAGE_TIMING_MODE = "eager-isolated-modules"
+
+
+def eager_isolated_substage_fields(*, model_compile_policy: str) -> JsonObject:
+    """Label isolated module timings; they are not a compiled-graph breakdown."""
+
+    return {
+        "model_compile_policy": model_compile_policy,
+        "timing_mode": SUBSTAGE_TIMING_MODE,
+    }
 
 
 @dataclass(frozen=True)
