@@ -18,6 +18,7 @@ from sam3_mlx.model.sam3_image_processor import (
     OriginalSizes,
     ProcessorState,
     Sam3Processor,
+    normalize_text_prompt_key,
     transform,
 )
 from sam3_mlx.model.sam3_image import Output
@@ -703,3 +704,154 @@ def test_reset_all_prompts_removes_semantic_seg():
     # Size metadata is image identity, not a prompt/result; reset leaves it.
     assert state["original_height"] == 4
     assert state["original_width"] == 4
+
+
+class _UniqueTextBackbone(_FakeBackbone):
+    def forward_text(
+        self,
+        prompts: list[str],
+        device: object | None = None,
+    ) -> dict[str, mx.array]:
+        self.forward_text_calls.append((prompts, device))
+        seed = float(sum(ord(char) for char in prompts[0]))
+        return {
+            "language_features": mx.full((1, len(prompts), 1), seed, dtype=mx.float32),
+            "language_mask": mx.zeros((len(prompts), 1), dtype=mx.bool_),
+            "language_embeds": mx.full(
+                (1, len(prompts), 1), seed + 0.5, dtype=mx.float32
+            ),
+        }
+
+
+class _UniqueTextModel(_FakeModel):
+    def __init__(self) -> None:
+        super().__init__()
+        self.backbone = _UniqueTextBackbone()
+
+
+def _language_outputs(state: ProcessorState) -> dict[str, mx.array]:
+    backbone_out = _state_mapping(state, "backbone_out")
+    return {
+        key: _mapping_array(backbone_out, key)
+        for key in ("language_features", "language_mask", "language_embeds")
+        if key in backbone_out
+    }
+
+
+def test_normalize_text_prompt_key_is_exact_after_whitespace() -> None:
+    assert normalize_text_prompt_key("  shoe\t red  ") == "shoe red"
+    assert normalize_text_prompt_key("Shoe") == "Shoe"
+    with pytest.raises(TypeError, match="must be a string"):
+        normalize_text_prompt_key(cast(str, 1))
+
+
+def test_text_cache_hits_misses_and_equals_uncached_outputs() -> None:
+    cached_model = _UniqueTextModel()
+    uncached_model = _UniqueTextModel()
+    cached = Sam3Processor(cached_model, resolution=14, text_cache_size=4)
+    uncached = Sam3Processor(uncached_model, resolution=14, text_cache_size=0)
+    image = Image.new("RGB", (4, 4), color=(0, 0, 0))
+
+    cached_state = cached.set_image(image)
+    uncached_state = uncached.set_image(image)
+    first = cached.set_text_prompt("shoe", cached_state, run_grounding=False)
+    second = cached.set_text_prompt(
+        "  shoe  ", cached.set_image(image), run_grounding=False
+    )
+    expected = uncached.set_text_prompt("shoe", uncached_state, run_grounding=False)
+
+    assert cached_model.backbone.forward_text_calls == [(["shoe"], "mlx")]
+    assert uncached_model.backbone.forward_text_calls == [(["shoe"], "mlx")]
+    first_outputs = _language_outputs(first)
+    second_outputs = _language_outputs(second)
+    expected_outputs = _language_outputs(expected)
+    assert first_outputs.keys() == expected_outputs.keys() == second_outputs.keys()
+    for key in first_outputs:
+        np.testing.assert_array_equal(
+            to_numpy(first_outputs[key]),
+            to_numpy(expected_outputs[key]),
+        )
+        np.testing.assert_array_equal(
+            to_numpy(second_outputs[key]),
+            to_numpy(expected_outputs[key]),
+        )
+        assert first_outputs[key] is second_outputs[key]
+    assert first["backbone_out"] is not second["backbone_out"]
+
+
+def test_text_cache_evicts_least_recent_prompt() -> None:
+    model = _UniqueTextModel()
+    processor = Sam3Processor(model, resolution=14, text_cache_size=2)
+    image = Image.new("RGB", (4, 4), color=(0, 0, 0))
+    state = processor.set_image(image)
+    for prompt in ("one", "two", "three"):
+        processor.set_text_prompt(prompt, state, run_grounding=False)
+    processor.set_text_prompt("one", state, run_grounding=False)
+
+    encoded_prompts = [call[0][0] for call in model.backbone.forward_text_calls]
+    assert encoded_prompts == ["one", "two", "three", "one"]
+
+
+def test_text_cache_clear_and_disabled_and_training_skip() -> None:
+    model = _UniqueTextModel()
+    processor = Sam3Processor(model, resolution=14, text_cache_size=2)
+    image = Image.new("RGB", (4, 4), color=(0, 0, 0))
+    state = processor.set_image(image)
+    processor.set_text_prompt("shoe", state, run_grounding=False)
+    processor.set_text_prompt("shoe", state, run_grounding=False)
+    processor.clear_text_cache()
+    processor.set_text_prompt("shoe", state, run_grounding=False)
+    assert len(model.backbone.forward_text_calls) == 2
+
+    disabled = Sam3Processor(_UniqueTextModel(), resolution=14, text_cache_size=0)
+    disabled_state = disabled.set_image(image)
+    disabled.set_text_prompt("shoe", disabled_state, run_grounding=False)
+    disabled.set_text_prompt("shoe", disabled_state, run_grounding=False)
+    disabled.clear_text_cache()
+    assert len(disabled.model.backbone.forward_text_calls) == 2
+
+    training_model = _UniqueTextModel()
+    training_model.training = True
+    training = Sam3Processor(training_model, resolution=14, text_cache_size=4)
+    training_state = training.set_image(image)
+    training.set_text_prompt("shoe", training_state, run_grounding=False)
+    training.set_text_prompt("shoe", training_state, run_grounding=False)
+    assert len(training_model.backbone.forward_text_calls) == 2
+
+
+def test_text_cache_is_isolated_per_processor_and_ignores_caller_outputs() -> None:
+    first_model = _UniqueTextModel()
+    second_model = _UniqueTextModel()
+    first = Sam3Processor(first_model, resolution=14, text_cache_size=2)
+    second = Sam3Processor(second_model, resolution=14, text_cache_size=2)
+    image = Image.new("RGB", (4, 4), color=(0, 0, 0))
+    first.set_text_prompt("shoe", first.set_image(image), run_grounding=False)
+    second.set_text_prompt("shoe", second.set_image(image), run_grounding=False)
+    first.set_text_prompt("shoe", first.set_image(image), run_grounding=False)
+    assert len(first_model.backbone.forward_text_calls) == 1
+    assert len(second_model.backbone.forward_text_calls) == 1
+
+    supplied = {
+        "language_features": mx.ones((1, 1, 1), dtype=mx.float32),
+        "language_mask": mx.zeros((1, 1), dtype=mx.bool_),
+        "language_embeds": mx.ones((1, 1, 1), dtype=mx.float32),
+    }
+    first.set_text_prompt(
+        "truck",
+        first.set_image(image),
+        run_grounding=False,
+        text_outputs=supplied,
+    )
+    assert [call[0][0] for call in first_model.backbone.forward_text_calls] == ["shoe"]
+    first.set_text_prompt("truck", first.set_image(image), run_grounding=False)
+    assert [call[0][0] for call in first_model.backbone.forward_text_calls] == [
+        "shoe",
+        "truck",
+    ]
+
+
+def test_text_cache_size_must_be_non_negative_integer() -> None:
+    with pytest.raises(ValueError, match="non-negative integer"):
+        Sam3Processor(_FakeModel(), resolution=14, text_cache_size=-1)
+    with pytest.raises(ValueError, match="non-negative integer"):
+        Sam3Processor(_FakeModel(), resolution=14, text_cache_size=True)

@@ -10,6 +10,7 @@ import mlx.core as mx
 from sam3_mlx._device import is_mlx_runtime_device
 from sam3_mlx._unsupported import raise_unsupported
 from sam3_mlx.model import box_ops
+from sam3_mlx.model.bounded_cache import BoundedLRUCache
 from sam3_mlx.model.data_misc import (
     FindStage,
     IndexArray,
@@ -23,6 +24,7 @@ from sam3_mlx.model.geometry_encoders import Prompt
 from sam3_mlx.model.sam3_image import Output
 
 SAM3_IMAGE_PATCH_SIZE = 14
+DEFAULT_TEXT_CACHE_SIZE = 8
 
 
 def _raise_processor_unsupported(
@@ -434,6 +436,28 @@ def _validate_text_outputs(value: object) -> dict[str, mx.array]:
     return text_output
 
 
+def normalize_text_prompt_key(prompt: object) -> str:
+    """Return the exact whitespace-normalized cache key for one prompt."""
+
+    if not isinstance(prompt, str):
+        raise TypeError("Text prompt must be a string.")
+    return " ".join(prompt.split())
+
+
+def _copy_text_outputs(value: Mapping[str, mx.array]) -> dict[str, mx.array]:
+    return {key: item for key, item in value.items()}
+
+
+def _validate_text_cache_size(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, Integral) or int(value) < 0:
+        raise ValueError("text_cache_size must be a non-negative integer.")
+    return int(value)
+
+
+def _model_is_training(model: object) -> bool:
+    return bool(getattr(model, "training", False))
+
+
 def _forward_backbone_text(
     backbone: object, prompts: list[str], *, device: str
 ) -> dict[str, mx.array]:
@@ -465,14 +489,20 @@ class Sam3Processor:
         resolution: object = 1008,
         device: object = "mlx",
         confidence_threshold: float = 0.5,
+        text_cache_size: object = DEFAULT_TEXT_CACHE_SIZE,
     ) -> None:
         runtime_device = _normalize_processor_device(device)
         if not 0.0 <= confidence_threshold <= 1.0:
             raise ValueError("Confidence threshold must be between 0.0 and 1.0.")
+        cache_size = _validate_text_cache_size(text_cache_size)
         self.model = model
         self.resolution = _validate_processor_resolution(resolution)
         self.device = runtime_device
         self.confidence_threshold = confidence_threshold
+        self.text_cache_size = cache_size
+        self._text_cache: BoundedLRUCache[str, dict[str, mx.array]] | None = (
+            None if cache_size == 0 else BoundedLRUCache(cache_size)
+        )
         self.transform = partial(transform, resolution=self.resolution)
 
         self.find_stage = FindStage(
@@ -499,6 +529,32 @@ class Sam3Processor:
             input_points=None,
             input_points_mask=None,
         )
+
+    def clear_text_cache(self) -> None:
+        """Drop every cached text-encoder output for this processor."""
+
+        if self._text_cache is not None:
+            self._text_cache.clear()
+
+    def _text_outputs_for_prompt(self, prompt: str) -> dict[str, mx.array]:
+        cache = self._text_cache
+        if cache is None or _model_is_training(self.model):
+            return _forward_backbone_text(
+                self.model.backbone,
+                [prompt],
+                device=self.device,
+            )
+        key = normalize_text_prompt_key(prompt)
+        cached = cache.get(key)
+        if cached is not None:
+            return _copy_text_outputs(cached)
+        encoded = _forward_backbone_text(
+            self.model.backbone,
+            [prompt],
+            device=self.device,
+        )
+        cache[key] = encoded
+        return _copy_text_outputs(encoded)
 
     def _patch_interactive_backbone_features(
         self, backbone_out: Mapping[str, object]
@@ -574,11 +630,7 @@ class Sam3Processor:
             raise ValueError("You must call set_image before set_text_prompt")
 
         validated_text_outputs = (
-            _forward_backbone_text(
-                self.model.backbone,
-                [prompt],
-                device=self.device,
-            )
+            self._text_outputs_for_prompt(prompt)
             if text_outputs is None
             else _validate_text_outputs(text_outputs)
         )
@@ -626,12 +678,7 @@ class Sam3Processor:
         backbone_out = _require_backbone_out(state)
         if "language_features" not in backbone_out:
             # Looks like we don't have a text prompt yet. This is allowed, but we need to set the text prompt to "visual" for the model to rely only on the geometric prompt
-            dummy_text_outputs = _forward_backbone_text(
-                self.model.backbone,
-                ["visual"],
-                device=self.device,
-            )
-            backbone_out.update(dummy_text_outputs)
+            backbone_out.update(self._text_outputs_for_prompt("visual"))
 
         if "geometric_prompt" not in state:
             state["geometric_prompt"] = _model_dummy_prompt(self.model)
@@ -674,12 +721,7 @@ class Sam3Processor:
 
         backbone_out = _require_backbone_out(state)
         if "language_features" not in backbone_out:
-            dummy_text_outputs = _forward_backbone_text(
-                self.model.backbone,
-                ["visual"],
-                device=self.device,
-            )
-            backbone_out.update(dummy_text_outputs)
+            backbone_out.update(self._text_outputs_for_prompt("visual"))
 
         if "geometric_prompt" not in state:
             state["geometric_prompt"] = _model_dummy_prompt(self.model)
