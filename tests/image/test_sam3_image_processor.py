@@ -779,6 +779,51 @@ def test_text_cache_hits_misses_and_equals_uncached_outputs() -> None:
     assert first["backbone_out"] is not second["backbone_out"]
 
 
+def test_text_cache_encodes_normalized_key_regardless_of_padding_order() -> None:
+    padded_first_model = _UniqueTextModel()
+    trimmed_first_model = _UniqueTextModel()
+    padded_first = Sam3Processor(padded_first_model, resolution=14, text_cache_size=4)
+    trimmed_first = Sam3Processor(trimmed_first_model, resolution=14, text_cache_size=4)
+    uncached_model = _UniqueTextModel()
+    uncached = Sam3Processor(uncached_model, resolution=14, text_cache_size=0)
+    image = Image.new("RGB", (4, 4), color=(0, 0, 0))
+    padded = "  shoe  "
+    trimmed = "shoe"
+
+    padded_state = padded_first.set_text_prompt(
+        padded, padded_first.set_image(image), run_grounding=False
+    )
+    padded_hit = padded_first.set_text_prompt(
+        trimmed, padded_first.set_image(image), run_grounding=False
+    )
+    trimmed_state = trimmed_first.set_text_prompt(
+        trimmed, trimmed_first.set_image(image), run_grounding=False
+    )
+    trimmed_hit = trimmed_first.set_text_prompt(
+        padded, trimmed_first.set_image(image), run_grounding=False
+    )
+    expected = uncached.set_text_prompt(
+        trimmed, uncached.set_image(image), run_grounding=False
+    )
+
+    assert padded_first_model.backbone.forward_text_calls == [(["shoe"], "mlx")]
+    assert trimmed_first_model.backbone.forward_text_calls == [(["shoe"], "mlx")]
+    expected_outputs = _language_outputs(expected)
+    for state in (padded_state, padded_hit, trimmed_state, trimmed_hit):
+        outputs = _language_outputs(state)
+        assert outputs.keys() == expected_outputs.keys()
+        for key in outputs:
+            np.testing.assert_array_equal(
+                to_numpy(outputs[key]),
+                to_numpy(expected_outputs[key]),
+            )
+    assert padded_state["backbone_out"] is not padded_hit["backbone_out"]
+
+    disabled = Sam3Processor(_UniqueTextModel(), resolution=14, text_cache_size=0)
+    disabled.set_text_prompt(padded, disabled.set_image(image), run_grounding=False)
+    assert disabled.model.backbone.forward_text_calls == [(["  shoe  "], "mlx")]
+
+
 def test_text_cache_evicts_least_recent_prompt() -> None:
     model = _UniqueTextModel()
     processor = Sam3Processor(model, resolution=14, text_cache_size=2)

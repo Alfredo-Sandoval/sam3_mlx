@@ -550,7 +550,7 @@ class Sam3Processor:
             return _copy_text_outputs(cached)
         encoded = _forward_backbone_text(
             self.model.backbone,
-            [prompt],
+            [key],
             device=self.device,
         )
         cache[key] = encoded
