@@ -15,9 +15,13 @@ from sam3_mlx.model.necks import (
     Scale4FN,
     Sam3DualViTDetNeck,
     Sam3TriViTDetNeck,
+    kept_scale_heads,
+    output_levels_for_scalp,
 )
+from sam3_mlx.model.vl_combiner import SAM3VLBackbone
 from sam3_mlx.model.position_encoding import PositionEmbeddingSine
 from sam3_mlx.model.vitdet import ViT
+from tests._mlx_runtime import flat_parameters
 
 
 class _NestedFeature(Protocol):
@@ -183,6 +187,180 @@ def test_unsupported_scale_factor_guard_remains_canonical():
     message = str(excinfo.value)
     assert "scale_factor=3.0" in message
     assert "Sam3DualViTDetNeck" in message
+
+
+class _CountingScaleHead(nn.Module):
+    def __init__(self, inner: nn.Module) -> None:
+        super().__init__()
+        self.inner = inner
+        self.calls = 0
+
+    def __call__(self, x: mx.array) -> mx.array:
+        self.calls += 1
+        return cast(mx.array, self.inner(x))
+
+
+def _assert_array_lists_equal(left: list[mx.array], right: list[mx.array]) -> None:
+    assert len(left) == len(right)
+    for left_item, right_item in zip(left, right, strict=True):
+        _eval(left_item, right_item)
+        assert bool(mx.array_equal(left_item, right_item).item())
+        assert left_item.shape == right_item.shape
+        assert left_item.dtype == right_item.dtype
+
+
+def test_output_level_helpers_keep_high_resolution_heads() -> None:
+    heads = [object(), object(), object(), object()]
+    assert kept_scale_heads(cast(list[object], heads), None) == heads
+    assert kept_scale_heads(cast(list[object], heads), 3) == heads[:3]
+    assert output_levels_for_scalp(4, scalp=0) is None
+    assert output_levels_for_scalp(4, scalp=1) == 3
+
+    with pytest.raises(ValueError, match="1..4"):
+        kept_scale_heads(cast(list[object], heads), 0)
+    with pytest.raises(ValueError, match="at least one output level"):
+        output_levels_for_scalp(4, scalp=4)
+
+
+def test_dual_neck_skips_discarded_head_and_keeps_retained_tensors() -> None:
+    trunk = _StubTrunk(channels=8, spatial=4)
+    pe = _pos_enc(4)
+    dual = Sam3DualViTDetNeck(
+        trunk=trunk,
+        position_encoding=pe,
+        d_model=4,
+        scale_factors=(4.0, 2.0, 1.0, 0.5),
+        add_sam2_neck=True,
+    )
+    discarded = _CountingScaleHead(cast(nn.Module, dual.convs[3]))
+    discarded_sam2 = _CountingScaleHead(cast(nn.Module, dual.sam2_convs[3]))
+    dual.convs[3] = discarded
+    assert dual.sam2_convs is not None
+    dual.sam2_convs[3] = discarded_sam2
+
+    samples = mx.ones((1, 3, 16, 16), dtype=mx.float32)
+    full_s3, full_p3, full_s2, full_p2 = dual(samples)
+    pruned_s3, pruned_p3, pruned_s2, pruned_p2 = dual(samples, output_levels=3)
+
+    assert discarded.calls == 1
+    assert discarded_sam2.calls == 1
+    assert full_s2 is not None and full_p2 is not None
+    assert pruned_s2 is not None and pruned_p2 is not None
+    assert [t.shape for t in full_s3] == [
+        (1, 4, 16, 16),
+        (1, 4, 8, 8),
+        (1, 4, 4, 4),
+        (1, 4, 2, 2),
+    ]
+    assert [t.shape for t in pruned_s3] == [
+        (1, 4, 16, 16),
+        (1, 4, 8, 8),
+        (1, 4, 4, 4),
+    ]
+    _assert_array_lists_equal(pruned_s3, full_s3[:3])
+    _assert_array_lists_equal(pruned_p3, full_p3[:3])
+    _assert_array_lists_equal(pruned_s2, full_s2[:3])
+    _assert_array_lists_equal(pruned_p2, full_p2[:3])
+
+
+def test_dual_neck_keeps_discarded_head_checkpoint_keys() -> None:
+    dual = Sam3DualViTDetNeck(
+        trunk=_StubTrunk(channels=8, spatial=4),
+        position_encoding=_pos_enc(4),
+        d_model=4,
+        scale_factors=(4.0, 2.0, 1.0, 0.5),
+        add_sam2_neck=True,
+    )
+    _eval(*dual(mx.ones((1, 3, 16, 16)), output_levels=3)[0])
+    keys = set(flat_parameters(dual))
+    assert any(key.startswith("convs.3.") for key in keys)
+    assert any(key.startswith("sam2_convs.3.") for key in keys)
+    assert any(key.startswith("convs.0.") for key in keys)
+
+
+def test_dual_neck_public_forward_still_emits_every_scale() -> None:
+    dual = Sam3DualViTDetNeck(
+        trunk=_StubTrunk(channels=8, spatial=4),
+        position_encoding=_pos_enc(4),
+        d_model=4,
+        scale_factors=(4.0, 2.0, 1.0, 0.5),
+    )
+    sam3_out, sam3_pos, sam2_out, sam2_pos = dual(mx.ones((1, 3, 16, 16)))
+    _eval(*sam3_out, *sam3_pos)
+    assert sam2_out is None and sam2_pos is None
+    assert len(sam3_out) == 4
+    assert [t.shape for t in sam3_out] == [p.shape for p in sam3_pos]
+
+
+def test_tri_neck_skips_discarded_heads_consistently() -> None:
+    tri = Sam3TriViTDetNeck(
+        trunk=_StubTrunk(channels=8, spatial=4),
+        position_encoding=_pos_enc(4),
+        d_model=4,
+        scale_factors=(4.0, 2.0, 1.0),
+    )
+    discarded = _CountingScaleHead(cast(nn.Module, tri.convs[2]))
+    discarded_interactive = _CountingScaleHead(
+        cast(nn.Module, tri.interactive_convs[2])
+    )
+    discarded_propagation = _CountingScaleHead(
+        cast(nn.Module, tri.propagation_convs[2])
+    )
+    tri.convs[2] = discarded
+    tri.interactive_convs[2] = discarded_interactive
+    tri.propagation_convs[2] = discarded_propagation
+
+    samples = mx.ones((1, 3, 16, 16), dtype=mx.float32)
+    full = tri(samples)
+    pruned = tri(samples, output_levels=2)
+
+    assert discarded.calls == 1
+    assert discarded_interactive.calls == 1
+    assert discarded_propagation.calls == 1
+    assert len(full[0]) == 3
+    assert len(pruned[0]) == 2
+    _assert_array_lists_equal(
+        [_as_nested(item).tensors for item in pruned[0]],
+        [_as_nested(item).tensors for item in full[0][:2]],
+    )
+    _assert_array_lists_equal(pruned[1], full[1][:2])
+
+
+def test_vl_backbone_scalp_does_not_execute_discarded_head() -> None:
+    neck = Sam3DualViTDetNeck(
+        trunk=_StubTrunk(channels=8, spatial=4),
+        position_encoding=_pos_enc(4),
+        d_model=4,
+        scale_factors=(4.0, 2.0, 1.0, 0.5),
+        add_sam2_neck=True,
+    )
+    discarded = _CountingScaleHead(cast(nn.Module, neck.convs[3]))
+    discarded_sam2 = _CountingScaleHead(cast(nn.Module, neck.sam2_convs[3]))
+    neck.convs[3] = discarded
+    assert neck.sam2_convs is not None
+    neck.sam2_convs[3] = discarded_sam2
+
+    full_neck = neck(mx.ones((1, 3, 16, 16), dtype=mx.float32))
+    backbone = SAM3VLBackbone(visual=neck, text=None, scalp=1)
+    output = backbone.forward_image(mx.ones((1, 3, 16, 16), dtype=mx.float32))
+    features = cast(list[mx.array], output["backbone_fpn"])
+    positions = cast(list[mx.array], output["vision_pos_enc"])
+    sam2_out = cast(dict[str, object], output["sam2_backbone_out"])
+    sam2_features = cast(list[mx.array], sam2_out["backbone_fpn"])
+
+    assert discarded.calls == 1
+    assert discarded_sam2.calls == 1
+    assert len(features) == 3
+    assert [item.shape for item in features] == [
+        (1, 4, 16, 16),
+        (1, 4, 8, 8),
+        (1, 4, 4, 4),
+    ]
+    _assert_array_lists_equal(features, full_neck[0][:3])
+    _assert_array_lists_equal(positions, full_neck[1][:3])
+    assert full_neck[2] is not None
+    _assert_array_lists_equal(sam2_features, full_neck[2][:3])
+    assert bool(mx.array_equal(output["vision_features"], features[-1]).item())
 
 
 def test_vit_trunk_class_identity_for_neck():

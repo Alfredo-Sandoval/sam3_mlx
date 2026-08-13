@@ -9,7 +9,11 @@ from mlx import nn
 
 from sam3_mlx._unsupported import raise_unsupported
 from sam3_mlx.model.act_ckpt_utils import activation_ckpt_wrapper
-from sam3_mlx.model.necks import Sam3DualViTDetNeck, Sam3TriViTDetNeck
+from sam3_mlx.model.necks import (
+    Sam3DualViTDetNeck,
+    Sam3TriViTDetNeck,
+    output_levels_for_scalp,
+)
 from sam3_mlx.model.text_encoder_ve import PreencodedText
 
 
@@ -41,6 +45,8 @@ class _LanguageBackbone(Protocol):
 
 
 class _TriVisionBackbone(Protocol):
+    convs: list[object]
+
     def forward(
         self,
         samples: mx.array,
@@ -48,6 +54,7 @@ class _TriVisionBackbone(Protocol):
         need_sam3_out: bool,
         need_interactive_out: bool,
         need_propagation_out: bool,
+        output_levels: int | None = None,
     ) -> tuple[
         list[object],
         list[mx.array],
@@ -95,18 +102,12 @@ def _forward_tri_vision(
         need_sam3_out=need_sam3_out,
         need_interactive_out=need_interactive_out,
         need_propagation_out=need_propagation_out,
+        output_levels=(
+            None
+            if scalp == 0
+            else output_levels_for_scalp(len(backbone.convs), scalp=scalp)
+        ),
     )
-
-    if scalp > 0:
-        sam3_features, sam3_pos = sam3_features[:-scalp], sam3_pos[:-scalp]
-        interactive_features, interactive_pos = (
-            interactive_features[:-scalp],
-            interactive_pos[:-scalp],
-        )
-        propagation_features, propagation_pos = (
-            propagation_features[:-scalp],
-            propagation_pos[:-scalp],
-        )
 
     output: dict[str, object] = {}
     if need_sam3_out:
@@ -198,19 +199,16 @@ class SAM3VLBackbone(nn.Module):
 
     def _forward_image_no_act_ckpt(self, samples: mx.array) -> dict[str, object]:
         sam3_features, sam3_pos, sam2_features, sam2_pos = self.vision_backbone.forward(
-            samples
-        )
-
-        if self.scalp > 0:
-            sam3_features, sam3_pos = (
-                sam3_features[: -self.scalp],
-                sam3_pos[: -self.scalp],
-            )
-            if sam2_features is not None and sam2_pos is not None:
-                sam2_features, sam2_pos = (
-                    sam2_features[: -self.scalp],
-                    sam2_pos[: -self.scalp],
+            samples,
+            output_levels=(
+                None
+                if self.scalp == 0
+                else output_levels_for_scalp(
+                    len(self.vision_backbone.convs),
+                    scalp=self.scalp,
                 )
+            ),
+        )
 
         sam2_output = None
         if sam2_features is not None and sam2_pos is not None:

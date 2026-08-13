@@ -71,6 +71,41 @@ def _as_feature(feature: object) -> _FeatureLike:
     return cast(_FeatureLike, feature)
 
 
+def kept_scale_heads(
+    convs: Sequence[_ScaleHead],
+    output_levels: object,
+) -> list[_ScaleHead]:
+    """Return the high-resolution heads that should execute for one forward."""
+
+    if output_levels is None:
+        return list(convs)
+    if isinstance(output_levels, bool) or not isinstance(output_levels, int):
+        raise TypeError("output_levels must be a positive integer or None")
+    if output_levels < 1 or output_levels > len(convs):
+        raise ValueError(
+            f"output_levels must be in 1..{len(convs)}, got {output_levels}"
+        )
+    return list(convs[:output_levels])
+
+
+def output_levels_for_scalp(total_levels: object, *, scalp: object) -> int | None:
+    """Translate backbone scalp into the neck's retained-level count."""
+
+    if isinstance(scalp, bool) or not isinstance(scalp, int):
+        raise TypeError("scalp must be a non-negative integer")
+    if isinstance(total_levels, bool) or not isinstance(total_levels, int):
+        raise TypeError("total_levels must be a positive integer")
+    if total_levels < 1:
+        raise ValueError("total_levels must be at least 1")
+    if scalp < 0:
+        raise ValueError("scalp must be non-negative")
+    if scalp >= total_levels:
+        raise ValueError("scalp must leave at least one output level")
+    if scalp == 0:
+        return None
+    return total_levels - scalp
+
+
 def _build_scale_convs(
     dim: int,
     d_model: int,
@@ -261,11 +296,15 @@ class Sam3DualViTDetNeck(nn.Module):
             self.sam2_convs = _build_scale_convs(dim, d_model, scale_factors, use_bias)
 
     def _apply_array_heads(
-        self, x_nhwc: mx.array, convs: list[_ScaleHead]
+        self,
+        x_nhwc: mx.array,
+        convs: list[_ScaleHead],
+        *,
+        output_levels: int | None = None,
     ) -> tuple[list[mx.array], list[mx.array]]:
         out: list[mx.array] = []
         pos: list[mx.array] = []
-        for conv in convs:
+        for conv in kept_scale_heads(convs, output_levels):
             head_out = conv(x_nhwc)
             nchw_shape = (
                 int(head_out.shape[0]),
@@ -277,22 +316,36 @@ class Sam3DualViTDetNeck(nn.Module):
             pos.append(self.position_encoding(nchw_shape).astype(head_out.dtype))
         return out, pos
 
-    def forward(self, x_list: mx.array | NestedTensor) -> DualOutput:
+    def forward(
+        self,
+        x_list: mx.array | NestedTensor,
+        *,
+        output_levels: int | None = None,
+    ) -> DualOutput:
         xs = self.trunk(x_list)
         x = xs[-1]
         if isinstance(x, NestedTensor):
             x = _as_feature(x).tensors
         x = mx.transpose(x, axes=(0, 2, 3, 1))
 
-        sam3_out, sam3_pos = self._apply_array_heads(x, self.convs)
+        sam3_out, sam3_pos = self._apply_array_heads(
+            x, self.convs, output_levels=output_levels
+        )
         sam2_convs = self.sam2_convs
         if sam2_convs is not None:
-            sam2_out, sam2_pos = self._apply_array_heads(x, sam2_convs)
+            sam2_out, sam2_pos = self._apply_array_heads(
+                x, sam2_convs, output_levels=output_levels
+            )
             return sam3_out, sam3_pos, sam2_out, sam2_pos
         return sam3_out, sam3_pos, None, None
 
-    def __call__(self, x_list: mx.array | NestedTensor) -> DualOutput:
-        return self.forward(x_list)
+    def __call__(
+        self,
+        x_list: mx.array | NestedTensor,
+        *,
+        output_levels: int | None = None,
+    ) -> DualOutput:
+        return self.forward(x_list, output_levels=output_levels)
 
 
 class Sam3TriViTDetNeck(nn.Module):
@@ -339,10 +392,12 @@ class Sam3TriViTDetNeck(nn.Module):
         x_nhwc: mx.array,
         x_mask: mx.array | None,
         convs: list[_ScaleHead],
+        *,
+        output_levels: int | None = None,
     ) -> tuple[list[NestedTensor], list[mx.array]]:
         out: list[NestedTensor] = []
         pos: list[mx.array] = []
-        for conv in convs:
+        for conv in kept_scale_heads(convs, output_levels):
             head_out = conv(x_nhwc)
             nchw_shape = (
                 int(head_out.shape[0]),
@@ -362,6 +417,7 @@ class Sam3TriViTDetNeck(nn.Module):
         need_sam3_out: bool = True,
         need_interactive_out: bool = True,
         need_propagation_out: bool = True,
+        output_levels: int | None = None,
     ) -> TriOutput:
         xs = self.trunk(tensor_list)
         x_src = xs[-1]
@@ -376,14 +432,16 @@ class Sam3TriViTDetNeck(nn.Module):
         propagation_pos: list[mx.array] = []
 
         if need_sam3_out:
-            sam3_out, sam3_pos = self._apply_head(x, x_mask, self.convs)
+            sam3_out, sam3_pos = self._apply_head(
+                x, x_mask, self.convs, output_levels=output_levels
+            )
         if need_interactive_out:
             interactive_out, interactive_pos = self._apply_head(
-                x, x_mask, self.interactive_convs
+                x, x_mask, self.interactive_convs, output_levels=output_levels
             )
         if need_propagation_out:
             propagation_out, propagation_pos = self._apply_head(
-                x, x_mask, self.propagation_convs
+                x, x_mask, self.propagation_convs, output_levels=output_levels
             )
 
         return (
@@ -402,10 +460,12 @@ class Sam3TriViTDetNeck(nn.Module):
         need_sam3_out: bool = True,
         need_interactive_out: bool = True,
         need_propagation_out: bool = True,
+        output_levels: int | None = None,
     ) -> TriOutput:
         return self.forward(
             tensor_list,
             need_sam3_out=need_sam3_out,
             need_interactive_out=need_interactive_out,
             need_propagation_out=need_propagation_out,
+            output_levels=output_levels,
         )

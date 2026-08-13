@@ -13,8 +13,12 @@ class _TinyVisualBackbone(nn.Module):
         self.calls = 0
 
     def forward(
-        self, samples: mx.array
+        self,
+        samples: mx.array,
+        *,
+        output_levels: int | None = None,
     ) -> tuple[list[mx.array], list[mx.array], None, None]:
+        del output_levels
         self.calls += 1
         feature = samples * self.scale
         position = mx.zeros_like(feature)
