@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from numbers import Integral
-from typing import Any, cast
+from typing import Any, cast, overload
 
 import mlx.core as mx
 
@@ -486,6 +486,15 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
                 raise ValueError("new_object_idxs are required when editing state.")
             if new_object_ids is None:
                 raise ValueError("new_object_ids are required when editing state.")
+            validated_object_ids: list[int] = []
+            for object_id in new_object_ids:
+                if isinstance(object_id, bool) or not isinstance(object_id, Integral):
+                    raise TypeError("new_object_ids must contain integer identifiers.")
+                validated_object_ids.append(int(object_id))
+
+            multiplex_state = inference_state.get("multiplex_state")
+            if not isinstance(multiplex_state, MultiplexState):
+                raise TypeError("Editing state requires a MultiplexState instance.")
 
             existing_out = output_dict["cond_frame_outputs"].get(frame_idx)
             if existing_out is None:
@@ -535,33 +544,40 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
                         point_inputs=point_inputs,
                     ),
                     objects_to_interact=new_object_idxs,
-                    multiplex_state=inference_state["multiplex_state"],
+                    multiplex_state=multiplex_state,
                 )
                 new_object_masks = interaction_out["low_res_masks"]
                 are_new_masks_from_pts = True
 
-            edit_kwargs = dict(
-                interactive_pix_feat=interactive_pix_feat,
-                interactive_high_res_features=interactive_high_res_features,
-                propagation_vision_feats=propagation_vision_feats,
-                propagation_feat_sizes=propagation_feat_sizes,
-                new_masks=mask_inputs if mask_inputs is not None else new_object_masks,
-                obj_idxs_in_mask=new_object_idxs,
-                obj_ids_in_mask=new_object_ids,
-                prev_output=existing_out,
-                multiplex_state=inference_state["multiplex_state"],
-                add_mask_to_memory=run_mem_encoder,
-            )
-            if edit_kwargs["new_masks"] is None:
+            masks_to_edit = mask_inputs if mask_inputs is not None else new_object_masks
+            if masks_to_edit is None:
                 raise ValueError("new object masks are required when editing state.")
             if reconditioning:
                 self.recondition_masks_in_existing_state(
-                    **edit_kwargs,
+                    interactive_pix_feat=interactive_pix_feat,
+                    interactive_high_res_features=interactive_high_res_features,
+                    propagation_vision_feats=propagation_vision_feats,
+                    propagation_feat_sizes=propagation_feat_sizes,
+                    new_masks=masks_to_edit,
+                    obj_idxs_in_mask=new_object_idxs,
+                    obj_ids_in_mask=validated_object_ids,
+                    prev_output=existing_out,
+                    multiplex_state=multiplex_state,
+                    add_mask_to_memory=run_mem_encoder,
                     are_masks_from_pts=are_new_masks_from_pts,
                 )
             else:
                 self.add_new_masks_to_existing_state(
-                    **edit_kwargs,
+                    interactive_pix_feat=interactive_pix_feat,
+                    interactive_high_res_features=interactive_high_res_features,
+                    propagation_vision_feats=propagation_vision_feats,
+                    propagation_feat_sizes=propagation_feat_sizes,
+                    new_masks=masks_to_edit,
+                    obj_idxs_in_mask=new_object_idxs,
+                    obj_ids_in_mask=validated_object_ids,
+                    prev_output=existing_out,
+                    multiplex_state=multiplex_state,
+                    add_mask_to_memory=run_mem_encoder,
                     are_masks_from_pts=are_new_masks_from_pts,
                     allow_new_buckets=allow_new_buckets,
                     prefer_new_buckets=prefer_new_buckets,
@@ -634,22 +650,24 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
         current_out: StageOutput,
         storage_key: str,
     ) -> None:
-        if "pred_masks" not in current_out:
+        pred_masks = current_out.get("pred_masks")
+        if pred_masks is None:
             raise RuntimeError("Per-object output requires pred_masks.")
-        if "object_score_logits" not in current_out:
+        object_score_logits = current_out.get("object_score_logits")
+        if object_score_logits is None:
             raise RuntimeError("Per-object output requires object_score_logits.")
         for obj_idx, obj_output_dict in inference_state["output_dict_per_obj"].items():
             obj_slice = slice(obj_idx, obj_idx + 1)
-            obj_out = {
-                "pred_masks": current_out["pred_masks"][obj_slice],
-                "object_score_logits": current_out["object_score_logits"][obj_slice],
+            obj_out: dict[str, mx.array] = {
+                "pred_masks": pred_masks[obj_slice],
+                "object_score_logits": object_score_logits[obj_slice],
             }
-            if "pred_masks_video_res" in current_out:
-                obj_out["pred_masks_video_res"] = current_out["pred_masks_video_res"][
-                    obj_slice
-                ]
-            if self.use_memory_selection and "iou_score" in current_out:
-                obj_out["iou_score"] = current_out["iou_score"][obj_slice]
+            pred_masks_video_res = current_out.get("pred_masks_video_res")
+            if pred_masks_video_res is not None:
+                obj_out["pred_masks_video_res"] = pred_masks_video_res[obj_slice]
+            iou_score = current_out.get("iou_score")
+            if self.use_memory_selection and iou_score is not None:
+                obj_out["iou_score"] = iou_score[obj_slice]
             obj_output_dict[storage_key][frame_idx] = obj_out
 
     def _get_or_create_multiplex_state(
@@ -907,7 +925,32 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
         _eval_tree(current_out, video_res_masks)
         return frame_idx, list(inference_state["obj_ids"]), None, video_res_masks
 
-    def add_new_masks(  # pyright: ignore[reportIncompatibleMethodOverride]
+    @overload
+    def add_new_masks(
+        self,
+        *,
+        inference_state: dict[str, Any],
+        frame_idx: int,
+        obj_ids: Any,
+        masks: Any,
+        add_mask_to_memory: bool = True,
+        are_masks_from_pts: bool = False,
+    ) -> tuple[int, list[Any], None, Any]: ...
+
+    @overload
+    def add_new_masks(
+        self,
+        inference_state: dict[str, Any],
+        frame_idx: int,
+        obj_ids: Any,
+        masks: Any,
+        add_mask_to_memory: bool = False,
+        reconditioning: bool = False,
+        *,
+        are_masks_from_pts: bool = False,
+    ) -> tuple[int, list[Any], None, Any]: ...
+
+    def add_new_masks(
         self,
         inference_state: dict[str, Any],
         frame_idx: int,

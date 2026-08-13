@@ -14,15 +14,17 @@ non-persistent buffers and therefore omits from its state_dict.
 """
 
 import json
+from typing import TypeAlias
 
 import pytest
-from mlx.utils import tree_flatten
 
 from sam3_mlx.model.sam3_tracker_base import Sam3TrackerBase
 from sam3_mlx.model_builder import (
     create_tracker_maskmem_backbone,
     create_tracker_transformer,
 )
+from tests._json_contracts import require_int, require_list, require_mapping
+from tests._mlx_runtime import flat_parameters
 from tests._paths import PORT_TRACKER_FIXTURE_ROOT
 
 OFFICIAL_STATE_FIXTURE = PORT_TRACKER_FIXTURE_ROOT / "official_tracker_base_state.json"
@@ -30,6 +32,8 @@ OFFICIAL_STATE_FIXTURE = PORT_TRACKER_FIXTURE_ROOT / "official_tracker_base_stat
 # MLX stores these as array attributes; torch computes/keeps them as
 # non-persistent buffers, so they never appear in the official state_dict.
 _DERIVED_BUFFER_MARKERS = ("freqs_cis", "position_encoding.cache")
+Shape: TypeAlias = tuple[int, ...]
+StateShapes: TypeAlias = dict[str, Shape]
 
 
 def _normalize_mlx_name(name: str) -> str:
@@ -38,25 +42,65 @@ def _normalize_mlx_name(name: str) -> str:
     return name.replace(".conv.weight", ".weight").replace(".conv.bias", ".bias")
 
 
-def _layout_equivalent(a: tuple, b: tuple) -> bool:
+def _layout_equivalent(a: Shape, b: Shape) -> bool:
     # conv NCHW (O,I,H,W) vs MLX NHWC (O,H,W,I): same dims, different order.
     return sorted(a) == sorted(b)
 
 
+def _parse_official_state(payload: object) -> StateShapes:
+    mapping = require_mapping(payload, "official tracker state fixture")
+    state: StateShapes = {}
+    for name, raw_shape in mapping.items():
+        shape = require_list(raw_shape, f"official tracker state shape for {name!r}")
+        state[name] = tuple(
+            require_int(dimension, f"official tracker state shape for {name!r}")
+            for dimension in shape
+        )
+    return state
+
+
+def _load_official_state() -> StateShapes:
+    payload: object = json.loads(OFFICIAL_STATE_FIXTURE.read_text())
+    return _parse_official_state(payload)
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        pytest.param([], "must be a mapping", id="non-mapping"),
+        pytest.param({1: [2]}, "must use string keys", id="non-string-name"),
+        pytest.param(
+            {"weight": "1,2"},
+            "must be a list",
+            id="non-list-shape",
+        ),
+        pytest.param(
+            {"weight": [True, 2]},
+            "must be an integer",
+            id="boolean-dimension",
+        ),
+    ],
+)
+def test_official_state_parser_rejects_malformed_nested_shapes(
+    payload: object,
+    message: str,
+) -> None:
+    with pytest.raises(TypeError, match=message):
+        _parse_official_state(payload)
+
+
 @pytest.fixture(scope="module")
-def official_state():
+def official_state() -> StateShapes:
     if not OFFICIAL_STATE_FIXTURE.exists():
         pytest.skip(
             "official tracker oracle fixture missing; regenerate with "
             "scripts/tracker_parity.py --refresh-oracle"
         )
-    return {
-        k: tuple(v) for k, v in json.loads(OFFICIAL_STATE_FIXTURE.read_text()).items()
-    }
+    return _load_official_state()
 
 
 @pytest.fixture(scope="module")
-def mlx_state():
+def mlx_state() -> StateShapes:
     base = Sam3TrackerBase(
         backbone=None,
         transformer=create_tracker_transformer(),
@@ -77,18 +121,24 @@ def mlx_state():
             "dynamic_multimask_stability_thresh": 0.98,
         },
     )
-    return {k: tuple(v.shape) for k, v in tree_flatten(base.parameters())}
+    return {name: tuple(value.shape) for name, value in flat_parameters(base).items()}
 
 
-def test_every_official_param_is_covered(official_state, mlx_state):
+def test_every_official_param_is_covered(
+    official_state: StateShapes,
+    mlx_state: StateShapes,
+) -> None:
     mlx_norm = {_normalize_mlx_name(k): v for k, v in mlx_state.items()}
     missing = [name for name in official_state if name not in mlx_norm]
     assert missing == [], f"official params absent from MLX tree: {missing[:10]}"
 
 
-def test_no_shape_mismatches(official_state, mlx_state):
+def test_no_shape_mismatches(
+    official_state: StateShapes,
+    mlx_state: StateShapes,
+) -> None:
     mlx_norm = {_normalize_mlx_name(k): v for k, v in mlx_state.items()}
-    mismatches = []
+    mismatches: list[tuple[str, Shape, Shape]] = []
     for name, oshape in official_state.items():
         mshape = mlx_norm[name]
         if tuple(mshape) != tuple(oshape) and not _layout_equivalent(
@@ -98,7 +148,10 @@ def test_no_shape_mismatches(official_state, mlx_state):
     assert mismatches == [], f"shape mismatches: {mismatches[:10]}"
 
 
-def test_mlx_only_params_are_derived_buffers(official_state, mlx_state):
+def test_mlx_only_params_are_derived_buffers(
+    official_state: StateShapes,
+    mlx_state: StateShapes,
+) -> None:
     official_norm = set(official_state)
     extras = [
         name for name in mlx_state if _normalize_mlx_name(name) not in official_norm
@@ -114,7 +167,7 @@ def test_mlx_only_params_are_derived_buffers(official_state, mlx_state):
     )
 
 
-def test_official_oracle_param_count(official_state):
+def test_official_oracle_param_count(official_state: StateShapes) -> None:
     # Guards against the fixture silently changing if the oracle is regenerated
     # against a different upstream revision.
     assert len(official_state) == 309

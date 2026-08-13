@@ -1,8 +1,12 @@
+from typing import Protocol, cast
+
 import mlx.core as mx
 import numpy as np
 import pytest
+from numpy.typing import DTypeLike, NDArray
 from PIL import Image
 
+from sam3_mlx.mlx_runtime import to_numpy
 from sam3_mlx.perflib import nms
 from sam3_mlx.perflib import masks_ops
 from sam3_mlx.perflib.iou import pairwise_iom, pairwise_iou
@@ -13,17 +17,19 @@ from tests._paths import PERFLIB_FIXTURE_ROOT
 UPSTREAM_PERFLIB_TESTS_SOURCE_COMMIT = "2814fa619404a722d03e9a012e083e4f293a4e53"
 
 
-def _to_numpy(value):
-    mx.eval(value)
-    return np.asarray(value)
+class _HostArrayCall(Protocol):
+    def __call__(self, value: object, *, dtype: DTypeLike) -> NDArray[np.float32]: ...
 
 
-def _load_official_masks_fixture(dtype: np.dtype) -> np.ndarray:
+def _load_official_masks_fixture(dtype: DTypeLike) -> NDArray[np.generic]:
     image = Image.open(PERFLIB_FIXTURE_ROOT / "masks.tiff")
-    frames = []
-    for index in range(image.n_frames):
+    frame_count: object = getattr(image, "n_frames", None)
+    if isinstance(frame_count, bool) or not isinstance(frame_count, int):
+        raise AssertionError("the official masks fixture must expose integer n_frames")
+    frames: list[NDArray[np.generic]] = []
+    for index in range(frame_count):
         image.seek(index)
-        frames.append(np.asarray(image, dtype=dtype))
+        frames.append(cast(NDArray[np.generic], np.asarray(image, dtype=dtype)))
     return np.stack(frames, axis=0)
 
 
@@ -48,13 +54,13 @@ def test_mask_iou_and_iom_mlx_bool_masks_match_fixed_expected_values():
     assert isinstance(iou, mx.array)
     assert isinstance(iom, mx.array)
     np.testing.assert_allclose(
-        _to_numpy(iou),
+        to_numpy(iou),
         np.array([[2.0 / 3.0, 0.0, 0.0], [0.0, 0.5, 0.0]], dtype=np.float32),
         rtol=0,
         atol=1e-6,
     )
     np.testing.assert_allclose(
-        _to_numpy(iom),
+        to_numpy(iom),
         np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
         rtol=0,
         atol=1e-6,
@@ -95,13 +101,13 @@ def test_pairwise_iou_and_iom_mlx_uint_masks_match_fixed_expected_values():
     assert isinstance(iou, mx.array)
     assert isinstance(iom, mx.array)
     np.testing.assert_allclose(
-        _to_numpy(iou),
+        to_numpy(iou),
         np.full((2, 2), 1.0 / (3.0 + 1e-6), dtype=np.float32),
         rtol=0,
         atol=1e-7,
     )
     np.testing.assert_allclose(
-        _to_numpy(iom),
+        to_numpy(iom),
         np.full((2, 2), 1.0 / (2.0 + 1e-8), dtype=np.float32),
         rtol=0,
         atol=1e-7,
@@ -115,7 +121,7 @@ def test_pairwise_iou_empty_mlx_masks_preserve_empty_pairwise_shape():
     actual = pairwise_iou(pred, gt, eps=None)
 
     assert isinstance(actual, mx.array)
-    np.testing.assert_array_equal(_to_numpy(actual), np.zeros((0, 1), dtype=np.float32))
+    np.testing.assert_array_equal(to_numpy(actual), np.zeros((0, 1), dtype=np.float32))
 
 
 def test_pairwise_iou_rejects_mismatched_mlx_spatial_shapes():
@@ -141,7 +147,7 @@ def test_generic_nms_mlx_inputs_return_mlx_kept_indices():
     actual = generic_nms(ious, scores, iou_threshold=0.5)
 
     assert isinstance(actual, mx.array)
-    np.testing.assert_array_equal(_to_numpy(actual), np.array([1, 3], dtype=np.int64))
+    np.testing.assert_array_equal(to_numpy(actual), np.array([1, 3], dtype=np.int64))
 
 
 def test_nms_masks_mlx_uint_masks_keep_expected_detections():
@@ -167,12 +173,14 @@ def test_nms_masks_mlx_uint_masks_keep_expected_detections():
 
     assert isinstance(actual, mx.array)
     np.testing.assert_array_equal(
-        _to_numpy(actual),
+        to_numpy(actual),
         np.array([False, True, True, False]),
     )
 
 
-def test_nms_masks_mlx_path_does_not_export_full_masks(monkeypatch):
+def test_nms_masks_mlx_path_does_not_export_full_masks(
+    monkeypatch: pytest.MonkeyPatch,
+):
     pred_probs = mx.array([0.8, 0.9, 0.7, 0.4], dtype=mx.float32)
     pred_masks = mx.array(
         np.array(
@@ -185,9 +193,12 @@ def test_nms_masks_mlx_path_does_not_export_full_masks(monkeypatch):
             dtype=np.uint8,
         )
     )
-    original_host_array = nms._host_array
+    raw_host_array: object = getattr(nms, "_host_array")
+    if not callable(raw_host_array):
+        raise AssertionError("nms._host_array must be callable")
+    original_host_array = cast(_HostArrayCall, raw_host_array)
 
-    def guarded_host_array(value, *, dtype=None):
+    def guarded_host_array(value: object, *, dtype: DTypeLike) -> NDArray[np.float32]:
         if isinstance(value, mx.array) and len(value.shape) >= 3:
             raise AssertionError(f"full mask tensor exported to host: {value.shape}")
         return original_host_array(value, dtype=dtype)
@@ -202,7 +213,7 @@ def test_nms_masks_mlx_path_does_not_export_full_masks(monkeypatch):
     )
 
     np.testing.assert_array_equal(
-        _to_numpy(actual),
+        to_numpy(actual),
         np.array([False, True, True, False]),
     )
 
@@ -233,11 +244,13 @@ def test_nms_masks_mlx_no_valid_and_empty_masks_return_false_keep_masks():
 
     assert isinstance(no_valid, mx.array)
     assert isinstance(empty, mx.array)
-    np.testing.assert_array_equal(_to_numpy(no_valid), np.array([False, False]))
-    np.testing.assert_array_equal(_to_numpy(empty), np.zeros((0,), dtype=bool))
+    np.testing.assert_array_equal(to_numpy(no_valid), np.array([False, False]))
+    np.testing.assert_array_equal(to_numpy(empty), np.zeros((0,), dtype=bool))
 
 
-def test_masks_to_boxes_mlx_stays_on_device_and_matches_numpy_contract(monkeypatch):
+def test_masks_to_boxes_mlx_stays_on_device_and_matches_numpy_contract(
+    monkeypatch: pytest.MonkeyPatch,
+):
     masks = mx.array(
         np.array(
             [
@@ -257,10 +270,10 @@ def test_masks_to_boxes_mlx_stays_on_device_and_matches_numpy_contract(monkeypat
         )
     )
 
-    def fail_to_numpy(value):
+    def fail_to_numpy(value: object) -> NDArray[np.generic]:
         if isinstance(value, mx.array):
             raise AssertionError("MLX masks_to_boxes path exported masks to host")
-        return np.asarray(value)
+        return cast(NDArray[np.generic], np.asarray(value))
 
     monkeypatch.setattr(masks_ops, "_to_numpy", fail_to_numpy)
 
@@ -268,7 +281,7 @@ def test_masks_to_boxes_mlx_stays_on_device_and_matches_numpy_contract(monkeypat
 
     assert isinstance(actual, mx.array)
     np.testing.assert_array_equal(
-        _to_numpy(actual),
+        to_numpy(actual),
         np.array(
             [
                 [1.0, 1.0, 2.0, 2.0],
@@ -287,7 +300,7 @@ def test_masks_to_boxes_mlx_empty_and_shape_errors():
     )
 
     assert isinstance(empty, mx.array)
-    np.testing.assert_array_equal(_to_numpy(empty), np.zeros((0, 4), dtype=np.float32))
+    np.testing.assert_array_equal(to_numpy(empty), np.zeros((0, 4), dtype=np.float32))
 
     with pytest.raises(ValueError, match="same length"):
         masks_to_boxes(mx.array(np.zeros((1, 2, 3), dtype=np.uint8)), obj_ids=[])
@@ -322,7 +335,7 @@ def test_masks_to_boxes_matches_official_perflib_fixture_for_numpy_and_mlx():
         assert isinstance(numpy_boxes, np.ndarray)
         assert isinstance(mlx_boxes, mx.array)
         np.testing.assert_allclose(numpy_boxes, expected, rtol=0.0, atol=1e-4)
-        np.testing.assert_allclose(_to_numpy(mlx_boxes), expected, rtol=0.0, atol=1e-4)
+        np.testing.assert_allclose(to_numpy(mlx_boxes), expected, rtol=0.0, atol=1e-4)
 
 
 def test_numpy_inputs_still_return_numpy_outputs_for_overlap_helpers():

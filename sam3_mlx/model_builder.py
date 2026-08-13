@@ -2660,7 +2660,10 @@ def _create_multiplex_maskmem_backbone(
     )
 
 
-def _create_multiplex_transformer(use_fa3: bool = False, use_rope_real: bool = False):
+def _create_multiplex_transformer(
+    use_fa3: bool = False,
+    use_rope_real: bool = False,
+) -> TransformerWrapper:
     """Create the multiplex decoupled memory-attention transformer."""
     self_attention_rope = SimpleRoPEAttention(
         d_model=256,

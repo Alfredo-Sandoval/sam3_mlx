@@ -1,29 +1,51 @@
+from collections.abc import Callable
+from typing import cast
+
 import pytest
-from mlx.utils import tree_flatten
 
 from sam3_mlx import Sam3MlxUnsupportedError
+from sam3_mlx import model_builder
+from sam3_mlx.model.decoder import TransformerEncoderDecoupledCrossAttention
+from sam3_mlx.model.memory import SimpleMaskEncoder
+from sam3_mlx.model.model_misc import TransformerWrapper
 from sam3_mlx.model.multiplex_utils import UnsupportedMultiplexRuntimeError
 from sam3_mlx.model.necks import Sam3TriViTDetNeck
 from sam3_mlx.model.video_tracking_multiplex_demo import (
     Sam3VideoTrackingMultiplexDemo,
 )
-from sam3_mlx.model_builder import (
-    _create_multiplex_maskmem_backbone,
-    _create_multiplex_transformer,
-    _create_multiplex_tri_backbone,
-    build_sam3_multiplex_video_model,
-)
+from sam3_mlx.model_builder import build_sam3_multiplex_video_model
+from tests._mlx_runtime import flat_parameters
+
+
+def _component_factory(name: str) -> object:
+    factory: object = getattr(model_builder, name, None)
+    if not callable(factory):
+        raise AssertionError(f"model_builder.{name} must be callable")
+    return factory
 
 
 def test_multiplex_component_builders_construct_official_shapes():
-    maskmem = _create_multiplex_maskmem_backbone(multiplex_count=4)
-    transformer = _create_multiplex_transformer(use_fa3=False, use_rope_real=False)
-    tri_neck = _create_multiplex_tri_backbone()
+    create_maskmem = cast(
+        Callable[[int], SimpleMaskEncoder],
+        _component_factory("_create_multiplex_maskmem_backbone"),
+    )
+    create_transformer = cast(
+        Callable[[bool, bool], TransformerWrapper],
+        _component_factory("_create_multiplex_transformer"),
+    )
+    create_tri_backbone = cast(
+        Callable[[str | None, bool, bool], Sam3TriViTDetNeck],
+        _component_factory("_create_multiplex_tri_backbone"),
+    )
+    maskmem = create_maskmem(4)
+    transformer = create_transformer(False, False)
+    tri_neck = create_tri_backbone(None, False, False)
 
     assert maskmem.mask_downsampler.multiplex_count == 8
     assert maskmem.out_proj.__class__.__name__ == "Identity"
     assert transformer.decoder is None
     assert transformer.d_model == 256
+    assert isinstance(transformer.encoder, TransformerEncoderDecoupledCrossAttention)
     assert transformer.encoder.num_layers == 4
     assert transformer.encoder.use_image_in_output is False
     assert isinstance(tri_neck, Sam3TriViTDetNeck)
@@ -49,8 +71,8 @@ def test_multiplex_video_model_builder_constructs_checkpoint_free_mlx_shell():
     assert model.sam_mask_decoder.num_multimask_outputs == 3
     assert model.interactive_sam_mask_decoder.pred_obj_scores is True
     assert model.use_obj_ptrs_in_encoder is True
-    assert model.obj_ptr_tpos_proj.weight.shape == (256, 256)
-    params = dict(tree_flatten(model.parameters()))
+    params = flat_parameters(model)
+    assert params["obj_ptr_tpos_proj.weight"].shape == (256, 256)
     assert params["maskmem_tpos_enc"].shape == (7, 1, 1, 256)
     assert params["output_valid_embed"].shape == (4, 256)
     assert params["output_invalid_embed"].shape == (4, 256)

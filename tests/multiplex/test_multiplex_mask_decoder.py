@@ -1,17 +1,33 @@
+from typing import TypedDict, cast
+
 import numpy as np
 import pytest
 import mlx.core as mx
-import mlx.nn as nn
+from mlx import nn
 
+from sam3_mlx.mlx_runtime import to_numpy
 from sam3_mlx.model.multiplex_mask_decoder import MultiplexMaskDecoder
+from sam3_mlx.sam.tensor_protocols import ArrayMethods
+
+
+class _TransformerCall(TypedDict):
+    src_shape: tuple[int, ...]
+    pos_src_shape: tuple[int, ...]
+    tokens_shape: tuple[int, ...]
 
 
 class _RecordingTransformer(nn.Module):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
-        self.calls = []
+        self.calls: list[_TransformerCall] = []
 
-    def __call__(self, src, pos_src, tokens):
+    def __call__(
+        self,
+        src: mx.array,
+        pos_src: mx.array,
+        tokens: mx.array,
+        /,
+    ) -> tuple[mx.array, mx.array]:
         self.calls.append(
             {
                 "src_shape": src.shape,
@@ -20,23 +36,24 @@ class _RecordingTransformer(nn.Module):
             }
         )
         batch_size, channels, height, width = src.shape
-        flat_src = src.reshape(batch_size, channels, height * width).transpose(0, 2, 1)
+        flat_src = cast(ArrayMethods, src).reshape(batch_size, channels, height * width)
+        flat_src = cast(ArrayMethods, flat_src).transpose(0, 2, 1)
         return tokens, flat_src
 
 
-def _inputs(batch_size=2, channels=8, height=2, width=2):
-    values = mx.arange(
-        batch_size * channels * height * width,
-        dtype=mx.float32,
+def _inputs(
+    batch_size: int = 2,
+    channels: int = 8,
+    height: int = 2,
+    width: int = 2,
+) -> tuple[mx.array, mx.array]:
+    values = cast(
+        ArrayMethods,
+        mx.arange(batch_size * channels * height * width, dtype=mx.float32),
     ).reshape(batch_size, channels, height, width)
     image_embeddings = values / values.size
     image_pe = mx.zeros((1, channels, height, width), dtype=mx.float32)
     return image_embeddings, image_pe
-
-
-def _to_numpy(value):
-    mx.eval(value)
-    return np.asarray(value)
 
 
 def test_predict_masks_ports_default_multiplex_shapes_and_object_scores():
@@ -56,7 +73,7 @@ def test_predict_masks_ports_default_multiplex_shapes_and_object_scores():
     assert out["mask_tokens_out"].shape == (2, 2, 4, 8)
     assert out["object_score_logits"].shape == (2, 2)
     np.testing.assert_array_equal(
-        _to_numpy(out["object_score_logits"]), np.full((2, 2), 10.0)
+        to_numpy(out["object_score_logits"]), np.full((2, 2), 10.0)
     )
     assert transformer.calls[-1]["tokens_shape"] == (2, 10, 8)
 

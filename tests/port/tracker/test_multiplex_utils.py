@@ -7,15 +7,11 @@ import numpy as np
 import mlx.core as mx
 import pytest
 
+from sam3_mlx.mlx_runtime import to_numpy
 from sam3_mlx.model.multiplex_utils import MultiplexState
 from tests._paths import REPO_ROOT
 
 OFFICIAL_SAM3_MULTIPLEX_UTILS_COMMIT = "2814fa619404a722d03e9a012e083e4f293a4e53"
-
-
-def _to_numpy(value):
-    mx.eval(value)
-    return np.asarray(value)
 
 
 def _load_official_multiplex_utils():
@@ -50,7 +46,7 @@ def _load_official_multiplex_utils():
     return official_module, torch
 
 
-def _copy_assignments(assignments):
+def _copy_assignments(assignments: list[list[int]]) -> list[list[int]]:
     return [bucket.copy() for bucket in assignments]
 
 
@@ -78,8 +74,8 @@ def test_multiplex_state_mux_and_demux_use_index_permutation_for_mlx_inputs():
         ],
         dtype=np.float32,
     )
-    np.testing.assert_array_equal(_to_numpy(muxed), expected_muxed)
-    np.testing.assert_array_equal(_to_numpy(demuxed), _to_numpy(values))
+    np.testing.assert_array_equal(to_numpy(muxed), expected_muxed)
+    np.testing.assert_array_equal(to_numpy(demuxed), to_numpy(values))
 
 
 def test_multiplex_state_numpy_path_matches_mlx_path_and_preserves_padding_zeroes():
@@ -102,9 +98,9 @@ def test_multiplex_state_numpy_path_matches_mlx_path_and_preserves_padding_zeroe
         dtype=np.float32,
     )
     np.testing.assert_array_equal(muxed_np, expected_muxed)
-    np.testing.assert_array_equal(_to_numpy(muxed_mlx), expected_muxed)
+    np.testing.assert_array_equal(to_numpy(muxed_mlx), expected_muxed)
     np.testing.assert_array_equal(demuxed_np, values_np)
-    np.testing.assert_array_equal(_to_numpy(demuxed_mlx), values_np)
+    np.testing.assert_array_equal(to_numpy(demuxed_mlx), values_np)
 
 
 def test_multiplex_state_empty_assignments_return_empty_demux_and_zero_mux_slots():
@@ -118,11 +114,9 @@ def test_multiplex_state_empty_assignments_return_empty_demux_and_zero_mux_slots
     demuxed = state.demux(muxed)
 
     np.testing.assert_array_equal(
-        _to_numpy(muxed), np.zeros((2, 2, 3), dtype=np.float32)
+        to_numpy(muxed), np.zeros((2, 2, 3), dtype=np.float32)
     )
-    np.testing.assert_array_equal(
-        _to_numpy(demuxed), np.zeros((0, 3), dtype=np.float32)
-    )
+    np.testing.assert_array_equal(to_numpy(demuxed), np.zeros((0, 3), dtype=np.float32))
 
 
 def test_multiplex_state_valid_mask_reflects_non_padding_slots():
@@ -132,7 +126,7 @@ def test_multiplex_state_valid_mask_reflects_non_padding_slots():
     )
 
     np.testing.assert_array_equal(
-        _to_numpy(state.get_valid_object_mask()),
+        to_numpy(state.get_valid_object_mask()),
         np.array([[True, False, True], [False, True, False]]),
     )
 
@@ -164,10 +158,10 @@ def test_multiplex_state_matches_official_torch_transition_matrices():
     muxed = mlx_state.mux(mx.array(values_np, dtype=mx.float32))
     demuxed = mlx_state.demux(muxed)
 
-    np.testing.assert_allclose(_to_numpy(muxed), expected_muxed, rtol=0.0, atol=0.0)
-    np.testing.assert_allclose(_to_numpy(demuxed), expected_demuxed, rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(to_numpy(muxed), expected_muxed, rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(to_numpy(demuxed), expected_demuxed, rtol=0.0, atol=0.0)
     np.testing.assert_array_equal(
-        _to_numpy(mlx_state.get_valid_object_mask()), expected_valid_mask
+        to_numpy(mlx_state.get_valid_object_mask()), expected_valid_mask
     )
 
 
@@ -216,5 +210,5 @@ def test_multiplex_state_mutation_matches_official_torch_numeric_parity():
     muxed = mlx_state.mux(mx.array(values_np, dtype=mx.float32))
     demuxed = mlx_state.demux(muxed)
 
-    np.testing.assert_allclose(_to_numpy(muxed), expected_muxed, rtol=0.0, atol=0.0)
-    np.testing.assert_allclose(_to_numpy(demuxed), expected_demuxed, rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(to_numpy(muxed), expected_muxed, rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(to_numpy(demuxed), expected_demuxed, rtol=0.0, atol=0.0)

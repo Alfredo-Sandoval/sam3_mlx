@@ -7,17 +7,31 @@ machine without invoking the unported image backbone.
 """
 
 import json
+from typing import NotRequired, TypedDict
 
 import mlx.core as mx
 import numpy as np
 import pytest
 
 from sam3_mlx import Sam3MlxUnsupportedError
-from sam3_mlx.model.sam3_tracking_predictor import Sam3TrackerPredictor
+from sam3_mlx.mlx_runtime import to_numpy
+from sam3_mlx.model.sam3_tracker_base import (
+    BackboneFeatureOutput,
+    ImageBackboneOutput,
+    PointInputs,
+    TrackerBaseOptions,
+    TrackerOutputState,
+)
+from sam3_mlx.model.sam3_tracking_predictor import (
+    CachedFeature,
+    InferenceState,
+    Sam3TrackerPredictor,
+)
+from tests._json_contracts import require_mapping, require_real
 from tests._paths import PORT_TRACKER_FIXTURE_ROOT, REPO_ROOT
 
 
-PREDICTOR_KWARGS = dict(
+PREDICTOR_KWARGS = TrackerBaseOptions(
     image_size=28,
     num_maskmem=2,
     backbone_stride=14,
@@ -29,35 +43,134 @@ PREDICTOR_KWARGS = dict(
 )
 
 
-def _to_numpy(value):
-    mx.eval(value)
-    return np.asarray(value)
+class _ScriptedFrameOutput(TypedDict):
+    maskmem_features: mx.array | None
+    maskmem_pos_enc: list[mx.array] | None
+    pred_masks: mx.array | None
+    obj_ptr: mx.array
+    object_score_logits: mx.array
+    pred_masks_video_res: NotRequired[mx.array]
+    iou_score: NotRequired[mx.array]
+    eff_iou_score: NotRequired[mx.array]
 
 
-class _ScriptedPredictor(Sam3TrackerPredictor):
+class _FrameCall(TypedDict):
+    frame_idx: int
+    batch_size: int
+    is_init_cond_frame: bool
+    has_points: bool
+    reverse: bool
+    run_mem_encoder: bool
+    use_prev_mem_frame: bool
+
+
+class _MaskCall(TypedDict):
+    frame_idx: int
+    mask_shape: tuple[int, ...]
+    has_points: bool
+
+
+class _MemoryCall(TypedDict):
+    frame_idx: int
+    batch_size: int
+    high_res_shape: tuple[int, ...]
+    is_mask_from_pts: bool
+
+
+class _PredictorHarness(Sam3TrackerPredictor):
+    def object_id_to_index(self, state: InferenceState, obj_id: object) -> int:
+        return self._obj_id_to_idx(state, obj_id)
+
+    def object_index_to_id(self, state: InferenceState, obj_idx: int) -> object:
+        return self._obj_idx_to_id(state, obj_idx)
+
+    def object_count(self, state: InferenceState) -> int:
+        return self._get_obj_num(state)
+
+    def original_video_resolution_output(
+        self,
+        state: InferenceState,
+        masks: mx.array,
+    ) -> tuple[mx.array, mx.array]:
+        return self._get_orig_video_res_output(state, masks)
+
+    def object_wise_non_overlapping_constraints(
+        self,
+        pred_masks: mx.array,
+        obj_scores: mx.array,
+        *,
+        background_value: float,
+    ) -> mx.array:
+        return self._apply_object_wise_non_overlapping_constraints(
+            pred_masks,
+            obj_scores,
+            background_value=background_value,
+        )
+
+    def suppress_shrunk_masks(
+        self,
+        pred_masks: mx.array,
+        constrained_masks: mx.array,
+        *,
+        shrink_threshold: float,
+    ) -> mx.array:
+        return self._suppress_shrinked_masks(
+            pred_masks,
+            constrained_masks,
+            shrink_threshold=shrink_threshold,
+        )
+
+    def image_feature(
+        self,
+        state: InferenceState,
+        *,
+        frame_idx: int,
+        batch_size: int,
+    ) -> tuple[
+        mx.array,
+        BackboneFeatureOutput,
+        list[mx.array],
+        list[mx.array],
+        list[tuple[int, int]],
+    ]:
+        return self._get_image_feature(state, frame_idx, batch_size)
+
+
+class _ScriptedPredictor(_PredictorHarness):
     """Predictor with scripted frame outputs for state-machine tests."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(**PREDICTOR_KWARGS)
         self.eval()
-        self.calls = []
-        self.mask_calls = []
-        self.memory_calls = []
+        self.calls: list[_FrameCall] = []
+        self.mask_calls: list[_MaskCall] = []
+        self.memory_calls: list[_MemoryCall] = []
 
-    def _frame_out(self, frame_idx, run_mem_encoder, batch_size=1):
+    def _frame_out(
+        self,
+        frame_idx: int,
+        run_mem_encoder: bool,
+        batch_size: int = 1,
+    ) -> tuple[_ScriptedFrameOutput, mx.array]:
         value = float(frame_idx + 1)
         mask = mx.full(
             (batch_size, 1, self.low_res_mask_size, self.low_res_mask_size),
             value,
             dtype=mx.float32,
         )
-        out = {
-            "maskmem_features": None,
-            "maskmem_pos_enc": None,
-            "pred_masks": mask,
-            "obj_ptr": mx.full((batch_size, self.hidden_dim), value, dtype=mx.float32),
-            "object_score_logits": mx.full((batch_size, 1), value, dtype=mx.float32),
-        }
+        out = _ScriptedFrameOutput(
+            {
+                "maskmem_features": None,
+                "maskmem_pos_enc": None,
+                "pred_masks": mask,
+                "obj_ptr": mx.full(
+                    (batch_size, self.hidden_dim), value, dtype=mx.float32
+                ),
+                "object_score_logits": mx.full(
+                    (batch_size, 1), value, dtype=mx.float32
+                ),
+            }
+        )
         if run_mem_encoder:
             side = self.sam_image_embedding_size
             out["maskmem_features"] = mx.full(
@@ -76,18 +189,18 @@ class _ScriptedPredictor(Sam3TrackerPredictor):
 
     def _run_single_frame_inference(
         self,
-        inference_state,
-        output_dict,
-        frame_idx,
-        batch_size,
-        is_init_cond_frame,
-        point_inputs,
-        mask_inputs,
-        reverse,
-        run_mem_encoder,
-        prev_sam_mask_logits=None,
-        use_prev_mem_frame=True,
-    ):
+        inference_state: InferenceState,
+        output_dict: TrackerOutputState,
+        frame_idx: int,
+        batch_size: int,
+        is_init_cond_frame: bool,
+        point_inputs: PointInputs | None,
+        mask_inputs: mx.array | None,
+        reverse: bool,
+        run_mem_encoder: bool,
+        prev_sam_mask_logits: mx.array | None = None,
+        use_prev_mem_frame: bool = True,
+    ) -> tuple[_ScriptedFrameOutput, mx.array]:
         del inference_state, output_dict, prev_sam_mask_logits
         if mask_inputs is not None:
             self.mask_calls.append(
@@ -112,13 +225,13 @@ class _ScriptedPredictor(Sam3TrackerPredictor):
 
     def _run_memory_encoder(
         self,
-        inference_state,
-        frame_idx,
-        batch_size,
-        high_res_masks,
-        object_score_logits,
-        is_mask_from_pts,
-    ):
+        inference_state: InferenceState,
+        frame_idx: int,
+        batch_size: int,
+        high_res_masks: mx.array,
+        object_score_logits: mx.array,
+        is_mask_from_pts: bool,
+    ) -> tuple[mx.array, list[mx.array]]:
         del inference_state, object_score_logits
         self.memory_calls.append(
             {
@@ -138,10 +251,10 @@ class _ScriptedPredictor(Sam3TrackerPredictor):
 class _FakeTrackerBackbone:
     """Backbone stub that emits the tracker/SAM2 feature contract."""
 
-    def __init__(self):
-        self.calls = []
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, ...]] = []
 
-    def forward_image(self, image):
+    def forward_image(self, image: mx.array) -> ImageBackboneOutput:
         self.calls.append(tuple(image.shape))
         return {
             "sam2_backbone_out": {
@@ -171,12 +284,12 @@ def test_init_state_and_object_mapping_contract():
     assert state["cached_features"] == {}
     assert state["tracking_has_started"] is False
 
-    assert predictor._obj_id_to_idx(state, "cell") == 0
-    assert predictor._obj_idx_to_id(state, 0) == "cell"
-    assert predictor._get_obj_num(state) == 1
-    assert predictor._obj_id_to_idx(state, "second") == 1
-    assert predictor._obj_idx_to_id(state, 1) == "second"
-    assert predictor._get_obj_num(state) == 2
+    assert predictor.object_id_to_index(state, "cell") == 0
+    assert predictor.object_index_to_id(state, 0) == "cell"
+    assert predictor.object_count(state) == 1
+    assert predictor.object_id_to_index(state, "second") == 1
+    assert predictor.object_index_to_id(state, 1) == "second"
+    assert predictor.object_count(state) == 2
     assert state["obj_ids"] == ["cell", "second"]
 
 
@@ -200,16 +313,16 @@ def test_add_new_points_or_box_scales_prompts_and_returns_video_masks():
     assert low_res_masks is None
     assert tuple(video_res_masks.shape) == (1, 1, 6, 10)
     np.testing.assert_allclose(
-        _to_numpy(video_res_masks), np.ones((1, 1, 6, 10)), rtol=0, atol=1e-6
+        to_numpy(video_res_masks), np.ones((1, 1, 6, 10)), rtol=0, atol=1e-6
     )
 
     point_inputs = state["point_inputs_per_obj"][0][0]
     np.testing.assert_allclose(
-        _to_numpy(point_inputs["point_coords"]),
+        to_numpy(point_inputs["point_coords"]),
         np.array([[[0.0, 0.0], [28.0, 28.0], [7.0, 14.0]]], dtype=np.float32),
     )
     np.testing.assert_array_equal(
-        _to_numpy(point_inputs["point_labels"]),
+        to_numpy(point_inputs["point_labels"]),
         np.array([[2, 3, 1]], dtype=np.int32),
     )
     assert predictor.calls == [
@@ -249,7 +362,7 @@ def test_add_new_mask_stores_video_mask_and_clears_same_frame_points():
     assert obj_ids == ["cell"]
     assert low_res_masks is None
     assert tuple(video_res_masks.shape) == (1, 1, 6, 10)
-    logits = _to_numpy(video_res_masks)
+    logits = to_numpy(video_res_masks)
     assert logits[0, 0, 2, 3] == 1024.0
     assert logits[0, 0, 0, 0] == -1024.0
     assert predictor.mask_calls == [
@@ -263,7 +376,7 @@ def test_add_new_mask_stores_video_mask_and_clears_same_frame_points():
     stored_mask = state["mask_inputs_per_obj"][0][0]
     assert isinstance(next(iter(state["mask_inputs_per_obj"][0])), int)
     assert tuple(stored_mask.shape) == (1, 1, 6, 10)
-    np.testing.assert_array_equal(_to_numpy(stored_mask)[0, 0], mask.astype(bool))
+    np.testing.assert_array_equal(to_numpy(stored_mask)[0, 0], mask.astype(bool))
     assert (
         state["temp_output_dict_per_obj"][0]["cond_frame_outputs"][0]["pred_masks"]
         is None
@@ -271,7 +384,7 @@ def test_add_new_mask_stores_video_mask_and_clears_same_frame_points():
 
 
 def test_get_orig_video_res_output_applies_fill_hole_cleanup():
-    predictor = Sam3TrackerPredictor(fill_hole_area=1, **PREDICTOR_KWARGS)
+    predictor = _PredictorHarness(fill_hole_area=1, **PREDICTOR_KWARGS)
     predictor.eval()
     state = predictor.init_state(video_height=4, video_width=4, num_frames=1)
     scores = mx.array(
@@ -288,20 +401,20 @@ def test_get_orig_video_res_output_applies_fill_hole_cleanup():
         dtype=mx.float32,
     )
 
-    low_res_masks, video_res_masks = predictor._get_orig_video_res_output(
+    low_res_masks, video_res_masks = predictor.original_video_resolution_output(
         state,
         scores,
     )
 
     assert low_res_masks is scores
-    expected = _to_numpy(scores).copy()
+    expected = to_numpy(scores).copy()
     expected[0, 0, 1, 1] = 0.1
     expected[0, 0, 3, 3] = -0.1
-    np.testing.assert_allclose(_to_numpy(video_res_masks), expected, rtol=0, atol=1e-6)
+    np.testing.assert_allclose(to_numpy(video_res_masks), expected, rtol=0, atol=1e-6)
 
 
 def test_tracker_object_wise_non_overlap_and_shrinkage_helpers():
-    predictor = Sam3TrackerPredictor(**PREDICTOR_KWARGS)
+    predictor = _PredictorHarness(**PREDICTOR_KWARGS)
     predictor.eval()
     pred_masks = mx.array(
         [
@@ -312,14 +425,14 @@ def test_tracker_object_wise_non_overlap_and_shrinkage_helpers():
     )
     obj_scores = mx.array([[0.2], [0.9]], dtype=mx.float32)
 
-    constrained = predictor._apply_object_wise_non_overlapping_constraints(
+    constrained = predictor.object_wise_non_overlapping_constraints(
         pred_masks,
         obj_scores,
         background_value=-10.0,
     )
 
     np.testing.assert_allclose(
-        _to_numpy(constrained),
+        to_numpy(constrained),
         np.array(
             [
                 [[[-10.0, 4.0], [-10.0, -10.0]]],
@@ -329,14 +442,14 @@ def test_tracker_object_wise_non_overlap_and_shrinkage_helpers():
         ),
     )
 
-    shrunk = predictor._suppress_shrinked_masks(
+    shrunk = predictor.suppress_shrunk_masks(
         pred_masks,
         constrained,
         shrink_threshold=0.5,
     )
 
     np.testing.assert_allclose(
-        _to_numpy(shrunk),
+        to_numpy(shrunk),
         np.array(
             [
                 [[[-10.0, -10.0], [-10.0, -10.0]]],
@@ -392,9 +505,9 @@ def test_preflight_commits_prompt_frame_and_propagation_tracks_next_frame():
         predictor.low_res_mask_size,
     )
     assert tuple(outputs[0][3].shape) == (1, 1, 6, 10)
-    np.testing.assert_allclose(_to_numpy(outputs[1][2]), np.full((1, 1, 8, 8), 2.0))
+    np.testing.assert_allclose(to_numpy(outputs[1][2]), np.full((1, 1, 8, 8), 2.0))
     np.testing.assert_allclose(
-        _to_numpy(outputs[1][4]), np.array([[2.0]], dtype=np.float32)
+        to_numpy(outputs[1][4]), np.array([[2.0]], dtype=np.float32)
     )
     assert set(state["output_dict"]["non_cond_frame_outputs"]) == {1}
     assert state["frames_already_tracked"] == {
@@ -541,11 +654,11 @@ def test_propagate_in_video_filters_requested_obj_ids_in_requested_order():
 
     assert ordered[0][1] == ["nucleus", "cell"]
     np.testing.assert_allclose(
-        _to_numpy(ordered[0][2][:, :, 0, 0]),
+        to_numpy(ordered[0][2][:, :, 0, 0]),
         np.array([[20.0], [10.0]], dtype=np.float32),
     )
     np.testing.assert_allclose(
-        _to_numpy(ordered[0][4]),
+        to_numpy(ordered[0][4]),
         np.array([[0.9], [0.1]], dtype=np.float32),
     )
 
@@ -590,7 +703,7 @@ def test_propagate_in_video_rejects_invalid_requested_obj_ids():
     )
     predictor.propagate_in_video_preflight(state)
 
-    cases = [
+    cases: list[tuple[list[object], str]] = [
         ([], "at least one"),
         (["cell", "cell"], "duplicate"),
         (["missing"], "Unknown obj_ids"),
@@ -651,10 +764,10 @@ def test_remove_single_object_clears_tracker_state():
 
 
 def test_cached_feature_lookup_prepares_backbone_features_and_rejects_misses():
-    predictor = Sam3TrackerPredictor(**PREDICTOR_KWARGS)
+    predictor = _PredictorHarness(**PREDICTOR_KWARGS)
     predictor.eval()
     image = mx.zeros((1, 3, 28, 28), dtype=mx.float32)
-    backbone_out = {
+    backbone_out: BackboneFeatureOutput = {
         "backbone_fpn": [
             mx.zeros((1, 32, 8, 8), dtype=mx.float32),
             mx.zeros((1, 64, 4, 4), dtype=mx.float32),
@@ -666,15 +779,16 @@ def test_cached_feature_lookup_prepares_backbone_features_and_rejects_misses():
             mx.ones((1, 256, 2, 2), dtype=mx.float32),
         ],
     }
+    cached_features: dict[int, CachedFeature] = {0: (image, backbone_out)}
     state = predictor.init_state(
         video_height=6,
         video_width=10,
         num_frames=1,
-        cached_features={0: (image, backbone_out)},
+        cached_features=cached_features,
     )
 
-    out_image, prepared, vision_feats, vision_pos, feat_sizes = (
-        predictor._get_image_feature(state, frame_idx=0, batch_size=1)
+    out_image, prepared, vision_feats, vision_pos, feat_sizes = predictor.image_feature(
+        state, frame_idx=0, batch_size=1
     )
 
     assert out_image is image
@@ -684,14 +798,14 @@ def test_cached_feature_lookup_prepares_backbone_features_and_rejects_misses():
     assert tuple(vision_pos[0].shape) == (64, 1, 32)
 
     batched_image, batched_prepared, batched_vision_feats, batched_vision_pos, _ = (
-        predictor._get_image_feature(state, frame_idx=0, batch_size=2)
+        predictor.image_feature(state, frame_idx=0, batch_size=2)
     )
     assert tuple(batched_image.shape) == (2, 3, 28, 28)
     assert tuple(batched_prepared["backbone_fpn"][0].shape) == (2, 32, 8, 8)
     assert tuple(batched_vision_feats[-1].shape) == (4, 2, 256)
     assert tuple(batched_vision_pos[0].shape) == (64, 2, 32)
     with pytest.raises(RuntimeError, match="not cached"):
-        predictor._get_image_feature(state, frame_idx=99, batch_size=1)
+        predictor.image_feature(state, frame_idx=99, batch_size=1)
 
 
 @pytest.mark.parametrize(
@@ -707,7 +821,7 @@ def test_cached_feature_keys_validate_frame_index_contract(
     frame_idx: object,
     exception: type[Exception],
     message: str,
-):
+) -> None:
     predictor = Sam3TrackerPredictor(**PREDICTOR_KWARGS)
 
     with pytest.raises(exception, match=message):
@@ -719,15 +833,81 @@ def test_cached_feature_keys_validate_frame_index_contract(
         )
 
 
+_BAD_CACHED_FEATURE_CASES: list[tuple[object, str]] = [
+    (object(), "2-tuple or 5-tuple"),
+    ((object(), {}), "image must be an MLX array"),
+    (
+        (
+            mx.zeros((1, 3, 4, 4)),
+            {"backbone_fpn": [object()], "vision_pos_enc": []},
+        ),
+        "backbone_fpn must contain MLX arrays",
+    ),
+    (
+        (
+            mx.zeros((1, 3, 4, 4)),
+            {"backbone_fpn": [], "vision_pos_enc": []},
+            [],
+            [],
+            [(True, 2)],
+        ),
+        "feat_sizes entries must contain integers",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("raw_feature", "message"),
+    _BAD_CACHED_FEATURE_CASES,
+)
+def test_cached_feature_values_fail_closed(
+    raw_feature: object,
+    message: str,
+) -> None:
+    predictor = _PredictorHarness(**PREDICTOR_KWARGS)
+
+    with pytest.raises(TypeError, match=message):
+        predictor.init_state(
+            video_height=6,
+            video_width=10,
+            num_frames=1,
+            cached_features={0: raw_feature},
+        )
+
+
+@pytest.mark.parametrize(
+    ("frame_idx", "exception"),
+    [
+        pytest.param(True, TypeError, id="boolean"),
+        pytest.param("0", TypeError, id="string"),
+        pytest.param(-1, ValueError, id="negative"),
+    ],
+)
+def test_mask_prompt_frame_index_fails_closed(
+    frame_idx: object,
+    exception: type[Exception],
+) -> None:
+    predictor = _ScriptedPredictor()
+    state = predictor.init_state(video_height=6, video_width=10, num_frames=1)
+
+    with pytest.raises(exception, match="frame_idx"):
+        predictor.add_new_mask(
+            state,
+            frame_idx=frame_idx,
+            obj_id="cell",
+            mask=np.zeros((6, 10), dtype=np.float32),
+        )
+
+
 def test_cache_miss_uses_tracker_backbone_and_stores_prepared_features():
     backbone = _FakeTrackerBackbone()
-    predictor = Sam3TrackerPredictor(backbone=backbone, **PREDICTOR_KWARGS)
+    predictor = _PredictorHarness(backbone=backbone, **PREDICTOR_KWARGS)
     predictor.eval()
     images = mx.zeros((2, 3, 28, 28), dtype=mx.float32)
     state = predictor.init_state(images=images)
 
-    out_image, prepared, vision_feats, vision_pos, feat_sizes = (
-        predictor._get_image_feature(state, frame_idx=1, batch_size=1)
+    out_image, prepared, vision_feats, vision_pos, feat_sizes = predictor.image_feature(
+        state, frame_idx=1, batch_size=1
     )
 
     assert backbone.calls == [(1, 3, 28, 28)]
@@ -743,13 +923,13 @@ def test_cache_miss_uses_tracker_backbone_and_stores_prepared_features():
     assert tuple(vision_pos[0].shape) == (64, 1, 256)
 
     # The second lookup should use the cached feature instead of the backbone.
-    predictor._get_image_feature(state, frame_idx=1, batch_size=1)
+    predictor.image_feature(state, frame_idx=1, batch_size=1)
     assert backbone.calls == [(1, 3, 28, 28)]
 
 
 def test_init_state_video_path_loads_mlx_frames_for_backbone_cache_misses():
     backbone = _FakeTrackerBackbone()
-    predictor = Sam3TrackerPredictor(backbone=backbone, **PREDICTOR_KWARGS)
+    predictor = _PredictorHarness(backbone=backbone, **PREDICTOR_KWARGS)
     predictor.eval()
 
     state = predictor.init_state(video_path="<load-dummy-video-2>")
@@ -757,10 +937,12 @@ def test_init_state_video_path_loads_mlx_frames_for_backbone_cache_misses():
     assert state["num_frames"] == 2
     assert state["video_height"] == 480
     assert state["video_width"] == 640
-    assert tuple(state["images"].shape) == (2, 3, 28, 28)
+    images = state["images"]
+    assert isinstance(images, mx.array)
+    assert tuple(images.shape) == (2, 3, 28, 28)
     assert state["cached_features"] == {}
 
-    predictor._get_image_feature(state, frame_idx=0, batch_size=1)
+    predictor.image_feature(state, frame_idx=0, batch_size=1)
     assert backbone.calls == [(1, 3, 28, 28)]
     assert 0 in state["cached_features"]
 
@@ -779,10 +961,24 @@ def test_deferred_predictor_paths_raise_canonical_errors():
 
 def test_predictor_loop_parity_fixture_is_current():
     fixture = PORT_TRACKER_FIXTURE_ROOT / "predictor_loop_parity.json"
-    data = json.loads(fixture.read_text())
+    payload: object = json.loads(fixture.read_text())
+    data = require_mapping(payload, "predictor loop parity fixture")
+    atol = require_real(data.get("atol"), "predictor loop parity atol")
+    worst_max_abs = require_real(
+        data.get("worst_max_abs"),
+        "predictor loop parity worst_max_abs",
+    )
+    results = require_mapping(data.get("results"), "predictor loop parity results")
+    prop_masks = require_mapping(
+        results.get("prop[1].video_res_masks"),
+        "predictor loop parity propagated masks",
+    )
+    proof_artifact_value = data.get("proof_artifact")
+    if not isinstance(proof_artifact_value, str):
+        raise TypeError("predictor loop parity proof_artifact must be a string")
 
-    assert data["atol"] == 2e-3
-    assert data["worst_max_abs"] <= data["atol"]
-    assert data["results"]["prop[1].video_res_masks"]["max_abs"] == 0.0
-    proof_artifact = REPO_ROOT / data["proof_artifact"]
+    assert atol == 2e-3
+    assert worst_max_abs <= atol
+    assert require_real(prop_masks.get("max_abs"), "propagated mask max_abs") == 0.0
+    proof_artifact = REPO_ROOT / proof_artifact_value
     assert proof_artifact.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"

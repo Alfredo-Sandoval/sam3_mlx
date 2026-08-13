@@ -7,7 +7,7 @@ try:
     from typing import NotRequired, Required, TypedDict
 except ImportError:
     from typing_extensions import NotRequired, Required, TypedDict
-from typing import Any, TypeAlias, cast
+from typing import Any, TypeAlias, TypeVar, cast, overload
 
 import mlx.core as mx
 from mlx import nn
@@ -38,12 +38,15 @@ from sam3_mlx.model.sam3_tracker_base import SamMaskDecoderExtraArgs
 from sam3_mlx.sam.common import Conv2dNCHW
 from sam3_mlx.sam.mask_decoder import MaskDecoder
 from sam3_mlx.sam.prompt_encoder import PositionEmbeddingRandom, PromptEncoder
+from sam3_mlx.sam.tensor_protocols import ArrayModule
 from sam3_mlx.sam.transformer import TwoWayTransformer
 
 
 NO_OBJ_SCORE = -1024.0
 neck_outs = ["interactive", "sam2_backbone_out"]
 TrackerArray: TypeAlias = mx.array | NDArray[np.generic]
+_DestinationArray = TypeVar("_DestinationArray", bound=TrackerArray)
+_SourceArray = TypeVar("_SourceArray", bound=TrackerArray)
 
 
 def _trunc_normal(shape: tuple[int, ...], std: float = 0.02) -> mx.array:
@@ -51,38 +54,39 @@ def _trunc_normal(shape: tuple[int, ...], std: float = 0.02) -> mx.array:
 
 
 class SAMOutput(TypedDict, total=True):
-    low_res_multimasks: Any
-    high_res_multimasks: Any
-    ious: Any
-    low_res_masks: Any
-    high_res_masks: Any
-    object_score_logits: Any
+    low_res_multimasks: mx.array
+    high_res_multimasks: mx.array
+    ious: mx.array
+    low_res_masks: mx.array
+    high_res_masks: mx.array
+    object_score_logits: mx.array
     obj_ptr: NotRequired[mx.array]
 
 
 class StageOutput(TypedDict, total=False):
     conditioning_objects: Required[set[int]]
-    pred_masks: Any
-    pred_masks_high_res: Any
-    point_inputs: dict[str, Any] | None
-    mask_inputs: Any
-    object_score_logits: Any
+    pred_masks: mx.array | None
+    pred_masks_high_res: mx.array | None
+    point_inputs: dict[str, mx.array] | None
+    mask_inputs: mx.array | None
+    input_masks: mx.array
+    object_score_logits: mx.array
     obj_ptr: mx.array
-    maskmem_features: Any
-    maskmem_pos_enc: list[Any] | None
-    image_features: Any
-    image_pos_enc: Any
-    iou_score: Any
-    eff_iou_score: Any
-    multistep_pred_masks: Any
-    multistep_pred_masks_high_res: Any
-    multistep_pred_multimasks: list[Any]
-    multistep_pred_multimasks_high_res: list[Any]
-    multistep_pred_ious: list[Any]
-    multistep_point_inputs: list[dict[str, Any] | None]
-    multistep_object_score_logits: list[Any]
-    pred_masks_video_res: Any
-    local_obj_id_to_idx: dict[Any, int]
+    maskmem_features: mx.array | None
+    maskmem_pos_enc: list[mx.array] | None
+    image_features: mx.array
+    image_pos_enc: mx.array
+    iou_score: mx.array
+    eff_iou_score: mx.array
+    multistep_pred_masks: mx.array
+    multistep_pred_masks_high_res: mx.array
+    multistep_pred_multimasks: list[mx.array]
+    multistep_pred_multimasks_high_res: list[mx.array]
+    multistep_pred_ious: list[mx.array]
+    multistep_point_inputs: list[dict[str, mx.array] | None]
+    multistep_object_score_logits: list[mx.array]
+    pred_masks_video_res: mx.array
+    local_obj_id_to_idx: dict[object, int]
 
 
 def _concat(values: list[Any], axis: int) -> Any:
@@ -103,6 +107,25 @@ def concat_points(
     return {"point_coords": points, "point_labels": labels}
 
 
+def _require_string_dict(value: object, *, name: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise TypeError(f"{name} must be a dictionary")
+    mapping = cast(dict[object, object], value)
+    if not all(isinstance(key, str) for key in mapping):
+        raise TypeError(f"{name} must use string keys")
+    return cast(dict[str, object], mapping)
+
+
+def _mapping_array(mapping: Mapping[str, object], key: str) -> TrackerArray:
+    value = mapping[key]
+    if is_mlx_array(value):
+        return value
+    if isinstance(value, np.ndarray):
+        return cast(NDArray[np.generic], value)
+    raise TypeError(f"{key} must be an MLX or NumPy array")
+
+
+@overload
 def _append(
     d1: StageOutput,
     d2: SAMOutput,
@@ -110,14 +133,37 @@ def _append(
     k2: str,
     dim: int = 0,
     strict: bool = True,
+) -> None: ...
+
+
+@overload
+def _append(
+    d1: dict[str, _DestinationArray],
+    d2: Mapping[str, _SourceArray],
+    k1: str,
+    k2: str,
+    dim: int = 0,
+    strict: bool = True,
+) -> None: ...
+
+
+def _append(
+    d1: object,
+    d2: object,
+    k1: str,
+    k2: str,
+    dim: int = 0,
+    strict: bool = True,
 ) -> None:
-    d1_values = cast(dict[str, Any], cast(object, d1))
-    d2_values = cast(dict[str, Any], cast(object, d2))
+    d1_values = _require_string_dict(d1, name="destination")
+    d2_values = _require_string_dict(d2, name="source")
     if strict:
         assert k1 in d1_values, f"{k1} not found"
     elif k1 not in d1_values:
         return
-    d1_values[k1] = _concat([d1_values[k1], d2_values[k2]], axis=dim)
+    destination = _mapping_array(d1_values, k1)
+    source = _mapping_array(d2_values, k2)
+    d1_values[k1] = _concat([destination, source], axis=dim)
 
 
 def _require_sam_obj_ptr(output: SAMOutput) -> mx.array:
@@ -140,6 +186,7 @@ def _require_stage_values(output: StageOutput, *keys: str) -> dict[str, Any]:
     return values
 
 
+@overload
 def _merge(
     d1: StageOutput,
     d2: SAMOutput,
@@ -147,23 +194,46 @@ def _merge(
     k2: str,
     d2_idx: list[int],
     strict: bool = True,
+) -> None: ...
+
+
+@overload
+def _merge(
+    d1: dict[str, _DestinationArray],
+    d2: Mapping[str, _SourceArray],
+    k1: str,
+    k2: str,
+    d2_idx: list[int],
+    strict: bool = True,
+) -> None: ...
+
+
+def _merge(
+    d1: object,
+    d2: object,
+    k1: str,
+    k2: str,
+    d2_idx: list[int],
+    strict: bool = True,
 ) -> None:
-    d1_values = cast(dict[str, Any], cast(object, d1))
-    d2_values = cast(dict[str, Any], cast(object, d2))
+    d1_values = _require_string_dict(d1, name="destination")
+    d2_values = _require_string_dict(d2, name="source")
     if strict:
         assert k1 in d1_values, f"{k1} not found"
     elif k1 not in d1_values:
         return
 
-    if is_mlx_array(d1_values[k1]) or is_mlx_array(d2_values[k2]):
-        merged = _to_numpy(d1_values[k1]).copy()
-        source = _to_numpy(d2_values[k2]).astype(merged.dtype, copy=False)
-        merged[d2_idx] = source
+    destination = _mapping_array(d1_values, k1)
+    source = _mapping_array(d2_values, k2)
+    if is_mlx_array(destination) or is_mlx_array(source):
+        merged = _to_numpy(destination).copy()
+        source_array = _to_numpy(source).astype(merged.dtype, copy=False)
+        merged[d2_idx] = source_array
         d1_values[k1] = mx.array(merged)
         return
 
-    target = cast(np.ndarray, d1_values[k1])
-    target[d2_idx] = np.asarray(d2_values[k2], dtype=target.dtype)
+    target = cast(np.ndarray, destination)
+    target[d2_idx] = np.asarray(source, dtype=target.dtype)
 
 
 def _replace_rows(value: Any, indices: list[int], replacement: Any) -> Any:
@@ -269,6 +339,8 @@ def _replace_feature_tensor(feature_map: Any, tensor: Any) -> Any:
 
 
 class VideoTrackingMultiplex(nn.Module):
+    interactive_mask_downsample: ArrayModule
+
     def __init__(
         self,
         backbone: nn.Module,
@@ -617,7 +689,13 @@ class VideoTrackingMultiplex(nn.Module):
             else nn.Identity()
         )
 
-    def _maybe_clone(self, x: Any) -> Any:
+    @overload
+    def _maybe_clone(self, x: mx.array) -> mx.array: ...
+
+    @overload
+    def _maybe_clone(self, x: NDArray[np.generic]) -> NDArray[np.generic]: ...
+
+    def _maybe_clone(self, x: TrackerArray) -> TrackerArray:
         return mx.array(x) if is_mlx_array(x) else np.array(x, copy=True)
 
     def get_propagation_dense_pe(self) -> mx.array:
@@ -1109,16 +1187,16 @@ class VideoTrackingMultiplex(nn.Module):
 
     def _get_interactive_pix_mem(
         self,
-        features: list[Any],
+        features: list[mx.array],
         feat_sizes: list[tuple[int, int]],
-    ) -> Any:
+    ) -> mx.array:
         if not self.directly_add_no_mem_embed:
             raise ValueError("directly_add_no_mem_embed is required for interactivity")
         pix_feat_with_mem = features[-1] + self.interactivity_no_mem_embed
         B = features[-1].shape[1]
         C = self.hidden_dim
         H, W = feat_sizes[-1]
-        return pix_feat_with_mem.transpose(1, 2, 0).reshape(B, C, H, W)
+        return reshape_array(transpose_array(pix_feat_with_mem, 1, 2, 0), B, C, H, W)
 
     def cal_mem_score(self, object_score_logits: Any, iou_score: Any) -> Any:
         object_score_norm = mx.where(
@@ -1281,8 +1359,8 @@ class VideoTrackingMultiplex(nn.Module):
         for t_pos, prev, is_selected_cond_frame in t_pos_and_prevs:
             if prev is None:
                 continue
-            feats = cast(mx.array | None, prev.get("maskmem_features"))
-            maskmem_pos_list = cast(list[mx.array] | None, prev.get("maskmem_pos_enc"))
+            feats = prev.get("maskmem_features")
+            maskmem_pos_list = prev.get("maskmem_pos_enc")
             if feats is None or not maskmem_pos_list:
                 continue
             maskmem_enc = maskmem_pos_list[-1]
@@ -1588,11 +1666,9 @@ class VideoTrackingMultiplex(nn.Module):
             )
             maskmem_out = encode(image, pix_feat, mux_mask_for_mem)
 
-        maskmem_features = cast(
-            mx.array, self._maybe_clone(maskmem_out["vision_features"])
-        )
+        maskmem_features = self._maybe_clone(maskmem_out["vision_features"])
         maskmem_pos_enc: list[mx.array] = [
-            cast(mx.array, self._maybe_clone(m)) for m in maskmem_out["vision_pos_enc"]
+            self._maybe_clone(m) for m in maskmem_out["vision_pos_enc"]
         ]
 
         if self.no_obj_embed_spatial is not None:
@@ -1675,9 +1751,9 @@ class VideoTrackingMultiplex(nn.Module):
 
     def _use_mask_as_output(
         self,
-        backbone_features: Any,
-        high_res_features: list[Any] | None,
-        mask_inputs: Any,
+        backbone_features: mx.array,
+        high_res_features: list[mx.array] | None,
+        mask_inputs: mx.array,
         multiplex_state: MultiplexState,
         objects_in_mask: list[int] | None = None,
     ) -> SAMOutput:
@@ -1698,7 +1774,7 @@ class VideoTrackingMultiplex(nn.Module):
             )
 
         out_scale, out_bias = 20.0, -10.0
-        dtype = getattr(backbone_features, "dtype", mx.float32)
+        dtype = backbone_features.dtype
         mask_inputs_float = mask_inputs.astype(dtype)
         high_res_masks = mask_inputs_float * out_scale + out_bias
         low_res_masks = interpolate(
@@ -1713,7 +1789,8 @@ class VideoTrackingMultiplex(nn.Module):
         ious = mx.ones((mask_inputs.shape[0], 1), dtype=dtype)
 
         is_obj_appearing = mx.any(
-            mask_inputs.reshape(mask_inputs.shape[0], -1).astype(mx.float32) > 0.0,
+            reshape_array(mask_inputs, mask_inputs.shape[0], -1).astype(mx.float32)
+            > 0.0,
             axis=1,
         )[:, None]
         lambda_is_obj_appearing = is_obj_appearing.astype(dtype)
@@ -1772,14 +1849,14 @@ class VideoTrackingMultiplex(nn.Module):
 
     def _forward_sam_heads(
         self,
-        backbone_features: Any,
+        backbone_features: mx.array,
         *,
-        point_inputs: dict[str, Any] | None = None,
-        mask_inputs: Any | None = None,
-        interactive_high_res_features: list[Any] | None = None,
-        propagation_high_res_features: list[Any] | None = None,
+        point_inputs: dict[str, mx.array] | None = None,
+        mask_inputs: mx.array | None = None,
+        interactive_high_res_features: list[mx.array] | None = None,
+        propagation_high_res_features: list[mx.array] | None = None,
         multimask_output: bool = False,
-        gt_masks: Any = None,
+        gt_masks: mx.array | None = None,
         multiplex_state: MultiplexState,
         objects_to_interact: list[int] | None = None,
     ) -> SAMOutput:
@@ -2526,8 +2603,8 @@ class VideoTrackingMultiplex(nn.Module):
         *,
         frame_idx: int,
         is_init_cond_frame: bool,
-        backbone_features_interactive: dict[str, Any] | None,
-        backbone_features_propagation: dict[str, Any] | None,
+        backbone_features_interactive: Mapping[str, object] | None,
+        backbone_features_propagation: Mapping[str, object] | None,
         image: Any,
         point_inputs: dict[str, Any] | None,
         mask_inputs: Any,
@@ -2548,11 +2625,27 @@ class VideoTrackingMultiplex(nn.Module):
         prefer_new_buckets: bool = False,
         reconditioning: bool = False,
     ) -> StageOutput:
+        interactive_features = (
+            _require_string_dict(
+                backbone_features_interactive,
+                name="backbone_features_interactive",
+            )
+            if backbone_features_interactive is not None
+            else None
+        )
+        propagation_features = (
+            _require_string_dict(
+                backbone_features_propagation,
+                name="backbone_features_propagation",
+            )
+            if backbone_features_propagation is not None
+            else None
+        )
         current_out, aux_out = self._track_step_aux(
             frame_idx=frame_idx,
             is_init_cond_frame=is_init_cond_frame,
-            backbone_features_interactive=backbone_features_interactive,
-            backbone_features_propagation=backbone_features_propagation,
+            backbone_features_interactive=interactive_features,
+            backbone_features_propagation=propagation_features,
             image=image,
             point_inputs=point_inputs,
             mask_inputs=mask_inputs,
@@ -2766,11 +2859,14 @@ class VideoTrackingMultiplex(nn.Module):
 
     def propagate_in_video_preflight(
         self,
-        sam2_state: dict[str, Any],
+        sam2_state: object,
         run_mem_encoder: bool = True,
     ) -> None:
         del run_mem_encoder
-        sam2_state["tracking_has_started"] = True
+        if not isinstance(sam2_state, dict):
+            raise TypeError("SAM2 state must be a dictionary.")
+        state = cast(dict[str, object], sam2_state)
+        state["tracking_has_started"] = True
 
     def forward_tracking(
         self,
@@ -3063,43 +3159,39 @@ class VideoTrackingMultiplex(nn.Module):
             objects_in_mask=new_object_idx,
         )
 
-        if "pred_masks" not in prev_output or prev_output["pred_masks"] is None:
-            prev_output["pred_masks"] = mx.zeros(
+        pred_masks = prev_output.get("pred_masks")
+        if pred_masks is None:
+            pred_masks = mx.zeros(
                 (0, *mask_output["low_res_masks"].shape[1:]),
                 dtype=mask_output["low_res_masks"].dtype,
             )
-        if (
-            "pred_masks_high_res" not in prev_output
-            or prev_output["pred_masks_high_res"] is None
-        ):
-            prev_output["pred_masks_high_res"] = mx.zeros(
+            prev_output["pred_masks"] = pred_masks
+
+        pred_masks_high_res = prev_output.get("pred_masks_high_res")
+        if pred_masks_high_res is None:
+            pred_masks_high_res = mx.zeros(
                 (0, *mask_output["high_res_masks"].shape[1:]),
                 dtype=mask_output["high_res_masks"].dtype,
             )
-        if (
-            "object_score_logits" not in prev_output
-            or prev_output["object_score_logits"] is None
-        ):
+            prev_output["pred_masks_high_res"] = pred_masks_high_res
+
+        if "object_score_logits" not in prev_output:
             prev_output["object_score_logits"] = mx.zeros(
                 (0, *mask_output["object_score_logits"].shape[1:]),
                 dtype=mask_output["object_score_logits"].dtype,
             )
 
         interactive_resolution = mask_output["high_res_masks"].shape[-1]
-        if (
-            "pred_masks_high_res" in prev_output
-            and prev_output["pred_masks_high_res"] is not None
-        ):
-            existing_resolution = prev_output["pred_masks_high_res"].shape[-1]
-            if existing_resolution != interactive_resolution:
-                prev_output["pred_masks_high_res"] = interpolate(
-                    prev_output["pred_masks_high_res"],
-                    size=(interactive_resolution, interactive_resolution),
-                    mode="bilinear",
-                    align_corners=False,
-                )
+        existing_resolution = pred_masks_high_res.shape[-1]
+        if existing_resolution != interactive_resolution:
+            prev_output["pred_masks_high_res"] = interpolate(
+                pred_masks_high_res,
+                size=(interactive_resolution, interactive_resolution),
+                mode="bilinear",
+                align_corners=False,
+            )
 
-        h, w = prev_output["pred_masks"].shape[-2:]
+        h, w = pred_masks.shape[-2:]
         mask_output["low_res_masks"] = interpolate(
             mask_output["low_res_masks"],
             size=(h, w),
@@ -3121,7 +3213,7 @@ class VideoTrackingMultiplex(nn.Module):
         if self.use_memory_selection:
             ious = mask_output["ious"]
             if len(ious.shape) > 1 and ious.shape[-1] == 1:
-                ious = ious.reshape(ious.shape[:-1])
+                ious = reshape_array(ious, *ious.shape[:-1])
             mask_output["ious"] = ious
             _append(prev_output, mask_output, "iou_score", "ious")
 
@@ -3266,7 +3358,7 @@ class VideoTrackingMultiplex(nn.Module):
         if self.use_memory_selection:
             ious = mask_output["ious"]
             if len(ious.shape) > 1 and ious.shape[-1] == 1:
-                ious = ious.reshape(ious.shape[:-1])
+                ious = reshape_array(ious, *ious.shape[:-1])
             mask_output["ious"] = ious
             _merge(prev_output, mask_output, "iou_score", "ious", obj_idxs_in_mask)
 

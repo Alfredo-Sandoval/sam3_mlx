@@ -1018,7 +1018,7 @@ class Sam3TrackerBase(nn.Module):
 
     def _encode_new_memory(
         self,
-        image: mx.array,
+        image: mx.array | None,
         current_vision_feats: list[mx.array],
         feat_sizes: list[tuple[int, int]],
         pred_masks_high_res: mx.array,
@@ -1146,7 +1146,7 @@ class Sam3TrackerBase(nn.Module):
         current_vision_feats: list[mx.array],
         current_vision_pos_embeds: list[mx.array],
         feat_sizes: list[tuple[int, int]],
-        image: mx.array,
+        image: mx.array | None,
         point_inputs: PointInputs | None,
         mask_inputs: mx.array | None,
         output_dict: TrackerOutputState,

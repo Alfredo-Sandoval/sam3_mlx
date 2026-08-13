@@ -16,8 +16,9 @@ Tracker port status:
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from collections import OrderedDict
+from numbers import Integral
 from pathlib import Path
 from typing import (
     Literal,
@@ -183,6 +184,15 @@ def _positive_integer(value: object, *, name: str) -> int:
     return normalized
 
 
+def _normalize_frame_index(value: object, *, num_frames: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, Integral):
+        raise TypeError("frame_idx must be an integer")
+    frame_idx = int(value)
+    if not 0 <= frame_idx < num_frames:
+        raise ValueError(f"frame_idx {frame_idx} is outside the video frame range.")
+    return frame_idx
+
+
 def _eval_tree(*values: object) -> None:
     arrays: list[mx.array] = []
 
@@ -298,14 +308,122 @@ def _validate_cached_features(
     if not isinstance(cached_features, dict):
         raise TypeError("cached_features must be a dict keyed by frame index.")
     cached_mapping = cast(dict[object, object], cached_features)
-    for frame_idx in cached_mapping:
+    validated: dict[int, CachedFeature] = {}
+    for frame_idx, raw_feature in cached_mapping.items():
         if isinstance(frame_idx, bool) or not isinstance(frame_idx, int):
             raise TypeError("cached_features frame indices must be integers")
         if not 0 <= frame_idx < num_frames:
             raise ValueError(
                 f"cached_features frame index {frame_idx} is outside [0, {num_frames})"
             )
-    return cast(dict[int, CachedFeature], cached_features)
+        validated[frame_idx] = _validate_cached_feature(
+            raw_feature, frame_idx=frame_idx
+        )
+    return validated
+
+
+def _validate_backbone_feature_output(
+    value: object,
+    *,
+    context: str,
+) -> BackboneFeatureOutput:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{context} must be a mapping")
+    mapping = cast(Mapping[object, object], value)
+    raw_fpn = mapping.get("backbone_fpn")
+    raw_pos = mapping.get("vision_pos_enc")
+    if not isinstance(raw_fpn, list) or not isinstance(raw_pos, list):
+        raise TypeError(f"{context} must contain backbone_fpn and vision_pos_enc lists")
+    backbone_fpn: list[mx.array] = []
+    vision_pos_enc: list[mx.array] = []
+    for feature in cast(list[object], raw_fpn):
+        if not _is_mlx_array(feature):
+            raise TypeError(f"{context}.backbone_fpn must contain MLX arrays")
+        backbone_fpn.append(feature)
+    for position in cast(list[object], raw_pos):
+        if not _is_mlx_array(position):
+            raise TypeError(f"{context}.vision_pos_enc must contain MLX arrays")
+        vision_pos_enc.append(position)
+    return BackboneFeatureOutput(
+        backbone_fpn=backbone_fpn,
+        vision_pos_enc=vision_pos_enc,
+    )
+
+
+def _validate_cached_backbone_output(
+    value: object,
+    *,
+    context: str,
+) -> CachedBackboneOutput:
+    if not isinstance(value, Mapping):
+        return _validate_backbone_feature_output(value, context=context)
+    raw_wrapper = cast(Mapping[object, object], value)
+    if "tracker_backbone_out" in raw_wrapper:
+        return _TrackerBackboneWrapper(
+            tracker_backbone_out=_validate_backbone_feature_output(
+                raw_wrapper["tracker_backbone_out"],
+                context=f"{context}.tracker_backbone_out",
+            )
+        )
+    return _validate_backbone_feature_output(raw_wrapper, context=context)
+
+
+def _validate_array_list(value: object, *, context: str) -> list[mx.array]:
+    if not isinstance(value, list):
+        raise TypeError(f"{context} must be a list")
+    arrays: list[mx.array] = []
+    for item in cast(list[object], value):
+        if not _is_mlx_array(item):
+            raise TypeError(f"{context} must contain MLX arrays")
+        arrays.append(item)
+    return arrays
+
+
+def _validate_feature_sizes(value: object, *, context: str) -> list[tuple[int, int]]:
+    if not isinstance(value, list):
+        raise TypeError(f"{context} must be a list")
+    sizes: list[tuple[int, int]] = []
+    for item in cast(list[object], value):
+        if not isinstance(item, (list, tuple)):
+            raise TypeError(f"{context} entries must be height-width pairs")
+        pair = cast(Sequence[object], item)
+        if len(pair) != 2:
+            raise TypeError(f"{context} entries must be height-width pairs")
+        height, width = pair
+        if (
+            isinstance(height, bool)
+            or not isinstance(height, int)
+            or isinstance(width, bool)
+            or not isinstance(width, int)
+        ):
+            raise TypeError(f"{context} entries must contain integers")
+        sizes.append((height, width))
+    return sizes
+
+
+def _validate_cached_feature(value: object, *, frame_idx: int) -> CachedFeature:
+    context = f"cached_features[{frame_idx}]"
+    if not isinstance(value, tuple):
+        raise TypeError(f"{context} must be a 2-tuple or 5-tuple")
+    items = cast(tuple[object, ...], value)
+    if len(items) not in (2, 5):
+        raise TypeError(f"{context} must be a 2-tuple or 5-tuple")
+    image = items[0]
+    if not _is_mlx_array(image):
+        raise TypeError(f"{context} image must be an MLX array")
+    backbone_out = _validate_cached_backbone_output(
+        items[1],
+        context=f"{context} backbone output",
+    )
+    if len(items) == 2:
+        return image, backbone_out
+    return (
+        image,
+        backbone_out,
+        _validate_array_list(items[2], context=f"{context} vision_feats"),
+        _validate_array_list(items[3], context=f"{context} vision_pos_embeds"),
+        _validate_feature_sizes(items[4], context=f"{context} feat_sizes"),
+    )
 
 
 def _broadcast_batch(value: mx.array, batch_size: int) -> mx.array:
@@ -418,7 +536,7 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         num_frames: int | None = None,
         video_path: str | Path | None = None,
         images: ImageFrames | None = None,
-        cached_features: dict[int, CachedFeature] | None = None,
+        cached_features: object | None = None,
         offload_video_to_cpu: bool = False,
         offload_state_to_cpu: bool = False,
         async_loading_frames: bool = False,
@@ -577,7 +695,7 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
     def add_new_points_or_box(
         self,
         inference_state: InferenceState,
-        frame_idx: int,
+        frame_idx: object,
         obj_id: ObjectId,
         points: ArrayInput | None = None,
         labels: ArrayInput | None = None,
@@ -589,9 +707,10 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
     ) -> tuple[int, list[ObjectId], None, mx.array]:
         """Add point or box prompts for the single supported object."""
         del normalize_coords  # retained for upstream signature compatibility
-        frame_idx = int(frame_idx)
-        if not 0 <= frame_idx < inference_state["num_frames"]:
-            raise ValueError(f"frame_idx {frame_idx} is outside the video frame range.")
+        frame_idx = _normalize_frame_index(
+            frame_idx,
+            num_frames=inference_state["num_frames"],
+        )
 
         obj_idx = self._obj_id_to_idx(inference_state, obj_id)
         point_inputs_per_frame = inference_state["point_inputs_per_obj"][obj_idx]
@@ -723,16 +842,17 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
     def add_new_mask(
         self,
         inference_state: InferenceState,
-        frame_idx: int,
+        frame_idx: object,
         obj_id: ObjectId,
         mask: ArrayInput,
         add_mask_to_memory: bool = False,
     ) -> tuple[int, list[ObjectId], None, mx.array]:
         """Add a binary mask prompt for the single supported object."""
         del add_mask_to_memory  # official keeps this future-facing flag unused here
-        frame_idx = int(frame_idx)
-        if not 0 <= frame_idx < inference_state["num_frames"]:
-            raise ValueError(f"frame_idx {frame_idx} is outside the video frame range.")
+        frame_idx = _normalize_frame_index(
+            frame_idx,
+            num_frames=inference_state["num_frames"],
+        )
 
         obj_idx = self._obj_id_to_idx(inference_state, obj_id)
         point_inputs_per_frame = inference_state["point_inputs_per_obj"][obj_idx]
@@ -827,7 +947,7 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
     def add_new_points(
         self,
         inference_state: InferenceState,
-        frame_idx: int,
+        frame_idx: object,
         obj_id: ObjectId,
         points: ArrayInput | None = None,
         labels: ArrayInput | None = None,

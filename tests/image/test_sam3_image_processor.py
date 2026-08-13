@@ -1,32 +1,77 @@
+from collections.abc import Callable, Mapping
+import importlib
 import os
+from typing import TypedDict, cast
 
 import numpy as np
+import numpy.typing as npt
 from PIL import Image
 import pytest
 import mlx.core as mx
 
 from sam3_mlx._unsupported import Sam3MlxUnsupportedError
 from sam3_mlx.mlx_runtime import to_numpy
+from sam3_mlx.model.data_misc import FindStage, ResizeWeights
+from sam3_mlx.model.geometry_encoders import Prompt
 import sam3_mlx.model.sam3_image_processor as image_processor
 from sam3_mlx.model.sam3_image_processor import (
+    OriginalSizes,
+    ProcessorState,
     Sam3Processor,
-    _resize_weights_1d,
-    _resize_uint8_bilinear_like_torchvision,
-    _single_image_keep_indices,
     transform,
+)
+from sam3_mlx.model.sam3_image import Output
+
+
+def _private_callable(name: str) -> object:
+    value = getattr(image_processor, name)
+    if not callable(value):
+        raise TypeError(f"sam3_image_processor.{name} must be callable")
+    return value
+
+
+_resize_weights_1d = cast(
+    Callable[[int, int], ResizeWeights],
+    _private_callable("_resize_weights_1d"),
+)
+_resize_uint8_bilinear_like_torchvision = cast(
+    Callable[
+        [npt.NDArray[np.uint8], tuple[int, int]],
+        npt.NDArray[np.uint8],
+    ],
+    _private_callable("_resize_uint8_bilinear_like_torchvision"),
+)
+_single_image_keep_indices = cast(
+    Callable[[mx.array, float], mx.array],
+    _private_callable("_single_image_keep_indices"),
+)
+_batch_original_sizes = cast(
+    Callable[[ProcessorState], OriginalSizes | None],
+    _private_callable("_batch_original_sizes"),
 )
 
 
-class _FakeBackbone:
-    def __init__(self):
-        self.forward_image_inputs = []
-        self.forward_text_calls = []
+class _GroundingCall(TypedDict):
+    backbone_out: Mapping[str, object]
+    find_input: FindStage
+    geometric_prompt: Prompt
+    find_target: object | None
 
-    def forward_image(self, image):
+
+class _FakeBackbone:
+    def __init__(self) -> None:
+        self.forward_image_inputs: list[mx.array] = []
+        self.forward_text_calls: list[tuple[list[str], object | None]] = []
+
+    def forward_image(self, image: mx.array) -> Mapping[str, object]:
         self.forward_image_inputs.append(image)
         return {"image_batch": image}
 
-    def forward_text(self, prompts, device=None):
+    def forward_text(
+        self,
+        prompts: list[str],
+        device: object | None = None,
+    ) -> dict[str, mx.array]:
         self.forward_text_calls.append((prompts, device))
         return {
             "language_features": mx.zeros((1, len(prompts), 1), dtype=mx.float32),
@@ -35,20 +80,26 @@ class _FakeBackbone:
 
 
 class _FakeModel:
-    def __init__(self, outputs=None):
+    def __init__(self, outputs: Mapping[str, object] | None = None) -> None:
         self.backbone = _FakeBackbone()
         self.inst_interactive_predictor = None
-        self.outputs = outputs
-        self.dummy_prompt_sizes = []
-        self.forward_grounding_calls = []
+        self.outputs = None if outputs is None else Output(outputs)
+        self.dummy_prompt_sizes: list[int] = []
+        self.forward_grounding_calls: list[_GroundingCall] = []
 
-    def _get_dummy_prompt(self, num_prompts=1):
+    def _get_dummy_prompt(self, num_prompts: int = 1) -> Prompt:
         self.dummy_prompt_sizes.append(num_prompts)
-        return {"num_prompts": num_prompts}
+        return Prompt()
 
     def forward_grounding(
-        self, *, backbone_out, find_input, geometric_prompt, find_target
-    ):
+        self,
+        backbone_out: Mapping[str, object],
+        find_input: object,
+        find_target: object | None,
+        geometric_prompt: Prompt,
+    ) -> Output:
+        if not isinstance(find_input, FindStage):
+            raise TypeError("find_input must be a FindStage")
         self.forward_grounding_calls.append(
             {
                 "backbone_out": backbone_out,
@@ -57,18 +108,49 @@ class _FakeModel:
                 "find_target": find_target,
             }
         )
+        if self.outputs is None:
+            raise RuntimeError("scripted grounding outputs were not configured")
         return self.outputs
 
 
-def _logit(probabilities):
+def _logit(probabilities: object) -> npt.NDArray[np.float32]:
     probabilities = np.asarray(probabilities, dtype=np.float32)
     return np.log(probabilities / (1.0 - probabilities)).astype(np.float32)
+
+
+def _state_mapping(state: ProcessorState, key: str) -> Mapping[str, object]:
+    value = state.get(key)
+    if not isinstance(value, Mapping):
+        raise TypeError(f"processor state {key} must be a mapping")
+    mapping = cast(Mapping[object, object], value)
+    if not all(isinstance(item, str) for item in mapping):
+        raise TypeError(f"processor state {key} must use string keys")
+    return cast(Mapping[str, object], mapping)
+
+
+def _mapping_array(mapping: Mapping[str, object], key: str) -> mx.array:
+    value = mapping.get(key)
+    if not isinstance(value, mx.array):
+        raise TypeError(f"{key} must be an MLX array")
+    return value
+
+
+def _state_array_list(state: ProcessorState, key: str) -> list[mx.array]:
+    value = state.get(key)
+    if not isinstance(value, list):
+        raise TypeError(f"processor state {key} must be a list")
+    arrays: list[mx.array] = []
+    for item in cast(list[object], value):
+        if not isinstance(item, mx.array):
+            raise TypeError(f"processor state {key} must contain MLX arrays")
+        arrays.append(item)
+    return arrays
 
 
 def test_single_image_keep_indices_returns_ordered_indices():
     scores = mx.array([[0.1, 0.6, 0.2, 0.9]], dtype=mx.float32)
 
-    indices = _single_image_keep_indices(scores, threshold=0.5)
+    indices = _single_image_keep_indices(scores, 0.5)
 
     assert indices.tolist() == [1, 3]
     assert indices.dtype == mx.int64
@@ -77,7 +159,7 @@ def test_single_image_keep_indices_returns_ordered_indices():
 def test_single_image_keep_indices_uses_strict_threshold():
     scores = mx.array([[0.5, 0.5001, 0.8, 0.49]], dtype=mx.float32)
 
-    indices = _single_image_keep_indices(scores, threshold=0.5)
+    indices = _single_image_keep_indices(scores, 0.5)
 
     assert indices.tolist() == [1, 2]
 
@@ -85,29 +167,32 @@ def test_single_image_keep_indices_uses_strict_threshold():
 def test_single_image_keep_indices_handles_empty_result():
     scores = mx.array([[0.1, 0.2, 0.3]], dtype=mx.float32)
 
-    indices = _single_image_keep_indices(scores, threshold=0.5)
+    indices = _single_image_keep_indices(scores, 0.5)
 
     assert indices.tolist() == []
     assert indices.shape == (0,)
     assert indices.dtype == mx.int64
 
 
-def test_single_image_keep_indices_does_not_export_full_keep_mask(monkeypatch):
-    def fail_asarray(*args, **kwargs):
+def test_single_image_keep_indices_does_not_export_full_keep_mask(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_asarray(*args: object, **kwargs: object) -> None:
+        del args, kwargs
         raise AssertionError("full keep-mask NumPy export should not be used")
 
     monkeypatch.setattr(image_processor.np, "asarray", fail_asarray)
     scores = mx.array([[0.1, 0.6, 0.2, 0.9]], dtype=mx.float32)
 
-    indices = _single_image_keep_indices(scores, threshold=0.5)
+    indices = _single_image_keep_indices(scores, 0.5)
 
     assert indices.tolist() == [1, 3]
 
 
 @pytest.mark.parametrize("resolution", [0, -14, 15, 1007, 14.0, True])
 def test_processor_resolution_must_be_positive_integer_multiple_of_patch_size(
-    resolution,
-):
+    resolution: object,
+) -> None:
     with pytest.raises(ValueError, match="positive integer multiple of 14"):
         Sam3Processor(_FakeModel(), resolution=resolution)
 
@@ -218,7 +303,7 @@ def test_transform_uses_torchvision_tensor_resize_contract():
     np.testing.assert_allclose(transformed, expected, rtol=0.0, atol=1e-6)
 
 
-def _synthetic_rgb_image(width, height):
+def _synthetic_rgb_image(width: int, height: int) -> Image.Image:
     y, x = np.mgrid[:height, :width]
     image = np.stack(
         [
@@ -231,24 +316,55 @@ def _synthetic_rgb_image(width, height):
     return Image.fromarray(image, mode="RGB")
 
 
+def _attribute(value: object, name: str) -> object:
+    return getattr(value, name)
+
+
+def _require_callable(value: object, context: str) -> Callable[..., object]:
+    if not callable(value):
+        raise TypeError(f"{context} must be callable")
+    return value
+
+
+def _callable_attribute(value: object, name: str) -> Callable[..., object]:
+    return _require_callable(_attribute(value, name), name)
+
+
+def _call_method(value: object, name: str, *args: object) -> object:
+    return _callable_attribute(value, name)(*args)
+
+
 def test_transform_matches_torchvision_on_synthetic_aspect_ratios_when_available():
     if os.environ.get("SAM3_MLX_REQUIRE_TORCHVISION") == "1":
-        import torch
-        import torchvision  # noqa: F401
+        torch_module = importlib.import_module("torch")
+        importlib.import_module("torchvision")
     else:
-        torch = pytest.importorskip("torch")
+        torch_module = pytest.importorskip("torch")
         pytest.importorskip("torchvision")
-    from torchvision.transforms import v2
-    from torchvision.transforms.v2 import functional as torch_vision_functional
+    v2_module = importlib.import_module("torchvision.transforms.v2")
+    functional_module = importlib.import_module("torchvision.transforms.v2.functional")
+
+    compose = _callable_attribute(v2_module, "Compose")
+    to_dtype = _callable_attribute(v2_module, "ToDtype")
+    resize = _callable_attribute(v2_module, "Resize")
+    normalize = _callable_attribute(v2_module, "Normalize")
+    to_image = _callable_attribute(functional_module, "to_image")
 
     resolution = 42
-    official_transform = v2.Compose(
-        [
-            v2.ToDtype(torch.uint8, scale=True),
-            v2.Resize(size=(resolution, resolution)),
-            v2.ToDtype(torch.float32, scale=True),
-            v2.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-        ]
+    official_transform = _require_callable(
+        compose(
+            [
+                to_dtype(_attribute(torch_module, "uint8"), scale=True),
+                resize(size=(resolution, resolution)),
+                to_dtype(_attribute(torch_module, "float32"), scale=True),
+                normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+            ]
+        ),
+        "torchvision Compose result",
+    )
+    resize_transform = _require_callable(
+        resize(size=(resolution, resolution)),
+        "torchvision Resize result",
     )
 
     for image in (
@@ -256,12 +372,11 @@ def test_transform_matches_torchvision_on_synthetic_aspect_ratios_when_available
         _synthetic_rgb_image(64, 21),
         _synthetic_rgb_image(21, 64),
     ):
-        official_uint8 = (
-            v2.Resize(size=(resolution, resolution))(
-                torch_vision_functional.to_image(image)
-            )
-            .permute(1, 2, 0)
-            .numpy()
+        official_tensor = resize_transform(to_image(image))
+        official_hwc = _call_method(official_tensor, "permute", 1, 2, 0)
+        official_uint8 = np.asarray(
+            _call_method(official_hwc, "numpy"),
+            dtype=np.uint8,
         )
         local_uint8 = _resize_uint8_bilinear_like_torchvision(
             np.asarray(image, dtype=np.uint8),
@@ -269,7 +384,11 @@ def test_transform_matches_torchvision_on_synthetic_aspect_ratios_when_available
         )
         np.testing.assert_array_equal(local_uint8, official_uint8)
 
-        official = official_transform(torch_vision_functional.to_image(image)).numpy()
+        transformed_tensor = official_transform(to_image(image))
+        official = np.asarray(
+            _call_method(transformed_tensor, "numpy"),
+            dtype=np.float32,
+        )
         local = to_numpy(transform(image, resolution=resolution))
 
         np.testing.assert_allclose(local, official, rtol=0.0, atol=1e-6)
@@ -290,7 +409,14 @@ def test_set_image_batch_records_two_image_sizes_and_batched_mlx_tensor():
     image_batch = model.backbone.forward_image_inputs[-1]
     assert image_batch.shape == (2, 3, 14, 14)
     assert image_batch.dtype == mx.float32
-    assert state["backbone_out"]["image_batch"].shape == (2, 3, 14, 14)
+    assert _mapping_array(
+        _state_mapping(state, "backbone_out"), "image_batch"
+    ).shape == (
+        2,
+        3,
+        14,
+        14,
+    )
 
 
 def test_batch_text_prompt_returns_per_image_outputs_with_sizes_and_thresholding():
@@ -349,20 +475,24 @@ def test_batch_text_prompt_returns_per_image_outputs_with_sizes_and_thresholding
     assert model.backbone.forward_text_calls == [(["truck"], "mlx")]
     assert model.dummy_prompt_sizes == [2]
 
-    assert len(result["boxes"]) == 2
-    assert len(result["scores"]) == 2
-    assert len(result["masks"]) == 2
-    assert result["masks_logits"][0].shape == (1, 1, 2, 4)
-    assert result["masks_logits"][1].shape == (2, 1, 4, 2)
+    boxes = _state_array_list(result, "boxes")
+    scores = _state_array_list(result, "scores")
+    masks = _state_array_list(result, "masks")
+    masks_logits = _state_array_list(result, "masks_logits")
+    assert len(boxes) == 2
+    assert len(scores) == 2
+    assert len(masks) == 2
+    assert masks_logits[0].shape == (1, 1, 2, 4)
+    assert masks_logits[1].shape == (2, 1, 4, 2)
 
     np.testing.assert_allclose(
-        to_numpy(result["boxes"][0]),
+        to_numpy(boxes[0]),
         np.array([[1.0, 0.5, 3.0, 1.5]], dtype=np.float32),
         rtol=0.0,
         atol=1e-6,
     )
     np.testing.assert_allclose(
-        to_numpy(result["boxes"][1]),
+        to_numpy(boxes[1]),
         np.array(
             [
                 [0.0, 1.0, 2.0, 3.0],
@@ -375,25 +505,25 @@ def test_batch_text_prompt_returns_per_image_outputs_with_sizes_and_thresholding
     )
     presence = 1.0 / (1.0 + np.exp(-presence_logit))
     np.testing.assert_allclose(
-        to_numpy(result["scores"][0]),
+        to_numpy(scores[0]),
         np.array([0.8 * presence], dtype=np.float32),
         rtol=0.0,
         atol=1e-5,
     )
     np.testing.assert_allclose(
-        to_numpy(result["scores"][1]),
+        to_numpy(scores[1]),
         np.array([0.7 * presence, 0.95 * presence], dtype=np.float32),
         rtol=0.0,
         atol=1e-5,
     )
-    assert to_numpy(result["masks"][0]).all()
-    assert to_numpy(result["masks"][1][0]).all()
-    assert not to_numpy(result["masks"][1][1]).any()
+    assert to_numpy(masks[0]).all()
+    assert to_numpy(masks[1][0]).all()
+    assert not to_numpy(masks[1][1]).any()
 
 
 def test_batch_geometric_prompt_fails_fast_until_interactive_batch_contract_exists():
     processor = Sam3Processor(_FakeModel())
-    state = {
+    state: ProcessorState = {
         "backbone_out": {"image_batch": mx.zeros((2, 3, 4, 4), dtype=mx.float32)},
         "original_heights": [2, 4],
         "original_widths": [4, 2],
@@ -428,22 +558,63 @@ def test_set_image_after_batch_clears_batch_metadata():
     assert "geometric_prompt" not in state
     assert "boxes" not in state
     assert "scores" not in state
-    assert image_processor._batch_original_sizes(state) is None
-    assert state["backbone_out"]["image_batch"].shape == (1, 3, 14, 14)
+    assert _batch_original_sizes(state) is None
+    assert _mapping_array(
+        _state_mapping(state, "backbone_out"), "image_batch"
+    ).shape == (
+        1,
+        3,
+        14,
+        14,
+    )
+
+
+def test_batch_original_sizes_rejects_boolean_dimensions() -> None:
+    state: ProcessorState = {
+        "original_heights": [True],
+        "original_widths": [4],
+    }
+
+    with pytest.raises(TypeError, match="original_heights"):
+        _batch_original_sizes(state)
+
+
+def test_reset_prompts_rejects_non_mapping_backbone_state() -> None:
+    processor = Sam3Processor(_FakeModel(), resolution=14)
+    state: ProcessorState = {"backbone_out": object()}
+
+    with pytest.raises(TypeError, match="backbone_out"):
+        processor.reset_all_prompts(state)
+
+
+def test_run_grounding_rejects_non_prompt_geometric_state() -> None:
+    processor = Sam3Processor(_FakeModel(), resolution=14)
+    state = processor.set_image(Image.new("RGB", (4, 4), color=(0, 0, 0)))
+    state["geometric_prompt"] = object()
+
+    with pytest.raises(TypeError, match="geometric_prompt"):
+        processor.run_grounding(state)
 
 
 def test_set_image_clears_prior_geometric_prompt():
-    class _Prompt:
-        def __init__(self):
-            self.boxes = []
+    class _RecordingPrompt(Prompt):
+        def __init__(self) -> None:
+            super().__init__()
+            self.boxes: list[tuple[mx.array, mx.array]] = []
 
-        def append_boxes(self, boxes, labels):
+        def append_boxes(
+            self,
+            boxes: mx.array,
+            labels: mx.array,
+            mask: mx.array | None = None,
+        ) -> None:
+            del mask
             self.boxes.append((boxes, labels))
 
     class _PromptModel(_FakeModel):
-        def _get_dummy_prompt(self, num_prompts=1):
+        def _get_dummy_prompt(self, num_prompts: int = 1) -> Prompt:
             self.dummy_prompt_sizes.append(num_prompts)
-            return _Prompt()
+            return _RecordingPrompt()
 
     model = _PromptModel(
         outputs={
@@ -462,20 +633,23 @@ def test_set_image_clears_prior_geometric_prompt():
         run_grounding=False,
     )
     assert "geometric_prompt" in state
-    assert len(state["geometric_prompt"].boxes) == 1
+    geometric_prompt = state["geometric_prompt"]
+    assert isinstance(geometric_prompt, _RecordingPrompt)
+    assert len(geometric_prompt.boxes) == 1
 
     state = processor.set_image(Image.new("RGB", (5, 5), color=(0, 255, 0)), state)
     assert "geometric_prompt" not in state
 
     state = processor.set_text_prompt("visual", state, run_grounding=False)
-    assert isinstance(state["geometric_prompt"], _Prompt)
-    assert state["geometric_prompt"].boxes == []
+    geometric_prompt = state["geometric_prompt"]
+    assert isinstance(geometric_prompt, _RecordingPrompt)
+    assert geometric_prompt.boxes == []
     assert model.dummy_prompt_sizes[-1] == 1
 
 
 def test_reset_all_prompts_removes_semantic_seg():
     processor = Sam3Processor(_FakeModel(), resolution=14)
-    state = {
+    state: ProcessorState = {
         "backbone_out": {
             "image_batch": mx.zeros((1, 3, 4, 4), dtype=mx.float32),
             "language_features": mx.zeros((1, 1, 1), dtype=mx.float32),
@@ -505,8 +679,9 @@ def test_reset_all_prompts_removes_semantic_seg():
         "scores",
     ):
         assert key not in state
+    backbone_out = _state_mapping(state, "backbone_out")
     for key in ("language_features", "language_mask", "language_embeds"):
-        assert key not in state["backbone_out"]
+        assert key not in backbone_out
     # Size metadata is image identity, not a prompt/result; reset leaves it.
     assert state["original_height"] == 4
     assert state["original_width"] == 4

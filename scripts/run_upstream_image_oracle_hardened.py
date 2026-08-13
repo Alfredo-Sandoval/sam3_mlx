@@ -150,10 +150,9 @@ def main() -> None:
         release_contract_sha256=release_contract_sha256,
     )
 
-    import torch
     from PIL import Image
 
-    torch_runtime = cast(TorchRuntime, torch)
+    torch_runtime = cast(TorchRuntime, import_module("torch"))
     originals: ConstructionAdapters = install_cpu_oracle_adapters(torch_runtime)
     model_builder = import_module("sam3.model_builder")
     processor_class = getattr(

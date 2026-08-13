@@ -20,7 +20,7 @@ from sam3_mlx.model.data_misc import (
     transpose_array,
 )
 from sam3_mlx.model.geometry_encoders import Prompt
-from sam3_mlx.model.sam3_image import Output, Sam3Image
+from sam3_mlx.model.sam3_image import Output
 
 SAM3_IMAGE_PATCH_SIZE = 14
 
@@ -255,8 +255,45 @@ _IMAGE_LANGUAGE_KEYS = (
 )
 
 
-ProcessorState = dict[str, Any]
+ProcessorState = dict[str, object]
 OriginalSizes = list[tuple[int, int]]
+
+
+def _validate_original_dimension(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, Integral):
+        raise TypeError(f"original_{name} must be an integer.")
+    dimension = int(value)
+    if dimension < 1:
+        raise ValueError(f"original_{name} must be positive.")
+    return dimension
+
+
+def _require_int_list(value: object, *, name: str) -> list[int]:
+    if not isinstance(value, list):
+        raise TypeError(f"{name} must be a list of integers.")
+    result: list[int] = []
+    for item in cast(list[object], value):
+        if isinstance(item, bool) or not isinstance(item, Integral):
+            raise TypeError(f"{name} must be a list of integers.")
+        result.append(int(item))
+    return result
+
+
+def _require_backbone_out(state: ProcessorState) -> dict[str, object]:
+    value = state.get("backbone_out")
+    if not isinstance(value, dict):
+        raise TypeError("processor state backbone_out must be a dictionary.")
+    mapping = cast(dict[object, object], value)
+    if not all(isinstance(key, str) for key in mapping):
+        raise TypeError("processor state backbone_out must use string keys.")
+    return cast(dict[str, object], mapping)
+
+
+def _require_geometric_prompt(state: ProcessorState) -> Prompt:
+    value = state.get("geometric_prompt")
+    if not isinstance(value, Prompt):
+        raise TypeError("processor state geometric_prompt must be a Prompt.")
+    return value
 
 
 def _batch_original_sizes(state: ProcessorState) -> OriginalSizes | None:
@@ -268,8 +305,14 @@ def _batch_original_sizes(state: ProcessorState) -> OriginalSizes | None:
         )
     if not has_heights:
         return None
-    heights = cast(list[int], state["original_heights"])
-    widths = cast(list[int], state["original_widths"])
+    heights = _require_int_list(
+        state["original_heights"],
+        name="original_heights",
+    )
+    widths = _require_int_list(
+        state["original_widths"],
+        name="original_widths",
+    )
     if len(heights) != len(widths):
         raise ValueError(
             "original_heights and original_widths must have the same length."
@@ -282,8 +325,9 @@ def _batch_original_sizes(state: ProcessorState) -> OriginalSizes | None:
 def _clear_prompt_and_result_keys(state: ProcessorState) -> None:
     """Remove prompts and prediction outputs from a mutable processor state."""
     if "backbone_out" in state:
+        backbone_out = _require_backbone_out(state)
         for key in _IMAGE_LANGUAGE_KEYS:
-            state["backbone_out"].pop(key, None)
+            backbone_out.pop(key, None)
 
     for key in _IMAGE_RESULT_KEYS:
         state.pop(key, None)
@@ -331,6 +375,70 @@ class _InteractivePredictor(Protocol):
     model: _InteractiveModel
 
 
+class _ForwardImage(Protocol):
+    def __call__(self, image: mx.array, /) -> object: ...
+
+
+class _ForwardText(Protocol):
+    def __call__(
+        self,
+        prompts: list[str],
+        /,
+        *,
+        device: str | None = None,
+    ) -> object: ...
+
+
+class _ProcessorModel(Protocol):
+    @property
+    def backbone(self) -> object: ...
+
+    @property
+    def inst_interactive_predictor(self) -> object | None: ...
+
+    def forward_grounding(
+        self,
+        backbone_out: Mapping[str, object],
+        find_input: object,
+        find_target: object | None,
+        geometric_prompt: Prompt,
+    ) -> Output: ...
+
+
+def _forward_backbone_image(backbone: object, image: mx.array) -> dict[str, object]:
+    forward_value = getattr(backbone, "forward_image", None)
+    if not callable(forward_value):
+        raise TypeError("Processor model backbone must define forward_image.")
+    forward = cast(_ForwardImage, forward_value)
+    output = forward(image)
+    if not isinstance(output, Mapping):
+        raise TypeError("Processor backbone forward_image must return a mapping.")
+    string_output: dict[str, object] = {}
+    for key, value in cast(Mapping[object, object], output).items():
+        if not isinstance(key, str):
+            raise TypeError("Processor backbone output keys must be strings.")
+        string_output[key] = value
+    return string_output
+
+
+def _forward_backbone_text(
+    backbone: object, prompts: list[str], *, device: str
+) -> dict[str, mx.array]:
+    forward_value = getattr(backbone, "forward_text", None)
+    if not callable(forward_value):
+        raise TypeError("Processor model backbone must define forward_text.")
+    forward = cast(_ForwardText, forward_value)
+    output = forward(prompts, device=device)
+    if not isinstance(output, Mapping):
+        raise TypeError("Processor backbone forward_text must return a mapping.")
+    text_output: dict[str, mx.array] = {}
+    for key, value in cast(Mapping[object, object], output).items():
+        if not isinstance(key, str) or not isinstance(value, mx.array):
+            raise TypeError("Processor text output must map string keys to MLX arrays.")
+        text_output[key] = value
+    return text_output
+
+
 def _evaluate_processor_state(state: ProcessorState) -> None:
     evaluate = cast(Callable[[object], None], getattr(mx, "eval"))
     evaluate(state)
@@ -344,7 +452,7 @@ def _dummy_prompt(model: object, *, num_prompts: int = 1) -> Prompt:
 class Sam3Processor:
     def __init__(
         self,
-        model: Sam3Image,
+        model: _ProcessorModel,
         resolution: object = 1008,
         device: object = "mlx",
         confidence_threshold: float = 0.5,
@@ -412,7 +520,7 @@ class Sam3Processor:
 
         state["original_height"] = height
         state["original_width"] = width
-        backbone_out = self.model.backbone.forward_image(image_tensor)
+        backbone_out = _forward_backbone_image(self.model.backbone, image_tensor)
         state["backbone_out"] = backbone_out
         _evaluate_processor_state(state)
         self._patch_interactive_backbone_features(backbone_out)
@@ -439,7 +547,7 @@ class Sam3Processor:
         state["original_widths"] = [image.width for image in pil_images]
 
         image_batch = mx.stack([self.transform(image) for image in pil_images], axis=0)
-        backbone_out = self.model.backbone.forward_image(image_batch)
+        backbone_out = _forward_backbone_image(self.model.backbone, image_batch)
         state["backbone_out"] = backbone_out
         _evaluate_processor_state(state)
         self._patch_interactive_backbone_features(backbone_out)
@@ -457,12 +565,14 @@ class Sam3Processor:
             raise ValueError("You must call set_image before set_text_prompt")
 
         if text_outputs is None:
-            text_outputs = self.model.backbone.forward_text(
+            text_outputs = _forward_backbone_text(
+                self.model.backbone,
                 [prompt],
                 device=self.device,
             )
         # will erase the previous text prompt if any
-        state["backbone_out"].update(text_outputs)
+        backbone_out = _require_backbone_out(state)
+        backbone_out.update(text_outputs)
         if "geometric_prompt" not in state:
             sizes = _batch_original_sizes(state)
             num_prompts = len(sizes) if sizes is not None else 1
@@ -500,12 +610,15 @@ class Sam3Processor:
                 ),
             )
 
-        if "language_features" not in state["backbone_out"]:
+        backbone_out = _require_backbone_out(state)
+        if "language_features" not in backbone_out:
             # Looks like we don't have a text prompt yet. This is allowed, but we need to set the text prompt to "visual" for the model to rely only on the geometric prompt
-            dummy_text_outputs = self.model.backbone.forward_text(
-                ["visual"], device=self.device
+            dummy_text_outputs = _forward_backbone_text(
+                self.model.backbone,
+                ["visual"],
+                device=self.device,
             )
-            state["backbone_out"].update(dummy_text_outputs)
+            backbone_out.update(dummy_text_outputs)
 
         if "geometric_prompt" not in state:
             state["geometric_prompt"] = _dummy_prompt(self.model)
@@ -546,9 +659,14 @@ class Sam3Processor:
                 ),
             )
 
-        if "language_features" not in state["backbone_out"]:
-            dummy_text_outputs = self.model.backbone.forward_text(["visual"])
-            state["backbone_out"].update(dummy_text_outputs)
+        backbone_out = _require_backbone_out(state)
+        if "language_features" not in backbone_out:
+            dummy_text_outputs = _forward_backbone_text(
+                self.model.backbone,
+                ["visual"],
+                device=self.device,
+            )
+            backbone_out.update(dummy_text_outputs)
 
         if "geometric_prompt" not in state:
             state["geometric_prompt"] = _dummy_prompt(self.model)
@@ -581,9 +699,9 @@ class Sam3Processor:
         batch_sizes = _batch_original_sizes(state)
 
         outputs: Output = self.model.forward_grounding(
-            backbone_out=state["backbone_out"],
+            backbone_out=_require_backbone_out(state),
             find_input=self._find_stage_for_state(state),
-            geometric_prompt=state["geometric_prompt"],
+            geometric_prompt=_require_geometric_prompt(state),
             find_target=None,
         )
 
@@ -625,8 +743,8 @@ class Sam3Processor:
         # convert box to [x0, y0, x1, y1] format
         boxes = box_ops.box_cxcywh_to_xyxy(out_bbox)
 
-        img_h = state["original_height"]
-        img_w = state["original_width"]
+        img_h = _validate_original_dimension(state.get("original_height"), "height")
+        img_w = _validate_original_dimension(state.get("original_width"), "width")
         scale_fct = mx.array([img_w, img_h, img_w, img_h])
         boxes = boxes * scale_fct[None, :]
 

@@ -8,6 +8,7 @@ import pytest
 from PIL import Image
 
 from sam3_mlx._unsupported import Sam3MlxUnsupportedError
+from sam3_mlx.mlx_runtime import to_numpy
 from sam3_mlx.model.data_misc import BatchedDatapoint, BatchedInferenceMetadata
 from sam3_mlx.model.multiplex_utils import (
     MultiplexState,
@@ -666,11 +667,6 @@ class _VideoDetectorUpdateTracker(_VideoStartupTracker):
         )
 
 
-def _to_numpy(value):
-    mx.eval(value)
-    return np.asarray(value)
-
-
 def _assert_hotstart_gpu_metadata(
     metadata,
     *,
@@ -683,27 +679,27 @@ def _assert_hotstart_gpu_metadata(
 ):
     assert metadata["N_obj"] == len(obj_first_frame)
     np.testing.assert_array_equal(
-        _to_numpy(metadata["obj_first_frame"]),
+        to_numpy(metadata["obj_first_frame"]),
         np.array(obj_first_frame, dtype=np.int64),
     )
     np.testing.assert_array_equal(
-        _to_numpy(metadata["consecutive_unmatch_count"]),
+        to_numpy(metadata["consecutive_unmatch_count"]),
         np.array(consecutive_unmatch_count, dtype=np.int64),
     )
     np.testing.assert_array_equal(
-        _to_numpy(metadata["trk_keep_alive"]),
+        to_numpy(metadata["trk_keep_alive"]),
         np.array(trk_keep_alive, dtype=np.int64),
     )
     np.testing.assert_array_equal(
-        _to_numpy(metadata["removed_mask"]),
+        to_numpy(metadata["removed_mask"]),
         np.array(removed_mask, dtype=bool),
     )
     np.testing.assert_array_equal(
-        _to_numpy(metadata["overlap_pair_counts"]),
+        to_numpy(metadata["overlap_pair_counts"]),
         np.array(overlap_pair_counts, dtype=np.int64),
     )
     np.testing.assert_array_equal(
-        _to_numpy(metadata["last_occluded_tensor"]),
+        to_numpy(metadata["last_occluded_tensor"]),
         np.array(last_occluded_tensor, dtype=np.int64),
     )
 
@@ -767,7 +763,7 @@ def test_recursive_to_casts_mlx_arrays_inside_dataclasses_and_nested_containers(
     assert converted.nested["tuple"][0].dtype == mx.float16
     assert converted.nested["list"][1] is numpy_array
     assert converted.nested["tuple"][1] == "kept-string"
-    np.testing.assert_array_equal(_to_numpy(converted.tensor), np.array([1.0, 2.0]))
+    np.testing.assert_array_equal(to_numpy(converted.tensor), np.array([1.0, 2.0]))
 
 
 def test_recursive_to_accepts_positional_mlx_device_without_changing_arrays():
@@ -866,7 +862,7 @@ def test_multiplex_tracking_reset_state_restores_prompt_bookkeeping():
 
     assert state["input_batch"].find_text_batch[0] == "<text placeholder>"
     np.testing.assert_array_equal(
-        _to_numpy(state["input_batch"].find_inputs[0].text_ids), np.array([0])
+        to_numpy(state["input_batch"].find_inputs[0].text_ids), np.array([0])
     )
     assert state["previous_stages_out"] == [None, None]
     assert state["per_frame_cur_step"] == [0, 0]
@@ -892,14 +888,14 @@ def test_multiplex_tracking_get_visual_prompt_builds_box_prompt():
     )
 
     np.testing.assert_allclose(
-        _to_numpy(boxes),
+        to_numpy(boxes),
         np.array([[0.5, 0.5, 0.25, 0.25]], dtype=np.float32),
     )
-    np.testing.assert_array_equal(_to_numpy(labels), np.array([1]))
+    np.testing.assert_array_equal(to_numpy(labels), np.array([1]))
     assert prompt.box_embeddings.shape == (1, 1, 4)
     assert prompt.box_mask.shape == (1, 1)
     assert prompt.box_labels.shape == (1, 1)
-    np.testing.assert_array_equal(_to_numpy(prompt.box_labels), np.array([[1]]))
+    np.testing.assert_array_equal(to_numpy(prompt.box_labels), np.array([[1]]))
 
 
 def test_multiplex_tracking_cache_frame_outputs_filters_hidden_objects():
@@ -1606,8 +1602,8 @@ def test_multiplex_tracking_runs_video_tracker_state_only_frame():
     )
     np.testing.assert_allclose(
         [
-            _to_numpy(metadata["obj_id_to_sam2_score_frame_wise"][1][7]),
-            _to_numpy(metadata["obj_id_to_sam2_score_frame_wise"][1][9]),
+            to_numpy(metadata["obj_id_to_sam2_score_frame_wise"][1][7]),
+            to_numpy(metadata["obj_id_to_sam2_score_frame_wise"][1][9]),
         ],
         np.array([0.5, 0.880797], dtype=np.float32),
         rtol=1e-5,
@@ -2315,7 +2311,7 @@ def test_multiplex_tracking_interactivity_helper_primitives_match_official_state
     assert tracking._has_object_been_refined(state, 7) is True
     assert tracking._has_object_been_refined(state, 9) is False
     np.testing.assert_array_equal(
-        _to_numpy(tracking._get_mask_input(state, frame_idx=2, obj_id=7)),
+        to_numpy(tracking._get_mask_input(state, frame_idx=2, obj_id=7)),
         np.array([[0.0, 1.0], [1.0, 0.0]], dtype=np.float32),
     )
     assert tracking._get_mask_input(state, frame_idx=1, obj_id=7) is None
@@ -2328,7 +2324,7 @@ def test_multiplex_tracking_interactivity_helper_primitives_match_official_state
     assert tuple(converted.shape) == (1, 3, 4)
     assert converted.dtype == mx.bool_
     np.testing.assert_array_equal(
-        _to_numpy(converted),
+        to_numpy(converted),
         np.ones((1, 3, 4), dtype=bool),
     )
     assert (
@@ -2370,7 +2366,7 @@ def test_multiplex_tracking_gathers_low_res_masks_in_local_object_order():
 
     assert tuple(gathered.shape) == (3, 2, 2)
     np.testing.assert_array_equal(
-        _to_numpy(gathered),
+        to_numpy(gathered),
         np.array(
             [
                 [[3.0, 3.5], [4.0, 4.5]],
@@ -2474,7 +2470,7 @@ def test_multiplex_tracking_runs_local_tracker_states_for_one_partial_frame():
 
     assert obj_ids == ["cell", "axon", 9]
     np.testing.assert_array_equal(
-        _to_numpy(mx.stack(low_res_masks, axis=0)),
+        to_numpy(mx.stack(low_res_masks, axis=0)),
         np.array(
             [
                 [[1.0, 1.5], [2.0, 2.5]],
@@ -2485,7 +2481,7 @@ def test_multiplex_tracking_runs_local_tracker_states_for_one_partial_frame():
         ),
     )
     np.testing.assert_allclose(
-        _to_numpy(mx.stack(sam2_scores, axis=0)).reshape(-1),
+        to_numpy(mx.stack(sam2_scores, axis=0)).reshape(-1),
         np.array([0.1, 0.2, 0.9], dtype=np.float32),
     )
     assert tracker.propagate_calls == [
@@ -2787,14 +2783,14 @@ def test_multiplex_tracking_interactivity_runs_single_rank_partial_propagation()
     )
     np.testing.assert_array_equal(
         output["out_binary_masks"][1],
-        _to_numpy(_mask([(3, 4)]))[0],
+        to_numpy(_mask([(3, 4)]))[0],
     )
     np.testing.assert_allclose(
-        _to_numpy(state["tracker_metadata"]["obj_id_to_sam2_score_frame_wise"][0][1]),
+        to_numpy(state["tracker_metadata"]["obj_id_to_sam2_score_frame_wise"][0][1]),
         np.array(0.91, dtype=np.float32),
     )
     np.testing.assert_array_equal(
-        _to_numpy(state["cached_frame_outputs"][0][1]),
+        to_numpy(state["cached_frame_outputs"][0][1]),
         np.ones((1, 4, 5), dtype=bool),
     )
 
@@ -2836,7 +2832,7 @@ def test_multiplex_tracking_partial_propagation_keeps_cached_output_without_loca
     np.testing.assert_allclose(outputs[0][1]["out_probs"], np.array([0.0]))
     np.testing.assert_array_equal(
         outputs[0][1]["out_binary_masks"][0],
-        _to_numpy(_mask([(3, 4)]))[0],
+        to_numpy(_mask([(3, 4)]))[0],
     )
 
 
@@ -2911,11 +2907,11 @@ def test_multiplex_tracking_interactivity_refines_existing_object_with_points():
     np.testing.assert_allclose(output["out_probs"], np.array([1.0, 0.9]))
     np.testing.assert_array_equal(output["out_binary_masks"][0], np.ones((4, 5)))
     np.testing.assert_array_equal(
-        _to_numpy(state["cached_frame_outputs"][0][7]),
+        to_numpy(state["cached_frame_outputs"][0][7]),
         np.ones((1, 4, 5), dtype=bool),
     )
     np.testing.assert_allclose(
-        _to_numpy(state["tracker_metadata"]["obj_id_to_sam2_score_frame_wise"][0][7]),
+        to_numpy(state["tracker_metadata"]["obj_id_to_sam2_score_frame_wise"][0][7]),
         np.array(1.0, dtype=np.float32),
     )
     confirmation = state["tracker_metadata"]["rank0_metadata"]["masklet_confirmation"]
@@ -3064,7 +3060,7 @@ def test_multiplex_tracking_point_prompt_cleans_video_res_masks_before_cache():
     expected_binary = expected[0] > 0
     np.testing.assert_array_equal(output["out_binary_masks"], expected_binary)
     np.testing.assert_array_equal(
-        _to_numpy(state["cached_frame_outputs"][0][7]),
+        to_numpy(state["cached_frame_outputs"][0][7]),
         expected_binary,
     )
 
@@ -3245,23 +3241,23 @@ def test_multiplex_tracking_first_refinement_extracts_packed_state_to_singleton(
     )
     frame_out = singleton_state["output_dict"]["cond_frame_outputs"][0]
     np.testing.assert_array_equal(
-        _to_numpy(frame_out["pred_masks"]),
+        to_numpy(frame_out["pred_masks"]),
         np.array([[[[7.0, 0.0], [0.0, 0.0]]]], dtype=np.float32),
     )
     np.testing.assert_array_equal(
-        _to_numpy(frame_out["object_score_logits"]),
+        to_numpy(frame_out["object_score_logits"]),
         np.array([[0.7]], dtype=np.float32),
     )
     np.testing.assert_array_equal(
-        _to_numpy(frame_out["maskmem_features"]),
+        to_numpy(frame_out["maskmem_features"]),
         np.array([[70.0, 71.0]], dtype=np.float32),
     )
     np.testing.assert_array_equal(
-        _to_numpy(frame_out["maskmem_pos_enc"][0]),
+        to_numpy(frame_out["maskmem_pos_enc"][0]),
         np.array([[700.0, 701.0]], dtype=np.float32),
     )
     np.testing.assert_array_equal(
-        _to_numpy(frame_out["obj_ptr"]),
+        to_numpy(frame_out["obj_ptr"]),
         np.array([[[7.0, 7.5], [0.0, 0.0]]], dtype=np.float32),
     )
     assert frame_out["conditioning_objects"] == {0}
@@ -3444,7 +3440,7 @@ def test_multiplex_tracking_add_fake_objects_seeds_state_and_metadata():
         assert set(frame_outputs) == {0, 1}
         for mask in frame_outputs.values():
             assert mask.shape == (1, 480, 640)
-            assert bool(_to_numpy(mx.any(mask)).reshape(()))
+            assert bool(to_numpy(mx.any(mask)).reshape(()))
 
     metadata = state["tracker_metadata"]
     np.testing.assert_array_equal(metadata["obj_ids_per_gpu"][0], np.array([0, 1]))
@@ -3626,8 +3622,8 @@ def test_multiplex_tracking_interactivity_removes_existing_sam2_object_single_ra
     assert state["generator_state"]["hotstart_removed_obj_ids"] == {7}
     assert sorted(state["cached_frame_outputs"][0]) == [8]
     np.testing.assert_array_equal(
-        _to_numpy(state["cached_frame_outputs"][0][8]),
-        _to_numpy(_mask([(3, 4)])),
+        to_numpy(state["cached_frame_outputs"][0][8]),
+        to_numpy(_mask([(3, 4)])),
     )
     assert state["action_history"] == [
         {"type": "remove", "frame_idx": 0, "obj_ids": [7]}
@@ -3636,7 +3632,7 @@ def test_multiplex_tracking_interactivity_removes_existing_sam2_object_single_ra
     np.testing.assert_allclose(output["out_probs"], np.array([0.8]))
     np.testing.assert_array_equal(
         output["out_binary_masks"][0],
-        _to_numpy(_mask([(3, 4)]))[0],
+        to_numpy(_mask([(3, 4)]))[0],
     )
 
 
@@ -3807,11 +3803,11 @@ def test_multiplex_tracking_image_only_runtime_uses_batched_grounding_helper():
     assert batched_call["batch_size"] == 4
     assert batched_call["grounding_cache"] is state["feature_cache"]["grounding_cache"]
     np.testing.assert_allclose(
-        _to_numpy(batched_call["find_input"].input_boxes_before_embed),
+        to_numpy(batched_call["find_input"].input_boxes_before_embed),
         np.array([[[0.3, 0.5, 0.4, 0.6]]], dtype=np.float32),
     )
     np.testing.assert_array_equal(
-        _to_numpy(batched_call["find_input"].input_boxes_label),
+        to_numpy(batched_call["find_input"].input_boxes_label),
         np.array([[1]], dtype=np.int64),
     )
     np.testing.assert_array_equal(output["out_obj_ids"], np.array([0]))
@@ -4143,13 +4139,13 @@ def test_multiplex_tracking_add_prompt_accepts_normalized_box_prompt():
 
     boxes_cxcywh, box_labels = state["per_frame_raw_box_input"][0]
     np.testing.assert_allclose(
-        _to_numpy(boxes_cxcywh),
+        to_numpy(boxes_cxcywh),
         np.array([[0.3, 0.5, 0.4, 0.6]], dtype=np.float32),
     )
-    np.testing.assert_array_equal(_to_numpy(box_labels), np.array([1]))
+    np.testing.assert_array_equal(to_numpy(box_labels), np.array([1]))
     assert state["per_frame_geometric_prompt"][0].box_embeddings.shape == (1, 1, 4)
     np.testing.assert_allclose(
-        _to_numpy(state["input_batch"].find_inputs[0].input_boxes_before_embed),
+        to_numpy(state["input_batch"].find_inputs[0].input_boxes_before_embed),
         np.array([[[0.3, 0.5, 0.4, 0.6]]], dtype=np.float32),
     )
     assert detector.calls[0]["geometric_prompt"].box_embeddings.shape == (1, 1, 4)

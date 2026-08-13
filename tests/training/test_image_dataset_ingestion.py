@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -10,7 +11,9 @@ from sam3_mlx.train.data.sam3_image_dataset import CustomCocoDetectionAPI
 from sam3_mlx.train.transforms.segmentation import DecodeRle, InstanceToSemantic
 
 
-def test_coco_json_ingestion_preserves_ids_geometry_and_compressed_rle(tmp_path):
+def test_coco_json_ingestion_preserves_ids_geometry_and_compressed_rle(
+    tmp_path: Path,
+) -> None:
     image_path = tmp_path / "sample.png"
     PILImage.new("RGB", (3, 2)).save(image_path)
     annotation_path = tmp_path / "annotations.json"
@@ -82,7 +85,9 @@ def test_coco_json_ingestion_preserves_ids_geometry_and_compressed_rle(tmp_path)
     )
 
 
-def test_coco_json_ingestion_rejects_non_integer_image_dimensions(tmp_path):
+def test_coco_json_ingestion_rejects_non_integer_image_dimensions(
+    tmp_path: Path,
+) -> None:
     annotation_path = tmp_path / "bad_annotations.json"
     annotation_path.write_text(
         json.dumps(

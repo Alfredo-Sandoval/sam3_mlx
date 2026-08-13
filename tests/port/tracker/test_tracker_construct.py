@@ -5,21 +5,43 @@ constructed MLX parameter tree against the SAM2-canonical tracker structure so
 later checkpoint-mapping and forward-parity increments build on a stable base.
 """
 
+from collections.abc import Callable
+from typing import TypedDict, cast
+
 import mlx.core as mx
 import pytest
-from mlx.utils import tree_flatten
 
-from sam3_mlx.model.sam3_tracker_base import Sam3TrackerBase, concat_points
+from sam3_mlx.model.sam3_tracker_base import (
+    Sam3TrackerBase,
+    SamMaskDecoderExtraArgs,
+    concat_points,
+)
 from sam3_mlx.model.sam3_tracking_predictor import Sam3TrackerPredictor
 from sam3_mlx.model_builder import (
     build_tracker,
     create_tracker_maskmem_backbone,
     create_tracker_transformer,
 )
+from tests._mlx_runtime import flat_parameters
+
+
+class _TrackerKwargs(TypedDict):
+    image_size: int
+    num_maskmem: int
+    backbone_stride: int
+    multimask_output_in_sam: bool
+    forward_backbone_per_frame_for_eval: bool
+    multimask_output_for_tracking: bool
+    multimask_min_pt_num: int
+    multimask_max_pt_num: int
+    non_overlap_masks_for_mem_enc: bool
+    max_cond_frames_in_attn: int
+    sam_mask_decoder_extra_args: SamMaskDecoderExtraArgs
+
 
 # kwargs mirror the official build_tracker(...) call at upstream commit
 # 2814fa619404a722d03e9a012e083e4f293a4e53.
-_TRACKER_KWARGS = dict(
+_TRACKER_KWARGS = _TrackerKwargs(
     image_size=1008,
     num_maskmem=7,
     backbone_stride=14,
@@ -39,7 +61,7 @@ _TRACKER_KWARGS = dict(
 
 
 @pytest.fixture(scope="module")
-def tracker_base():
+def tracker_base() -> Sam3TrackerBase:
     maskmem_backbone = create_tracker_maskmem_backbone()
     transformer = create_tracker_transformer()
     return Sam3TrackerBase(
@@ -58,10 +80,13 @@ def test_component_builders_match_official_shape():
 
     maskmem_backbone = create_tracker_maskmem_backbone()
     # out_dim=64 introduces channel compression -> mem_dim must read back as 64
-    assert maskmem_backbone.out_proj.weight.shape[0] == 64
+    maskmem_params = flat_parameters(maskmem_backbone)
+    assert maskmem_params["out_proj.conv.weight"].shape[0] == 64
 
 
-def test_tracker_base_constructs_with_expected_dims(tracker_base):
+def test_tracker_base_constructs_with_expected_dims(
+    tracker_base: Sam3TrackerBase,
+) -> None:
     assert tracker_base.hidden_dim == 256
     assert tracker_base.mem_dim == 64
     assert tracker_base.num_maskmem == 7
@@ -82,8 +107,8 @@ def test_build_tracker_returns_official_shaped_predictor_without_checkpoint():
     assert tracker.max_cond_frames_in_attn == 4
 
 
-def test_param_tree_top_level_groups(tracker_base):
-    groups = {k.split(".")[0] for k, _ in tree_flatten(tracker_base.parameters())}
+def test_param_tree_top_level_groups(tracker_base: Sam3TrackerBase) -> None:
+    groups = {key.split(".")[0] for key in flat_parameters(tracker_base)}
     expected = {
         "mask_downsample",
         "maskmem_backbone",
@@ -101,8 +126,10 @@ def test_param_tree_top_level_groups(tracker_base):
     assert groups == expected
 
 
-def test_bare_parameter_shapes_match_sam2_canonical(tracker_base):
-    params = dict(tree_flatten(tracker_base.parameters()))
+def test_bare_parameter_shapes_match_sam2_canonical(
+    tracker_base: Sam3TrackerBase,
+) -> None:
+    params = flat_parameters(tracker_base)
     assert tuple(params["maskmem_tpos_enc"].shape) == (7, 1, 1, 64)
     assert tuple(params["no_mem_embed"].shape) == (1, 1, 256)
     assert tuple(params["no_mem_pos_enc"].shape) == (1, 1, 256)
@@ -112,11 +139,20 @@ def test_bare_parameter_shapes_match_sam2_canonical(tracker_base):
     assert tuple(params["obj_ptr_tpos_proj.weight"].shape) == (64, 256)
 
 
-def test_backbone_required_and_direct_mask_validates_shape(tracker_base):
+def test_backbone_required_and_direct_mask_validates_shape(
+    tracker_base: Sam3TrackerBase,
+) -> None:
     with pytest.raises(RuntimeError, match="requires a backbone"):
         tracker_base.forward_image(mx.zeros((1, 3, 1008, 1008)))
+    use_mask_value: object = getattr(tracker_base, "_use_mask_as_output", None)
+    if not callable(use_mask_value):
+        raise AssertionError("tracker _use_mask_as_output must be callable")
+    use_mask_as_output = cast(
+        Callable[[mx.array, list[mx.array] | None, mx.array], object],
+        use_mask_value,
+    )
     with pytest.raises(ValueError, match="mask_inputs"):
-        tracker_base._use_mask_as_output(
+        use_mask_as_output(
             mx.zeros((1, 256, 72, 72)),
             None,
             mx.zeros((1, 72, 72)),

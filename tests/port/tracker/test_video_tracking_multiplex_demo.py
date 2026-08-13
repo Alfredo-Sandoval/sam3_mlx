@@ -7,6 +7,7 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
+from sam3_mlx.mlx_runtime import to_numpy
 from sam3_mlx.model.multiplex_utils import (
     MultiplexState,
 )
@@ -116,11 +117,6 @@ def _packed_stage(values: list[float]) -> dict:
     return stage
 
 
-def _to_numpy(value):
-    mx.eval(value)
-    return np.asarray(value)
-
-
 def test_demo_propagate_yields_existing_conditioning_frame_and_slices_objects():
     model = _demo_model()
     state = _state(num_frames=2)
@@ -143,14 +139,14 @@ def test_demo_propagate_yields_existing_conditioning_frame_and_slices_objects():
     assert low_res_masks.shape == (2, 1, 2, 2)
     assert video_res_masks.shape == (2, 1, 4, 4)
     np.testing.assert_array_equal(
-        _to_numpy(video_res_masks[:, :, 0, 0]),
+        to_numpy(video_res_masks[:, :, 0, 0]),
         np.array([[3.0], [4.0]], dtype=np.float32),
     )
     assert state["frames_already_tracked"][0] == {"reverse": False}
     assert 0 in state["output_dict_per_obj"][0]["cond_frame_outputs"]
     assert 0 in state["output_dict_per_obj"][1]["cond_frame_outputs"]
     np.testing.assert_array_equal(
-        _to_numpy(
+        to_numpy(
             state["output_dict_per_obj"][1]["cond_frame_outputs"][0]["pred_masks"]
         ),
         np.full((1, 1, 2, 2), 4.0, dtype=np.float32),
@@ -180,11 +176,11 @@ def test_sam3_demo_propagate_uses_seeded_state_path():
     assert video_res_masks.shape == (2, 1, 4, 4)
     assert obj_scores.shape == (2, 1)
     np.testing.assert_array_equal(
-        _to_numpy(video_res_masks[:, :, 0, 0]),
+        to_numpy(video_res_masks[:, :, 0, 0]),
         np.array([[7.0], [8.0]], dtype=np.float32),
     )
     np.testing.assert_array_equal(
-        _to_numpy(obj_scores),
+        to_numpy(obj_scores),
         np.array([[1.0], [2.0]], dtype=np.float32),
     )
 
@@ -212,7 +208,7 @@ def test_sam3_demo_propagate_accepts_multiplex_preflight_keyword():
     assert low_res_masks.shape == (2, 1, 2, 2)
     assert video_res_masks.shape == (2, 1, 4, 4)
     np.testing.assert_array_equal(
-        _to_numpy(obj_scores),
+        to_numpy(obj_scores),
         np.array([[1.0], [2.0]], dtype=np.float32),
     )
 
@@ -240,11 +236,11 @@ def test_sam3_demo_propagate_filters_object_scores():
     assert low_res_masks.shape == (1, 1, 2, 2)
     assert video_res_masks.shape == (1, 1, 4, 4)
     np.testing.assert_array_equal(
-        _to_numpy(video_res_masks[:, :, 0, 0]),
+        to_numpy(video_res_masks[:, :, 0, 0]),
         np.array([[8.0]], dtype=np.float32),
     )
     np.testing.assert_array_equal(
-        _to_numpy(obj_scores),
+        to_numpy(obj_scores),
         np.array([[2.0]], dtype=np.float32),
     )
 
@@ -293,11 +289,11 @@ def test_demo_add_new_masks_initializes_state_and_committed_outputs():
     assert calls[0]["new_object_masks"] is None
     assert tuple(calls[0]["mask_inputs"].shape) == (2, 1, 8, 8)
     np.testing.assert_array_equal(
-        _to_numpy(state["mask_inputs_per_obj"][0][0]),
-        _to_numpy(masks[0:1, None] > 0.5),
+        to_numpy(state["mask_inputs_per_obj"][0][0]),
+        to_numpy(masks[0:1, None] > 0.5),
     )
     np.testing.assert_array_equal(
-        _to_numpy(video_res_masks[:, :, 0, 0]),
+        to_numpy(video_res_masks[:, :, 0, 0]),
         np.array([[1024.0], [-1024.0]], dtype=np.float32),
     )
     assert 0 in state["output_dict_per_obj"][1]["cond_frame_outputs"]
@@ -424,7 +420,7 @@ def test_demo_add_new_masks_reconditions_existing_state_object():
     assert calls[0]["new_object_ids"] == [20]
     assert calls[0]["allow_new_buckets"] is False
     np.testing.assert_array_equal(
-        _to_numpy(video_res_masks[:, :, 0, 0]),
+        to_numpy(video_res_masks[:, :, 0, 0]),
         np.array([[0.25], [1024.0]], dtype=np.float32),
     )
     assert 0 in state["output_dict_per_obj"][1]["cond_frame_outputs"]
@@ -528,7 +524,7 @@ def test_demo_run_single_frame_adds_point_masks_to_existing_state():
     assert add_calls[0]["allow_new_buckets"] is True
     assert add_calls[0]["prefer_new_buckets"] is True
     np.testing.assert_array_equal(
-        _to_numpy(add_calls[0]["new_masks"]),
+        to_numpy(add_calls[0]["new_masks"]),
         np.full((1, 1, 2, 2), 9.0, dtype=np.float32),
     )
 
@@ -631,7 +627,7 @@ def test_demo_run_single_frame_reconditions_point_masks_in_existing_state():
     assert head_calls[0]["objects_to_interact"] == [1]
     assert head_calls[0]["multiplex_state"] is state["multiplex_state"]
     np.testing.assert_array_equal(
-        _to_numpy(head_calls[0]["mask_inputs"]),
+        to_numpy(head_calls[0]["mask_inputs"]),
         np.full((1, 1, 2, 2), 6.0, dtype=np.float32),
     )
     assert recondition_calls[0]["prev_output"] is existing_out
@@ -640,7 +636,7 @@ def test_demo_run_single_frame_reconditions_point_masks_in_existing_state():
     assert recondition_calls[0]["add_mask_to_memory"] is True
     assert recondition_calls[0]["are_masks_from_pts"] is True
     np.testing.assert_array_equal(
-        _to_numpy(recondition_calls[0]["new_masks"]),
+        to_numpy(recondition_calls[0]["new_masks"]),
         np.full((1, 1, 2, 2), 11.0, dtype=np.float32),
     )
 
@@ -681,19 +677,19 @@ def test_demo_add_new_points_initializes_state_and_committed_outputs():
     assert calls[0]["is_init_cond_frame"] is True
     assert calls[0]["mask_inputs"] is None
     np.testing.assert_array_equal(
-        _to_numpy(calls[0]["point_inputs"]["point_coords"]),
+        to_numpy(calls[0]["point_inputs"]["point_coords"]),
         np.array([[[4.0, 2.0]]], dtype=np.float32),
     )
     np.testing.assert_array_equal(
-        _to_numpy(calls[0]["point_inputs"]["point_labels"]),
+        to_numpy(calls[0]["point_inputs"]["point_labels"]),
         np.array([[1]], dtype=np.int32),
     )
     np.testing.assert_array_equal(
-        _to_numpy(state["point_inputs_per_obj"][0][0]["point_coords"]),
+        to_numpy(state["point_inputs_per_obj"][0][0]["point_coords"]),
         np.array([[[4.0, 2.0]]], dtype=np.float32),
     )
     np.testing.assert_array_equal(
-        _to_numpy(video_res_masks[:, :, 0, 0]),
+        to_numpy(video_res_masks[:, :, 0, 0]),
         np.array([[0.5]], dtype=np.float32),
     )
     assert 0 in state["output_dict_per_obj"][0]["cond_frame_outputs"]
@@ -737,19 +733,19 @@ def test_demo_add_new_points_accumulates_before_tracking_starts():
     expected_coords = np.array([[[4.0, 2.0], [2.0, 6.0]]], dtype=np.float32)
     expected_labels = np.array([[1, 0]], dtype=np.int32)
     np.testing.assert_array_equal(
-        _to_numpy(calls[1]["point_inputs"]["point_coords"]),
+        to_numpy(calls[1]["point_inputs"]["point_coords"]),
         expected_coords,
     )
     np.testing.assert_array_equal(
-        _to_numpy(calls[1]["point_inputs"]["point_labels"]),
+        to_numpy(calls[1]["point_inputs"]["point_labels"]),
         expected_labels,
     )
     np.testing.assert_array_equal(
-        _to_numpy(state["point_inputs_per_obj"][0][0]["point_coords"]),
+        to_numpy(state["point_inputs_per_obj"][0][0]["point_coords"]),
         expected_coords,
     )
     np.testing.assert_array_equal(
-        _to_numpy(state["point_inputs_per_obj"][0][0]["point_labels"]),
+        to_numpy(state["point_inputs_per_obj"][0][0]["point_labels"]),
         expected_labels,
     )
 
@@ -809,12 +805,12 @@ def test_demo_add_new_points_adds_dynamic_object_to_existing_state():
     assert calls[0]["is_init_cond_frame"] is True
     assert calls[0]["reverse"] is False
     np.testing.assert_array_equal(
-        _to_numpy(calls[0]["point_inputs"]["point_coords"]),
+        to_numpy(calls[0]["point_inputs"]["point_coords"]),
         np.array([[[2.0, 6.0]]], dtype=np.float32),
     )
     assert 0 in state["output_dict_per_obj"][2]["cond_frame_outputs"]
     np.testing.assert_array_equal(
-        _to_numpy(video_res_masks[:, :, 0, 0]),
+        to_numpy(video_res_masks[:, :, 0, 0]),
         np.array([[0.25], [0.75], [0.5]], dtype=np.float32),
     )
 
@@ -883,11 +879,11 @@ def test_demo_add_new_points_refines_existing_multi_object_state():
     assert refine_call["is_init_cond_frame"] is True
     assert multi_state["user_refined_frames_per_obj"][10] == {0}
     np.testing.assert_array_equal(
-        _to_numpy(refine_call["point_inputs"]["point_coords"]),
+        to_numpy(refine_call["point_inputs"]["point_coords"]),
         np.array([[[2.0, 6.0]]], dtype=np.float32),
     )
     np.testing.assert_array_equal(
-        _to_numpy(
+        to_numpy(
             multi_state["output_dict"]["cond_frame_outputs"][0]["pred_masks"][
                 :, :, 0, 0
             ]
@@ -954,11 +950,11 @@ def test_demo_add_new_points_gap_fills_existing_multi_object_state():
     assert 1 not in state["output_dict"]["non_cond_frame_outputs"]
     assert state["consolidated_frame_inds"]["cond_frame_outputs"] == {0, 1}
     np.testing.assert_array_equal(
-        _to_numpy(gap_fill_call["point_inputs"]["point_coords"]),
+        to_numpy(gap_fill_call["point_inputs"]["point_coords"]),
         np.array([[[2.0, 6.0]]], dtype=np.float32),
     )
     np.testing.assert_array_equal(
-        _to_numpy(
+        to_numpy(
             state["output_dict"]["cond_frame_outputs"][1]["pred_masks"][:, :, 0, 0]
         ),
         np.array([[8.0], [1.5]], dtype=np.float32),
@@ -1064,7 +1060,7 @@ def test_demo_add_new_points_refines_tracked_single_object_frame():
     assert 1 not in state["consolidated_frame_inds"]["non_cond_frame_outputs"]
     assert state["user_refined_frames_per_obj"][10] == {1}
     np.testing.assert_array_equal(
-        _to_numpy(video_res_masks[:, :, 0, 0]),
+        to_numpy(video_res_masks[:, :, 0, 0]),
         np.array([[40.0]], dtype=np.float32),
     )
 
@@ -1080,19 +1076,19 @@ def test_demo_add_new_points_refines_tracked_single_object_frame():
 
     assert calls[3]["is_init_cond_frame"] is False
     np.testing.assert_array_equal(
-        _to_numpy(calls[3]["prev_sam_mask_logits"]),
+        to_numpy(calls[3]["prev_sam_mask_logits"]),
         np.full((1, 1, 2, 2), 32.0, dtype=np.float32),
     )
     np.testing.assert_array_equal(
-        _to_numpy(calls[3]["point_inputs"]["point_coords"]),
+        to_numpy(calls[3]["point_inputs"]["point_coords"]),
         np.array([[[1.0, 4.0], [6.0, 2.0]]], dtype=np.float32),
     )
     np.testing.assert_array_equal(
-        _to_numpy(calls[3]["point_inputs"]["point_labels"]),
+        to_numpy(calls[3]["point_inputs"]["point_labels"]),
         np.array([[1, 0]], dtype=np.int32),
     )
     np.testing.assert_array_equal(
-        _to_numpy(
+        to_numpy(
             state["output_dict"]["cond_frame_outputs"][1]["pred_masks"][:, :, 0, 0]
         ),
         np.array([[1.25]], dtype=np.float32),
@@ -1122,7 +1118,7 @@ def test_demo_propagate_filters_requested_object_ids():
     assert low_res_masks.shape == (1, 1, 2, 2)
     assert video_res_masks.shape == (1, 1, 4, 4)
     np.testing.assert_array_equal(
-        _to_numpy(video_res_masks[:, :, 0, 0]),
+        to_numpy(video_res_masks[:, :, 0, 0]),
         np.array([[4.0]], dtype=np.float32),
     )
 
@@ -1192,7 +1188,7 @@ def test_demo_propagate_runs_and_stores_non_conditioning_frame():
     ] == OrderedDict([(10, 0), (20, 1)])
     assert state["frames_already_tracked"][1] == {"reverse": False}
     np.testing.assert_array_equal(
-        _to_numpy(outputs[1][3][:, :, 0, 0]),
+        to_numpy(outputs[1][3][:, :, 0, 0]),
         np.array([[5.0], [6.0]], dtype=np.float32),
     )
 
@@ -1268,16 +1264,16 @@ def test_demo_remove_object_slices_packed_state_and_per_object_outputs():
     assert out["local_obj_id_to_idx"] == OrderedDict([(20, 0)])
     assert out["conditioning_objects"] == {0}
     np.testing.assert_array_equal(
-        _to_numpy(out["pred_masks"][:, :, 0, 0]),
+        to_numpy(out["pred_masks"][:, :, 0, 0]),
         np.array([[4.0]], dtype=np.float32),
     )
     np.testing.assert_array_equal(
-        _to_numpy(out["object_score_logits"]),
+        to_numpy(out["object_score_logits"]),
         np.array([[2.0]], dtype=np.float32),
     )
     assert set(state["output_dict_per_obj"]) == {0}
     np.testing.assert_array_equal(
-        _to_numpy(
+        to_numpy(
             state["output_dict_per_obj"][0]["cond_frame_outputs"][0]["pred_masks"]
         ),
         np.full((1, 1, 2, 2), 4.0, dtype=np.float32),
@@ -1340,5 +1336,5 @@ def test_demo_get_image_feature_computes_and_caches_loader_backed_frame():
     }
     assert set(state["cached_features"]) == {1}
     np.testing.assert_array_equal(
-        _to_numpy(image), np.ones((1, 3, 4, 4), dtype=np.float32)
+        to_numpy(image), np.ones((1, 3, 4, 4), dtype=np.float32)
     )

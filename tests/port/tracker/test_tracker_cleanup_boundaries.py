@@ -1,20 +1,30 @@
+from collections.abc import Callable
+from typing import cast
+
 import mlx.core as mx
 import numpy as np
 import pytest
 
+from sam3_mlx.mlx_runtime import to_numpy
 from sam3_mlx.model.edt import edt_triton
+import sam3_mlx.model.sam3_tracker_utils as tracker_utils
 from sam3_mlx.model.sam3_tracker_utils import (
-    _get_connected_components_with_padding,
     fill_holes_in_mask_scores,
     sample_one_point_from_error_center,
 )
 from sam3_mlx.perflib.connected_components import connected_components
 
 
-def _to_numpy(value):
-    if isinstance(value, mx.array):
-        mx.eval(value)
-    return np.asarray(value)
+_connected_components_with_padding_value = getattr(
+    tracker_utils,
+    "_get_connected_components_with_padding",
+)
+if not callable(_connected_components_with_padding_value):
+    raise TypeError("_get_connected_components_with_padding must be callable")
+_get_connected_components_with_padding = cast(
+    Callable[[mx.array], tuple[mx.array, mx.array]],
+    _connected_components_with_padding_value,
+)
 
 
 def test_edt_triton_mlx_input_matches_fixed_center_distance_field():
@@ -34,7 +44,7 @@ def test_edt_triton_mlx_input_matches_fixed_center_distance_field():
     actual = edt_triton(mx.array(mask))
 
     assert isinstance(actual, mx.array)
-    np.testing.assert_allclose(_to_numpy(actual), expected, rtol=0, atol=1e-6)
+    np.testing.assert_allclose(to_numpy(actual), expected, rtol=0, atol=1e-6)
 
 
 def test_edt_triton_rejects_non_batched_2d_shape():
@@ -87,8 +97,8 @@ def test_connected_components_mlx_input_uses_8_connected_contract():
 
     assert isinstance(labels, mx.array)
     assert isinstance(counts, mx.array)
-    np.testing.assert_array_equal(_to_numpy(labels), expected_labels)
-    np.testing.assert_array_equal(_to_numpy(counts), expected_counts)
+    np.testing.assert_array_equal(to_numpy(labels), expected_labels)
+    np.testing.assert_array_equal(to_numpy(counts), expected_counts)
 
 
 def test_tracker_connected_components_with_padding_keeps_4_connected_contract():
@@ -133,8 +143,8 @@ def test_tracker_connected_components_with_padding_keeps_4_connected_contract():
 
     assert isinstance(labels, mx.array)
     assert isinstance(counts, mx.array)
-    np.testing.assert_array_equal(_to_numpy(labels), expected_labels)
-    np.testing.assert_array_equal(_to_numpy(counts), expected_counts)
+    np.testing.assert_array_equal(to_numpy(labels), expected_labels)
+    np.testing.assert_array_equal(to_numpy(counts), expected_counts)
 
 
 def test_fill_holes_in_mask_scores_mlx_input_matches_fixed_cleanup_values():
@@ -158,7 +168,7 @@ def test_fill_holes_in_mask_scores_mlx_input_matches_fixed_cleanup_values():
     actual = fill_holes_in_mask_scores(mx.array(scores), max_area=1)
 
     assert isinstance(actual, mx.array)
-    np.testing.assert_allclose(_to_numpy(actual), expected, rtol=0, atol=1e-6)
+    np.testing.assert_allclose(to_numpy(actual), expected, rtol=0, atol=1e-6)
 
 
 def test_sample_one_point_from_error_center_mlx_uses_edt_center_contract():
@@ -170,5 +180,5 @@ def test_sample_one_point_from_error_center_mlx_uses_edt_center_contract():
 
     assert isinstance(points, mx.array)
     assert isinstance(labels, mx.array)
-    np.testing.assert_array_equal(_to_numpy(points), np.array([[[2, 2]]]))
-    np.testing.assert_array_equal(_to_numpy(labels), np.array([[1]]))
+    np.testing.assert_array_equal(to_numpy(points), np.array([[[2, 2]]]))
+    np.testing.assert_array_equal(to_numpy(labels), np.array([[1]]))

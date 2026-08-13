@@ -1,7 +1,11 @@
+from collections.abc import Mapping
+from typing import TypedDict
+
 import numpy as np
 import mlx.core as mx
 import pytest
 
+from sam3_mlx.mlx_runtime import to_numpy
 from sam3_mlx.model.data_misc import FindStage
 from sam3_mlx.model.geometry_encoders import Prompt
 from sam3_mlx.model.multiplex_utils import UnsupportedMultiplexRuntimeError
@@ -9,6 +13,26 @@ from sam3_mlx.model.sam3_multiplex_detector import (
     Sam3MultiplexDetector,
     Sam3MultiplexImageBase,
 )
+from sam3_mlx.model.sam3_image import Output
+
+
+class _ForwardCall(TypedDict):
+    backbone_out: Mapping[str, object]
+    find_input: FindStage
+    find_target: object | None
+    geometric_prompt: Prompt
+
+
+class _BatchedForwardCall(TypedDict):
+    img_ids: np.ndarray[tuple[int, ...], np.dtype[np.generic]]
+    text_ids: np.ndarray[tuple[int, ...], np.dtype[np.generic]]
+    find_target: object | None
+    box_batch: int
+
+
+type _GroundingBuffer = dict[tuple[int, int], dict[str, object]]
+type _GroundingCache = dict[str, _GroundingBuffer]
+type _MultigpuBuffer = dict[int, dict[str, tuple[object, object | None]]]
 
 
 class _DummyDecoder:
@@ -23,20 +47,20 @@ class _DummyTransformer:
 
 
 class _ForwardingDetector(Sam3MultiplexDetector):
-    def __init__(self, output):
+    def __init__(self, output: Mapping[str, object]) -> None:
         self.rank = 0
         self.world_size = 1
-        self.output = output
-        self.calls = []
+        self.output = dict(output)
+        self.calls: list[_ForwardCall] = []
 
     def forward_video_grounding(
         self,
         *,
-        backbone_out,
-        find_input,
-        find_target,
-        geometric_prompt,
-    ):
+        backbone_out: Mapping[str, object],
+        find_input: FindStage,
+        find_target: object | None,
+        geometric_prompt: Prompt,
+    ) -> tuple[dict[str, object], Mapping[str, object]]:
         self.calls.append(
             {
                 "backbone_out": backbone_out,
@@ -49,26 +73,34 @@ class _ForwardingDetector(Sam3MultiplexDetector):
 
 
 class _BatchedForwardingDetector(Sam3MultiplexDetector):
-    def __init__(self, *, num_queries=2):
+    def __init__(self, *, num_queries: int = 2) -> None:
         self.rank = 0
         self.world_size = 1
         self.is_multiplex = True
         self.tracking_score_thresh = 0.25
         self.num_queries = num_queries
-        self.calls = []
+        self.calls: list[_BatchedForwardCall] = []
 
     def forward_grounding(
         self,
-        *,
-        backbone_out,
-        find_input,
-        find_target,
-        geometric_prompt,
-    ):
+        backbone_out: Mapping[str, object],
+        find_input: object,
+        find_target: object | None,
+        geometric_prompt: Prompt,
+    ) -> Output:
+        del backbone_out
+        if not isinstance(find_input, FindStage):
+            raise TypeError("find_input must be a FindStage")
+        if not isinstance(find_input.img_ids, mx.array):
+            raise TypeError("find_input.img_ids must be an MLX array")
+        if not isinstance(find_input.text_ids, mx.array):
+            raise TypeError("find_input.text_ids must be an MLX array")
+        if geometric_prompt.box_mask is None:
+            raise TypeError("geometric_prompt.box_mask must be populated")
         self.calls.append(
             {
-                "img_ids": np.asarray(find_input.img_ids),
-                "text_ids": np.asarray(find_input.text_ids),
+                "img_ids": to_numpy(find_input.img_ids),
+                "text_ids": to_numpy(find_input.text_ids),
                 "find_target": find_target,
                 "box_batch": geometric_prompt.box_mask.shape[0],
             }
@@ -79,27 +111,32 @@ class _BatchedForwardingDetector(Sam3MultiplexDetector):
         pred_logits = (img_ids[:, None] + query_offsets + 1.0)[..., None]
         pred_boxes = mx.zeros((batch_size, self.num_queries, 4), dtype=mx.float32)
         pred_masks = mx.ones((batch_size, self.num_queries, 2, 2), dtype=mx.float32)
-        return {
-            "pred_logits": pred_logits,
-            "pred_boxes": pred_boxes,
-            "pred_boxes_xyxy": pred_boxes,
-            "pred_masks": pred_masks,
-        }
+        return Output(
+            {
+                "pred_logits": pred_logits,
+                "pred_boxes": pred_boxes,
+                "pred_boxes_xyxy": pred_boxes,
+                "pred_masks": pred_masks,
+            }
+        )
 
 
 class _BatchedNmsDetector(_BatchedForwardingDetector):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(num_queries=3)
 
     def forward_grounding(
         self,
-        *,
-        backbone_out,
-        find_input,
-        find_target,
-        geometric_prompt,
-    ):
-        self.calls.append({"img_ids": np.asarray(find_input.img_ids)})
+        backbone_out: Mapping[str, object],
+        find_input: object,
+        find_target: object | None,
+        geometric_prompt: Prompt,
+    ) -> Output:
+        del backbone_out, find_target, geometric_prompt
+        if not isinstance(find_input, FindStage):
+            raise TypeError("find_input must be a FindStage")
+        if not isinstance(find_input.img_ids, mx.array):
+            raise TypeError("find_input.img_ids must be an MLX array")
         batch_size = find_input.img_ids.shape[0]
         logits = mx.array([2.0, 1.0, 1.5], dtype=mx.float32)
         masks = mx.array(
@@ -113,12 +150,37 @@ class _BatchedNmsDetector(_BatchedForwardingDetector):
         pred_logits = mx.broadcast_to(logits[None, :, None], (batch_size, 3, 1))
         pred_masks = mx.broadcast_to(masks[None, :, :, :], (batch_size, 3, 2, 2))
         pred_boxes = mx.zeros((batch_size, 3, 4), dtype=mx.float32)
-        return {
-            "pred_logits": pred_logits,
-            "pred_boxes": pred_boxes,
-            "pred_boxes_xyxy": pred_boxes,
-            "pred_masks": pred_masks,
-        }
+        return Output(
+            {
+                "pred_logits": pred_logits,
+                "pred_boxes": pred_boxes,
+                "pred_boxes_xyxy": pred_boxes,
+                "pred_masks": pred_masks,
+            }
+        )
+
+
+class _ImageBaseHarness(Sam3MultiplexImageBase):
+    def dummy_object_ids(self, pred_logits: mx.array) -> mx.array:
+        return self._get_dummy_object_ids(pred_logits)
+
+    def batch_find_inputs(
+        self,
+        find_inputs: list[FindStage],
+        *,
+        chunk_start: int,
+        chunk_end: int,
+    ) -> FindStage:
+        return self._batch_find_inputs(find_inputs, chunk_start, chunk_end)
+
+    def batch_geometric_prompts(self, prompts: list[Prompt]) -> Prompt:
+        return self._batch_geometric_prompts_from_list(prompts)
+
+
+class _GatherDetector(Sam3MultiplexDetector):
+    def gather_tensor(self, tensor: mx.array) -> tuple[list[mx.array], None]:
+        gathered, handle = self._gather_tensor(tensor)
+        return gathered, handle
 
 
 def _find_stage(img_id: int, text_id: int) -> FindStage:
@@ -145,8 +207,8 @@ def _find_stage_with_empty_prompt(img_id: int, text_id: int) -> FindStage:
     return stage
 
 
-def _blank_instance() -> Sam3MultiplexImageBase:
-    instance = Sam3MultiplexImageBase.__new__(Sam3MultiplexImageBase)
+def _blank_instance() -> _ImageBaseHarness:
+    instance = _ImageBaseHarness.__new__(_ImageBaseHarness)
     instance.tracking_score_thresh = 0.25
     return instance
 
@@ -161,25 +223,25 @@ def test_get_dummy_object_ids_uses_query_indices_above_tracking_threshold():
         dtype=mx.float32,
     )
 
-    object_ids = instance._get_dummy_object_ids(logits)
+    object_ids = instance.dummy_object_ids(logits)
 
     np.testing.assert_array_equal(
-        np.asarray(object_ids),
+        to_numpy(object_ids),
         np.array([[-1, 1, -1], [0, -1, 2]], dtype=np.int64),
     )
 
 
 def test_batch_find_inputs_uses_chunk_frame_ids_and_modulo_source_fields():
     instance = _blank_instance()
-    batched = instance._batch_find_inputs(
+    batched = instance.batch_find_inputs(
         [_find_stage(0, 10), _find_stage(1, 20)],
         chunk_start=1,
         chunk_end=4,
     )
 
-    np.testing.assert_array_equal(np.asarray(batched.img_ids), np.array([1, 2, 3]))
+    np.testing.assert_array_equal(to_numpy(batched.img_ids), np.array([1, 2, 3]))
     np.testing.assert_array_equal(batched.img_ids_np, np.array([1, 2, 3]))
-    np.testing.assert_array_equal(np.asarray(batched.text_ids), np.array([20, 10, 20]))
+    np.testing.assert_array_equal(to_numpy(batched.text_ids), np.array([20, 10, 20]))
     assert batched.input_boxes is None
     assert batched.input_points is None
 
@@ -205,22 +267,30 @@ def test_batch_geometric_prompts_preserves_official_prompt_batch_axes():
         ),
     ]
 
-    batched = instance._batch_geometric_prompts_from_list(prompts)
+    batched = instance.batch_geometric_prompts(prompts)
 
+    assert batched.box_embeddings is not None
+    assert batched.box_mask is not None
+    assert batched.box_labels is not None
+    assert batched.point_embeddings is not None
+    assert batched.point_mask is not None
+    assert batched.point_labels is not None
     assert batched.box_embeddings.shape == (1, 2, 2)
     assert batched.box_mask.shape == (2, 1)
     assert batched.box_labels.shape == (1, 2)
     assert batched.point_embeddings.shape == (1, 2, 2)
     assert batched.point_mask.shape == (2, 1)
     assert batched.point_labels.shape == (1, 2)
-    np.testing.assert_array_equal(np.asarray(batched.box_labels), np.array([[1, 0]]))
+    np.testing.assert_array_equal(to_numpy(batched.box_labels), np.array([[1, 0]]))
 
 
-def test_multiplex_detector_constructor_ports_rank_and_gather_state(monkeypatch):
+def test_multiplex_detector_constructor_ports_rank_and_gather_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("RANK", "2")
     monkeypatch.setenv("WORLD_SIZE", "1")
 
-    detector = Sam3MultiplexDetector(
+    detector = _GatherDetector(
         backbone=object(),
         transformer=_DummyTransformer(),
         input_geometry_encoder=object(),
@@ -231,7 +301,7 @@ def test_multiplex_detector_constructor_ports_rank_and_gather_state(monkeypatch)
     )
     tensor = mx.array([1.0, 2.0], dtype=mx.float32)
 
-    gathered, handle = detector._gather_tensor(tensor)
+    gathered, handle = detector.gather_tensor(tensor)
 
     assert detector.rank == 2
     assert detector.world_size == 1
@@ -243,12 +313,12 @@ def test_multiplex_detector_constructor_ports_rank_and_gather_state(monkeypatch)
 
 
 def test_multiplex_detector_gather_rejects_multi_process_runtime():
-    detector = Sam3MultiplexDetector.__new__(Sam3MultiplexDetector)
+    detector = _GatherDetector.__new__(_GatherDetector)
     detector.world_size = 2
     detector.async_all_gather = True
 
     with pytest.raises(UnsupportedMultiplexRuntimeError, match="_gather_tensor"):
-        detector._gather_tensor(mx.array([1.0], dtype=mx.float32))
+        detector.gather_tensor(mx.array([1.0], dtype=mx.float32))
 
 
 def test_forward_video_grounding_multigpu_delegates_in_single_process_runtime():
@@ -286,7 +356,7 @@ def test_forward_video_grounding_multigpu_delegates_in_single_process_runtime():
         }
     ]
     np.testing.assert_array_equal(
-        np.asarray(out["pred_logits"]), np.asarray(output["pred_logits"])
+        to_numpy(out["pred_logits"]), to_numpy(output["pred_logits"])
     )
 
 
@@ -316,7 +386,7 @@ def test_forward_video_grounding_multigpu_reads_cached_frame_without_recompute()
     assert detector.calls == []
     assert list(multigpu_buffer) == [0]
     np.testing.assert_array_equal(
-        np.asarray(out["pred_logits"]), np.asarray(output["pred_logits"])
+        to_numpy(out["pred_logits"]), to_numpy(output["pred_logits"])
     )
 
 
@@ -328,7 +398,7 @@ def test_forward_video_grounding_multigpu_prefetches_and_cleans_buffer_slots():
     detector = _ForwardingDetector(output)
     backbone_out = {"img_batch_all_stages": mx.zeros((2, 3, 4, 4), dtype=mx.float32)}
     find_inputs = [_find_stage(0, 10), _find_stage(1, 20)]
-    multigpu_buffer = {}
+    multigpu_buffer: _MultigpuBuffer = {}
 
     detector.forward_video_grounding_multigpu(
         backbone_out=backbone_out,
@@ -386,7 +456,7 @@ def test_forward_video_grounding_multigpu_applies_mlx_nms_score_suppression():
         nms_iou_thresh=0.9999995,
     )
 
-    logits = np.asarray(out["pred_logits"])
+    logits = to_numpy(out["pred_logits"])
     assert logits[0, 0, 0] == pytest.approx(2.0)
     assert logits[0, 1, 0] < -9000.0
     assert logits[0, 2, 0] == pytest.approx(1.5)
@@ -426,7 +496,7 @@ def test_forward_video_grounding_batched_multigpu_processes_and_caches_chunk():
         _find_stage_with_empty_prompt(1, 20),
         _find_stage_with_empty_prompt(2, 30),
     ]
-    grounding_cache = {}
+    grounding_cache: _GroundingCache = {}
 
     out, returned_backbone = detector.forward_video_grounding_batched_multigpu(
         backbone_out=backbone_out,
@@ -455,15 +525,15 @@ def test_forward_video_grounding_batched_multigpu_processes_and_caches_chunk():
     assert detector.calls[0]["box_batch"] == 2
     assert list(grounding_cache["grounding_buffer"]) == [(0, 2)]
     np.testing.assert_allclose(
-        np.asarray(out["pred_logits"]),
+        to_numpy(out["pred_logits"]),
         np.array([[[2.0], [3.0]]], dtype=np.float32),
     )
     np.testing.assert_allclose(
-        np.asarray(cached_out["pred_logits"]),
+        to_numpy(cached_out["pred_logits"]),
         np.array([[[1.0], [2.0]]], dtype=np.float32),
     )
     np.testing.assert_array_equal(
-        np.asarray(out["pred_object_ids"]),
+        to_numpy(out["pred_object_ids"]),
         np.array([[0, 1]], dtype=np.int64),
     )
 
@@ -476,7 +546,7 @@ def test_forward_video_grounding_batched_multigpu_cleans_previous_chunk():
         _find_stage_with_empty_prompt(1, 20),
         _find_stage_with_empty_prompt(2, 30),
     ]
-    grounding_cache = {}
+    grounding_cache: _GroundingCache = {}
 
     detector.forward_video_grounding_batched_multigpu(
         backbone_out=backbone_out,
@@ -499,7 +569,7 @@ def test_forward_video_grounding_batched_multigpu_cleans_previous_chunk():
 
     assert list(grounding_cache["grounding_buffer"]) == [(2, 3)]
     np.testing.assert_allclose(
-        np.asarray(out["pred_logits"]),
+        to_numpy(out["pred_logits"]),
         np.array([[[3.0], [4.0]]], dtype=np.float32),
     )
 
@@ -523,7 +593,7 @@ def test_forward_video_grounding_batched_multigpu_applies_batched_mlx_nms():
         nms_iou_thresh=0.9999995,
     )
 
-    logits = np.asarray(out["pred_logits"])
+    logits = to_numpy(out["pred_logits"])
     assert logits[0, 0, 0] == pytest.approx(2.0)
     assert logits[0, 1, 0] < -9000.0
     assert logits[0, 2, 0] == pytest.approx(1.5)

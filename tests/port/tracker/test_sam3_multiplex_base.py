@@ -1,9 +1,11 @@
 import json
+from collections.abc import Iterator, Sequence
 from types import SimpleNamespace
+from typing import Required, TypedDict
 
 import pytest
 import mlx.core as mx
-import mlx.nn as nn
+from mlx import nn
 import numpy as np
 
 from sam3_mlx.model.multiplex_utils import (
@@ -11,13 +13,32 @@ from sam3_mlx.model.multiplex_utils import (
     UnsupportedMultiplexRuntimeError,
 )
 from sam3_mlx.model.sam3_multiplex_base import (
+    DetectionOutput,
+    IntArray,
     MaskletConfirmationStatus,
     Sam3MultiplexBase,
     Sam3MultiplexPredictorWrapper,
+    TrackerState,
+    TrackerUpdatePlan,
 )
-from sam3_mlx.model.sam3_video_base import LazyAssociateDetTrkResult, realize_adt_result
-from sam3_mlx.model.video_tracking_multiplex import VideoTrackingMultiplex
+from sam3_mlx.model.sam3_video_base import (
+    LazyAssociateDetTrkResult,
+    TrackerArray,
+    realize_adt_result,
+)
+from sam3_mlx.model.video_tracking_multiplex import (
+    SAMOutput,
+    StageOutput,
+    VideoTrackingMultiplex,
+)
 from sam3_mlx.model.video_tracking_multiplex_demo import VideoTrackingMultiplexDemo
+from tests._json_contracts import (
+    require_int,
+    require_list,
+    require_mapping,
+    require_object_mapping,
+    require_real,
+)
 from tests._paths import PORT_TRACKER_FIXTURE_ROOT
 
 OFFICIAL_SAM3_MULTIPLEX_BASE_COMMIT = "2814fa619404a722d03e9a012e083e4f293a4e53"
@@ -57,10 +78,12 @@ class _PlainDetector:
 
 
 class _TextBackbone:
-    def __init__(self):
-        self.calls = []
+    def __init__(self) -> None:
+        self.calls: list[tuple[tuple[str, ...], object | None]] = []
 
-    def forward_text(self, find_text_batch, device=None):
+    def forward_text(
+        self, find_text_batch: list[str], device: object | None = None
+    ) -> dict[str, mx.array]:
         self.calls.append((tuple(find_text_batch), device))
         return {
             "language_features": mx.ones((1, 1, 4), dtype=mx.float32),
@@ -74,15 +97,17 @@ class _FeatureDetector(_DummyDetector):
         *,
         incomplete_backbone: bool = False,
         incomplete_interactive_backbone: bool = False,
-    ):
+    ) -> None:
         self.backbone = _TextBackbone()
         self.incomplete_backbone = incomplete_backbone
         self.incomplete_interactive_backbone = incomplete_interactive_backbone
-        self.calls = []
+        self.calls: list[dict[str, object]] = []
 
-    def forward_video_grounding_multigpu(self, **kwargs):
+    def forward_video_grounding_multigpu(
+        self, **kwargs: object
+    ) -> tuple[dict[str, object], object]:
         self.calls.append(kwargs)
-        output = {
+        output: dict[str, object] = {
             "pred_logits": mx.array([[[2.0], [-2.0]]], dtype=mx.float32),
             "pred_boxes_xyxy": mx.zeros((1, 2, 4), dtype=mx.float32),
             "pred_masks": mx.ones((1, 2, 2, 2), dtype=mx.float32),
@@ -123,10 +148,10 @@ class _FeatureDetector(_DummyDetector):
 
 
 class _MaskDecoder:
-    def conv_s0(self, value):
+    def conv_s0(self, value: mx.array) -> mx.array:
         return value + 10
 
-    def conv_s1(self, value):
+    def conv_s1(self, value: mx.array) -> mx.array:
         return value + 20
 
 
@@ -135,11 +160,32 @@ class _FeatureTracker(_DummyTracker):
     interactive_sam_mask_decoder = _MaskDecoder()
 
 
-class _ObjectRemovalTracker(_DummyTracker):
-    def __init__(self):
-        self.remove_calls = []
+class _TrackerState(TypedDict, total=False):
+    name: str
+    obj_ids: Required[list[int]]
+    obj_idx_to_id: dict[int, int]
+    multiplex_state: MultiplexState
+    tracking_has_started: bool
 
-    def remove_object(self, inference_state, obj_id, strict=False, need_output=True):
+
+class _RemoveCall(TypedDict):
+    state: _TrackerState
+    obj_id: int
+    strict: bool
+    need_output: bool
+
+
+class _ObjectRemovalTracker(_DummyTracker):
+    def __init__(self) -> None:
+        self.remove_calls: list[_RemoveCall] = []
+
+    def remove_object(
+        self,
+        inference_state: _TrackerState,
+        obj_id: int,
+        strict: bool = False,
+        need_output: bool = True,
+    ) -> tuple[list[int], list[object]]:
         self.remove_calls.append(
             {
                 "state": inference_state,
@@ -148,42 +194,63 @@ class _ObjectRemovalTracker(_DummyTracker):
                 "need_output": need_output,
             }
         )
+        existing_obj_ids = inference_state.get("obj_ids", [])
         inference_state["obj_ids"] = [
             existing_obj_id
-            for existing_obj_id in inference_state.get("obj_ids", [])
+            for existing_obj_id in existing_obj_ids
             if existing_obj_id != obj_id
         ]
         return inference_state["obj_ids"], []
 
 
+class _MemoryEncoderCall(TypedDict):
+    state: str
+    frame_idx: int
+    local_batch_size: int
+    high_res_masks: np.ndarray
+    mask_sample: np.ndarray
+    score_logits: np.ndarray
+    is_mask_from_pts: bool
+
+
+class _OutputCall(TypedDict):
+    state: str
+    frame_idx: int
+    storage_key: str
+    current_out: StageOutput
+
+
 class _MemoryUpdateTracker(_DummyTracker):
-    def __init__(self, *, dynamic: bool = False):
+    def __init__(self, *, dynamic: bool = False) -> None:
         self.is_multiplex_dynamic = dynamic
         self.object_score_logit_threshold = 0.0
         self.maskmem_backbone = SimpleNamespace(
             mask_downsampler=SimpleNamespace(interpol_size=(4, 4))
         )
-        self.encoder_calls = []
-        self.add_output_calls = []
-        self.suppress_calls = []
+        self.encoder_calls: list[_MemoryEncoderCall] = []
+        self.add_output_calls: list[_OutputCall] = []
+        self.suppress_calls: list[mx.array] = []
 
-    def _suppress_object_pw_area_shrinkage(self, high_res_masks):
+    def _suppress_object_pw_area_shrinkage(self, high_res_masks: mx.array) -> mx.array:
         self.suppress_calls.append(high_res_masks)
         return high_res_masks
 
     def _run_memory_encoder(
         self,
-        sam2_state,
-        frame_idx,
-        local_batch_size,
-        local_high_res_masks,
-        local_object_score_logits,
-        is_mask_from_pts,
-    ):
+        sam2_state: _TrackerState,
+        frame_idx: int,
+        local_batch_size: int,
+        local_high_res_masks: mx.array,
+        local_object_score_logits: mx.array,
+        is_mask_from_pts: bool,
+    ) -> tuple[mx.array, list[mx.array], mx.array, mx.array]:
         call_id = len(self.encoder_calls) + 1
+        state_name = sam2_state.get("name")
+        if state_name is None:
+            raise AssertionError("memory update state requires a name")
         self.encoder_calls.append(
             {
-                "state": sam2_state["name"],
+                "state": state_name,
                 "frame_idx": frame_idx,
                 "local_batch_size": local_batch_size,
                 "high_res_masks": np.asarray(local_high_res_masks),
@@ -203,14 +270,17 @@ class _MemoryUpdateTracker(_DummyTracker):
     def add_output_per_object(
         self,
         *,
-        inference_state,
-        frame_idx,
-        current_out,
-        storage_key,
-    ):
+        inference_state: _TrackerState,
+        frame_idx: int,
+        current_out: StageOutput,
+        storage_key: str,
+    ) -> None:
+        state_name = inference_state.get("name")
+        if state_name is None:
+            raise AssertionError("output state requires a name")
         self.add_output_calls.append(
             {
-                "state": inference_state["name"],
+                "state": state_name,
                 "frame_idx": frame_idx,
                 "storage_key": storage_key,
                 "current_out": current_out,
@@ -219,21 +289,21 @@ class _MemoryUpdateTracker(_DummyTracker):
 
 
 class _NoObjectPointerMemoryUpdateTracker(_MemoryUpdateTracker):
-    def no_obj_ptr_linear(self, pointers):
+    def no_obj_ptr_linear(self, pointers: mx.array) -> mx.array:
         return pointers + 100.0
 
 
 def _lazy_hotstart_assoc(
     *,
-    trk_is_unmatched,
-    trk_is_nonempty,
-    im_mask,
+    trk_is_unmatched: Sequence[bool],
+    trk_is_nonempty: Sequence[bool],
+    im_mask: object,
 ) -> LazyAssociateDetTrkResult:
-    im_mask_mx = mx.array(im_mask, dtype=mx.bool_)
+    im_mask_mx = mx.array(np.asarray(im_mask, dtype=bool), dtype=mx.bool_)
     num_det = int(im_mask_mx.shape[0])
     return LazyAssociateDetTrkResult(
-        trk_is_unmatched=mx.array(trk_is_unmatched, dtype=mx.bool_),
-        trk_is_nonempty=mx.array(trk_is_nonempty, dtype=mx.bool_),
+        trk_is_unmatched=mx.array(list(trk_is_unmatched), dtype=mx.bool_),
+        trk_is_nonempty=mx.array(list(trk_is_nonempty), dtype=mx.bool_),
         is_new_det=mx.zeros((num_det,), dtype=mx.bool_),
         det_to_max_iou_trk_idx=mx.zeros((num_det,), dtype=mx.int64),
         det_is_high_conf=mx.zeros((num_det,), dtype=mx.bool_),
@@ -243,33 +313,59 @@ def _lazy_hotstart_assoc(
     )
 
 
+class _AddMasksCall(TypedDict, total=False):
+    state: _TrackerState
+    frame_idx: int
+    obj_ids: list[int]
+    masks: mx.array
+    reconditioning: bool
+    add_mask_to_memory: bool
+
+
+class _AddMaskCall(TypedDict, total=False):
+    state: _TrackerState
+    frame_idx: int
+    obj_id: int
+    mask: mx.array
+    add_mask_to_memory: bool
+
+
+class _InitCall(TypedDict):
+    cached_features: object
+    video_height: int
+    video_width: int
+    num_frames: int
+    state: _TrackerState
+
+
 class _ReconditionTracker(_DummyTracker):
     input_mask_size = 2
 
-    def __init__(self):
-        self.add_calls = []
-        self.preflight_calls = []
+    def __init__(self) -> None:
+        self.add_calls: list[_AddMasksCall] = []
+        self.preflight_calls: list[tuple[_TrackerState, bool]] = []
 
     def add_new_masks(
         self,
         *,
-        inference_state,
-        frame_idx,
-        obj_ids,
-        masks,
-        reconditioning=False,
-    ):
+        inference_state: _TrackerState,
+        frame_idx: int,
+        obj_ids: Sequence[int],
+        masks: mx.array,
+        reconditioning: bool = False,
+    ) -> tuple[int, list[int], None, None]:
+        object_ids = list(obj_ids)
         self.add_calls.append(
             {
                 "state": inference_state,
                 "frame_idx": frame_idx,
-                "obj_ids": list(obj_ids),
+                "obj_ids": object_ids,
                 "masks": masks,
                 "reconditioning": reconditioning,
             }
         )
         inference_state.setdefault("obj_ids", [])
-        for obj_id in obj_ids:
+        for obj_id in object_ids:
             if obj_id not in inference_state["obj_ids"]:
                 inference_state["obj_ids"].append(obj_id)
         inference_state.setdefault(
@@ -278,17 +374,26 @@ class _ReconditionTracker(_DummyTracker):
         )
         return frame_idx, inference_state["obj_ids"], None, None
 
-    def propagate_in_video_preflight(self, sam2_state, run_mem_encoder=True):
+    def propagate_in_video_preflight(
+        self, sam2_state: _TrackerState, run_mem_encoder: bool = True
+    ) -> None:
         self.preflight_calls.append((sam2_state, run_mem_encoder))
 
 
 class _SingleMaskReconditionTracker(_DummyTracker):
     input_mask_size = 2
 
-    def __init__(self):
-        self.add_calls = []
+    def __init__(self) -> None:
+        self.add_calls: list[_AddMaskCall] = []
 
-    def add_new_mask(self, *, inference_state, frame_idx, obj_id, mask):
+    def add_new_mask(
+        self,
+        *,
+        inference_state: _TrackerState,
+        frame_idx: int,
+        obj_id: int,
+        mask: mx.array,
+    ) -> tuple[int, list[int], None, None]:
         self.add_calls.append(
             {
                 "state": inference_state,
@@ -304,14 +409,21 @@ class _NonDynamicAddTracker(_DummyTracker):
     input_mask_size = 2
     is_multiplex_dynamic = False
 
-    def __init__(self, *, per_obj_inference: bool):
+    def __init__(self, *, per_obj_inference: bool) -> None:
         self.per_obj_inference = per_obj_inference
-        self.init_calls = []
-        self.add_calls = []
-        self.preflight_calls = []
+        self.init_calls: list[_InitCall] = []
+        self.add_calls: list[_AddMaskCall] = []
+        self.preflight_calls: list[tuple[_TrackerState, bool]] = []
 
-    def init_state(self, *, cached_features, video_height, video_width, num_frames):
-        sam2_state = {
+    def init_state(
+        self,
+        *,
+        cached_features: object,
+        video_height: int,
+        video_width: int,
+        num_frames: int,
+    ) -> _TrackerState:
+        sam2_state: _TrackerState = {
             "name": f"init-{len(self.init_calls) + 1}",
             "obj_ids": [],
         }
@@ -329,12 +441,12 @@ class _NonDynamicAddTracker(_DummyTracker):
     def add_new_mask(
         self,
         *,
-        inference_state,
-        frame_idx,
-        obj_id,
-        mask,
-        add_mask_to_memory=False,
-    ):
+        inference_state: _TrackerState,
+        frame_idx: int,
+        obj_id: int,
+        mask: mx.array,
+        add_mask_to_memory: bool = False,
+    ) -> tuple[int, list[int], None, None]:
         self.add_calls.append(
             {
                 "state": inference_state,
@@ -347,7 +459,9 @@ class _NonDynamicAddTracker(_DummyTracker):
         inference_state.setdefault("obj_ids", []).append(int(obj_id))
         return frame_idx, inference_state["obj_ids"], None, None
 
-    def propagate_in_video_preflight(self, sam2_state, run_mem_encoder=True):
+    def propagate_in_video_preflight(
+        self, sam2_state: _TrackerState, run_mem_encoder: bool = True
+    ) -> None:
         self.preflight_calls.append((sam2_state, run_mem_encoder))
 
 
@@ -357,7 +471,7 @@ def _dynamic_tracker_state(
     object_ids: list[int],
     *,
     allowed_bucket_capacity: int,
-):
+) -> _TrackerState:
     return {
         "name": name,
         "obj_ids": object_ids.copy(),
@@ -369,16 +483,79 @@ def _dynamic_tracker_state(
     }
 
 
+def _runtime_tracker_state(
+    obj_ids: list[int],
+    *,
+    name: str | None = None,
+    multiplex_state: MultiplexState | None = None,
+    output_dict: dict[str, object] | None = None,
+) -> TrackerState:
+    state: TrackerState = {"obj_ids": obj_ids}
+    if name is not None:
+        state["name"] = name
+    if multiplex_state is not None:
+        state["multiplex_state"] = multiplex_state
+    if output_dict is not None:
+        state["output_dict"] = output_dict
+    return state
+
+
+def _detection_output(mask: mx.array) -> DetectionOutput:
+    return {
+        "mask": mask,
+        "scores": mx.zeros((int(mask.shape[0]),), dtype=mx.float32),
+    }
+
+
+def _tracker_update_plan(
+    *,
+    new_det_fa_inds: IntArray | None = None,
+    new_det_obj_ids: IntArray | None = None,
+    new_det_gpu_ids: IntArray | None = None,
+    obj_ids_newly_removed: set[int] | None = None,
+    tracker_low_res_masks_global: TrackerArray | None = None,
+) -> TrackerUpdatePlan:
+    empty_indices = np.array([], dtype=np.int64)
+    plan: TrackerUpdatePlan = {
+        "new_det_fa_inds": empty_indices
+        if new_det_fa_inds is None
+        else new_det_fa_inds,
+        "new_det_obj_ids": empty_indices
+        if new_det_obj_ids is None
+        else new_det_obj_ids,
+        "new_det_gpu_ids": empty_indices
+        if new_det_gpu_ids is None
+        else new_det_gpu_ids,
+        "unmatched_trk_obj_ids": np.array([], dtype=np.int64),
+        "det_to_matched_trk_obj_ids": {},
+        "num_obj_dropped_due_to_limit": 0,
+        "trk_id_to_max_iou_high_conf_det": {},
+        "reconditioned_obj_ids": set(),
+    }
+    if obj_ids_newly_removed is not None:
+        plan["obj_ids_newly_removed"] = obj_ids_newly_removed
+    if tracker_low_res_masks_global is not None:
+        plan["tracker_low_res_masks_global"] = tracker_low_res_masks_global
+    return plan
+
+
 class _DynamicAddTracker(_DummyTracker):
     input_mask_size = 2
     is_multiplex_dynamic = True
 
-    def __init__(self):
-        self.init_calls = []
-        self.add_calls = []
-        self.preflight_calls = []
+    def __init__(self) -> None:
+        self.init_calls: list[_InitCall] = []
+        self.add_calls: list[_AddMasksCall] = []
+        self.preflight_calls: list[tuple[_TrackerState, bool]] = []
 
-    def init_state(self, *, cached_features, video_height, video_width, num_frames):
+    def init_state(
+        self,
+        *,
+        cached_features: object,
+        video_height: int,
+        video_width: int,
+        num_frames: int,
+    ) -> _TrackerState:
         sam2_state = _dynamic_tracker_state(
             f"init-{len(self.init_calls) + 1}",
             [[-1, -1, -1]],
@@ -399,12 +576,12 @@ class _DynamicAddTracker(_DummyTracker):
     def add_new_masks(
         self,
         *,
-        inference_state,
-        frame_idx,
-        obj_ids,
-        masks,
-        add_mask_to_memory=False,
-    ):
+        inference_state: _TrackerState,
+        frame_idx: int,
+        obj_ids: Sequence[int],
+        masks: mx.array,
+        add_mask_to_memory: bool = False,
+    ) -> tuple[int, list[int], None, None]:
         obj_ids = [int(obj_id) for obj_id in obj_ids]
         self.add_calls.append(
             {
@@ -420,7 +597,9 @@ class _DynamicAddTracker(_DummyTracker):
             if obj_id not in inference_state["obj_ids"]:
                 inference_state["obj_ids"].append(obj_id)
 
-        multiplex_state = inference_state["multiplex_state"]
+        multiplex_state = inference_state.get("multiplex_state")
+        if multiplex_state is None:
+            raise AssertionError("dynamic state requires multiplex_state")
         start_idx = multiplex_state.total_valid_entries
         multiplex_state.add_objects(
             list(range(start_idx, start_idx + len(obj_ids))),
@@ -429,36 +608,60 @@ class _DynamicAddTracker(_DummyTracker):
         )
         return frame_idx, inference_state["obj_ids"], None, None
 
-    def propagate_in_video_preflight(self, sam2_state, run_mem_encoder=True):
+    def propagate_in_video_preflight(
+        self, sam2_state: _TrackerState, run_mem_encoder: bool = True
+    ) -> None:
         self.preflight_calls.append((sam2_state, run_mem_encoder))
         sam2_state["tracking_has_started"] = True
 
 
-class _PackedAddAdapterTracker(_DummyTracker):
-    add_new_masks = VideoTrackingMultiplex.add_new_masks
-    add_new_masks_to_existing_state = (
-        VideoTrackingMultiplex.add_new_masks_to_existing_state
-    )
-    _current_frame_output = staticmethod(VideoTrackingMultiplex._current_frame_output)
-    _prepared_features_from_state = VideoTrackingMultiplex._prepared_features_from_state
-    propagate_in_video_preflight = VideoTrackingMultiplex.propagate_in_video_preflight
+class _PackedMaskCall(TypedDict):
+    backbone_features: mx.array
+    high_res_features: list[mx.array] | None
+    mask_inputs: mx.array
+    multiplex_state: MultiplexState
+    objects_in_mask: list[int] | None
 
+
+class _PackedMemoryCall(TypedDict):
+    image: mx.array | None
+    current_vision_feats: list[mx.array]
+    feat_sizes: list[tuple[int, int]]
+    pred_masks_high_res: mx.array
+    object_score_logits: mx.array | None
+    conditioning_objects: set[int]
+    is_mask_from_pts: bool
+    multiplex_state: MultiplexState
+
+
+class _PixMemoryCall(TypedDict):
+    vision_feats: list[mx.array]
+    feat_sizes: list[tuple[int, int]]
+
+
+class _PackedAddAdapterTracker(VideoTrackingMultiplex):
+    is_multiplex = True
+    multiplex_controller = _DummyController()
     input_mask_size = 4
     is_multiplex_dynamic = True
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.use_mask_input_as_output_without_sam = True
         self.use_memory_selection = False
         self.use_obj_ptrs_in_encoder = False
         self.save_image_features = False
-        self.mask_calls = []
-        self.memory_calls = []
-        self.pix_mem_calls = []
+        self.mask_calls: list[_PackedMaskCall] = []
+        self.memory_calls: list[_PackedMemoryCall] = []
+        self.pix_mem_calls: list[_PixMemoryCall] = []
 
-    def _get_interactive_pix_mem(self, vision_feats, feat_sizes):
+    def _get_interactive_pix_mem(
+        self,
+        features: list[mx.array],
+        feat_sizes: list[tuple[int, int]],
+    ) -> mx.array:
         self.pix_mem_calls.append(
             {
-                "vision_feats": vision_feats,
+                "vision_feats": features,
                 "feat_sizes": feat_sizes,
             }
         )
@@ -466,13 +669,12 @@ class _PackedAddAdapterTracker(_DummyTracker):
 
     def _use_mask_as_output(
         self,
-        *,
-        backbone_features,
-        high_res_features,
-        mask_inputs,
-        multiplex_state,
-        objects_in_mask,
-    ):
+        backbone_features: mx.array,
+        high_res_features: list[mx.array] | None,
+        mask_inputs: mx.array,
+        multiplex_state: MultiplexState,
+        objects_in_mask: list[int] | None = None,
+    ) -> SAMOutput:
         self.mask_calls.append(
             {
                 "backbone_features": backbone_features,
@@ -483,28 +685,32 @@ class _PackedAddAdapterTracker(_DummyTracker):
             }
         )
         batch = int(mask_inputs.shape[0])
-        values = mx.arange(batch, dtype=mx.float32).reshape(batch, 1, 1, 1)
+        values = mx.reshape(mx.arange(batch, dtype=mx.float32), (batch, 1, 1, 1))
+        low_res_masks = mx.ones((batch, 1, 2, 2), dtype=mx.float32) * (7.0 + values)
+        high_res_masks = mx.ones((batch, 1, 4, 4), dtype=mx.float32) * (70.0 + values)
         return {
-            "low_res_masks": mx.ones((batch, 1, 2, 2), dtype=mx.float32)
-            * (7.0 + values),
-            "high_res_masks": mx.ones((batch, 1, 4, 4), dtype=mx.float32)
-            * (70.0 + values),
+            "low_res_multimasks": low_res_masks,
+            "high_res_multimasks": high_res_masks,
+            "low_res_masks": low_res_masks,
+            "high_res_masks": high_res_masks,
             "object_score_logits": mx.ones((batch, 1), dtype=mx.float32) * 101.0,
             "ious": mx.ones((batch, 1), dtype=mx.float32),
         }
 
     def _encode_new_memory(
         self,
+        image: mx.array | None,
+        current_vision_feats: list[mx.array],
+        feat_sizes: list[tuple[int, int]],
+        pred_masks_high_res: mx.array,
+        object_score_logits: mx.array | None,
+        is_mask_from_pts: bool,
         *,
-        image,
-        current_vision_feats,
-        feat_sizes,
-        pred_masks_high_res,
-        object_score_logits,
-        conditioning_objects,
-        is_mask_from_pts,
-        multiplex_state,
-    ):
+        conditioning_objects: set[int] | None = None,
+        multiplex_state: MultiplexState,
+    ) -> tuple[mx.array, list[mx.array]]:
+        if conditioning_objects is None:
+            raise AssertionError("packed memory updates require conditioning objects")
         self.memory_calls.append(
             {
                 "image": image,
@@ -526,23 +732,22 @@ class _PackedAddAdapterTracker(_DummyTracker):
 class _PackedDetectorFrameTracker(_PackedAddAdapterTracker):
     sam_mask_decoder = _MaskDecoder()
     interactive_sam_mask_decoder = _MaskDecoder()
-    _prepare_backbone_features = VideoTrackingMultiplex._prepare_backbone_features
     num_feature_levels = 3
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
-        self.propagate_calls = []
+        self.propagate_calls: list[dict[str, object]] = []
 
     def propagate_in_video(
         self,
-        inference_state,
+        inference_state: _TrackerState,
         *,
-        start_frame_idx,
-        max_frame_num_to_track,
-        reverse,
-        run_mem_encoder,
-        propagate_preflight,
-    ):
+        start_frame_idx: int,
+        max_frame_num_to_track: int,
+        reverse: bool,
+        run_mem_encoder: bool,
+        propagate_preflight: bool,
+    ) -> Iterator[tuple[int, list[int], mx.array, None, mx.array]]:
         self.propagate_calls.append(
             {
                 "state": inference_state,
@@ -563,7 +768,9 @@ class _PackedDetectorFrameTracker(_PackedAddAdapterTracker):
 
 
 class _PackedDetectorFrameDetector(_FeatureDetector):
-    def forward_video_grounding_multigpu(self, **kwargs):
+    def forward_video_grounding_multigpu(
+        self, **kwargs: object
+    ) -> tuple[dict[str, object], object]:
         output, backbone_out = super().forward_video_grounding_multigpu(**kwargs)
         output["pred_logits"] = mx.array([[[2.0], [2.5]]], dtype=mx.float32)
         output["pred_masks"] = mx.array(
@@ -579,13 +786,20 @@ class _PackedDetectorFrameDetector(_FeatureDetector):
 
 
 class _PackedStartupTracker(_PackedDetectorFrameTracker):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
-        self.init_calls = []
-        self.preflight_calls = []
+        self.init_calls: list[_InitCall] = []
+        self.preflight_calls: list[tuple[object, bool]] = []
 
-    def init_state(self, *, cached_features, video_height, video_width, num_frames):
-        sam2_state = {
+    def init_state(
+        self,
+        *,
+        cached_features: object,
+        video_height: int,
+        video_width: int,
+        num_frames: int,
+    ) -> _TrackerState:
+        sam2_state: _TrackerState = {
             "obj_ids": [],
             "multiplex_state": MultiplexState(
                 [[-1, -1]],
@@ -605,7 +819,9 @@ class _PackedStartupTracker(_PackedDetectorFrameTracker):
         )
         return sam2_state
 
-    def propagate_in_video_preflight(self, sam2_state, run_mem_encoder=True):
+    def propagate_in_video_preflight(
+        self, sam2_state: object, run_mem_encoder: bool = True
+    ) -> None:
         self.preflight_calls.append((sam2_state, run_mem_encoder))
         VideoTrackingMultiplex.propagate_in_video_preflight(
             self,
@@ -615,8 +831,8 @@ class _PackedStartupTracker(_PackedDetectorFrameTracker):
 
 
 def test_sam3_multiplex_base_ports_constructor_state_for_multiplex_metadata(
-    monkeypatch,
-):
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("RANK", "1")
     monkeypatch.setenv("WORLD_SIZE", "2")
     monkeypatch.setenv("ENABLE_PROFILING", "1")
@@ -1522,11 +1738,11 @@ def test_sam3_multiplex_base_tracker_remove_objects_maps_packed_object_ids():
         object_ids=[10, 11, 12],
     )
     tracker_states = [
-        {
-            "name": "packed-state",
-            "obj_ids": [10, 11, 12],
-            "multiplex_state": multiplex_state,
-        }
+        _runtime_tracker_state(
+            [10, 11, 12],
+            name="packed-state",
+            multiplex_state=multiplex_state,
+        )
     ]
 
     base._tracker_remove_objects(tracker_states, {11})
@@ -1722,20 +1938,40 @@ def test_sam3_multiplex_base_tracker_update_memories_sorts_dynamic_objects():
 
 
 def test_sam3_multiplex_base_tracker_update_memories_matches_official_fixture():
-    fixture = json.loads(MEMORY_UPDATE_PARITY_FIXTURE.read_text())
+    fixture = require_mapping(
+        json.loads(MEMORY_UPDATE_PARITY_FIXTURE.read_text()),
+        "memory update fixture",
+    )
     assert fixture["official_commit"] == OFFICIAL_SAM3_MULTIPLEX_BASE_COMMIT
     assert fixture["case"] == "memory_encoder_slicing_and_dynamic_sorting"
     assert fixture["component"] == "Sam3MultiplexBase._tracker_update_memories"
-    for case_payload in fixture["cases"].values():
-        assert all(case_payload["scalar_matches"].values())
-        for metric in case_payload["metrics"].values():
-            assert metric["max_abs"] <= fixture["atol"]
+    atol = require_real(fixture["atol"], "memory update fixture.atol")
+    cases = require_mapping(fixture["cases"], "memory update fixture.cases")
+    for case_name, case_value in cases.items():
+        case_payload = require_mapping(case_value, f"fixture case {case_name}")
+        scalar_matches = require_mapping(
+            case_payload["scalar_matches"],
+            f"fixture case {case_name}.scalar_matches",
+        )
+        assert all(value is True for value in scalar_matches.values())
+        metrics = require_mapping(
+            case_payload["metrics"],
+            f"fixture case {case_name}.metrics",
+        )
+        for metric_name, metric_value in metrics.items():
+            metric = require_mapping(
+                metric_value,
+                f"fixture case {case_name}.metrics.{metric_name}",
+            )
+            assert (
+                require_real(metric["max_abs"], f"metric {metric_name}.max_abs") <= atol
+            )
 
-    def make_state(name, obj_ids):
-        return {
-            "name": name,
-            "obj_ids": obj_ids.copy(),
-            "output_dict": {
+    def make_state(name: str, obj_ids: list[int]) -> TrackerState:
+        return _runtime_tracker_state(
+            obj_ids.copy(),
+            name=name,
+            output_dict={
                 "cond_frame_outputs": {
                     4: {"object_score_logits": mx.ones((len(obj_ids), 1))}
                 },
@@ -1743,20 +1979,52 @@ def test_sam3_multiplex_base_tracker_update_memories_matches_official_fixture():
                     4: {"object_score_logits": mx.ones((len(obj_ids), 1))}
                 },
             },
-        }
-
-    def assert_payload_matches(observed, expected_payload):
-        observed_np = np.asarray(observed)
-        assert list(observed_np.shape) == expected_payload["shape"]
-        assert str(observed_np.dtype) == expected_payload["dtype"]
-        np.testing.assert_allclose(
-            observed_np,
-            np.asarray(expected_payload["values"], dtype=np.float32),
-            rtol=0.0,
-            atol=fixture["atol"],
         )
 
-    def run_case(case_name, *, dynamic, states, low_res_values):
+    def assert_payload_matches(observed: object, expected_value: object) -> None:
+        if not isinstance(observed, (mx.array, np.ndarray)):
+            raise TypeError("observed parity payload must be an MLX or NumPy array")
+        expected_payload = require_mapping(expected_value, "expected array payload")
+        expected_shape = [
+            require_int(dimension, "expected array shape dimension")
+            for dimension in require_list(
+                expected_payload["shape"],
+                "expected array payload.shape",
+            )
+        ]
+        expected_dtype = expected_payload["dtype"]
+        if not isinstance(expected_dtype, str):
+            raise TypeError("expected array payload.dtype must be a string")
+        expected_values = require_list(
+            expected_payload["values"],
+            "expected array payload.values",
+        )
+        observed_np = np.asarray(observed)
+        assert list(observed_np.shape) == expected_shape
+        assert str(observed_np.dtype) == expected_dtype
+        np.testing.assert_allclose(
+            observed_np,
+            np.asarray(expected_values, dtype=np.float32),
+            rtol=0.0,
+            atol=atol,
+        )
+
+    def comparable_call(
+        value: object,
+        *,
+        excluded: set[str],
+        context: str,
+    ) -> dict[str, object]:
+        call = require_mapping(value, context)
+        return {key: item for key, item in call.items() if key not in excluded}
+
+    def run_case(
+        case_name: str,
+        *,
+        dynamic: bool,
+        states: list[TrackerState],
+        low_res_values: list[float],
+    ) -> None:
         tracker = _MemoryUpdateTracker(dynamic=dynamic)
         base = Sam3MultiplexBase(
             tracker=tracker,
@@ -1775,38 +2043,48 @@ def test_sam3_multiplex_base_tracker_update_memories_matches_official_fixture():
             states,
             frame_idx=4,
             tracker_metadata={
-                "num_obj_per_gpu": np.array(
-                    [sum(len(state["obj_ids"]) for state in states)],
-                    dtype=np.int64,
-                )
+                "num_obj_per_gpu": np.array([len(low_res_values)], dtype=np.int64)
             },
             low_res_masks=low_res_masks,
         )
 
-        expected = fixture["cases"][case_name]["official"]
+        case_payload = require_mapping(cases[case_name], f"fixture case {case_name}")
+        expected = require_mapping(
+            case_payload["official"],
+            f"fixture case {case_name}.official",
+        )
+        expected_encoder_calls = require_list(
+            expected["encoder_calls"],
+            f"fixture case {case_name}.official.encoder_calls",
+        )
         assert [
-            {
-                key: value
-                for key, value in call.items()
-                if key
-                not in {
+            comparable_call(
+                call,
+                excluded={
                     "high_res_masks",
                     "mask_sample",
                     "score_logits",
-                }
-            }
+                },
+                context="observed encoder call",
+            )
             for call in tracker.encoder_calls
         ] == [
-            {
-                key: value
-                for key, value in call.items()
-                if key
-                not in {
+            comparable_call(
+                call,
+                excluded={
                     "local_high_res_masks",
                     "local_object_score_logits",
-                }
-            }
-            for call in expected["encoder_calls"]
+                },
+                context="expected encoder call",
+            )
+            for call in expected_encoder_calls
+        ]
+        expected_add_output_calls = [
+            dict(require_mapping(call, "expected add-output call"))
+            for call in require_list(
+                expected["add_output_calls"],
+                f"fixture case {case_name}.official.add_output_calls",
+            )
         ]
         assert [
             {
@@ -1815,47 +2093,76 @@ def test_sam3_multiplex_base_tracker_update_memories_matches_official_fixture():
                 "storage_key": call["storage_key"],
             }
             for call in tracker.add_output_calls
-        ] == expected["add_output_calls"]
+        ] == expected_add_output_calls
 
         for call, expected_call in zip(
             tracker.encoder_calls,
-            expected["encoder_calls"],
+            expected_encoder_calls,
             strict=True,
         ):
+            expected_call_mapping = require_mapping(
+                expected_call,
+                "expected encoder call",
+            )
             assert_payload_matches(
                 call["high_res_masks"],
-                expected_call["local_high_res_masks"],
+                expected_call_mapping["local_high_res_masks"],
             )
             assert_payload_matches(
                 call["score_logits"],
-                expected_call["local_object_score_logits"],
+                expected_call_mapping["local_object_score_logits"],
             )
-        assert len(tracker.suppress_calls) == len(expected["suppress_calls"])
+        expected_suppress_calls = require_list(
+            expected["suppress_calls"],
+            f"fixture case {case_name}.official.suppress_calls",
+        )
+        assert len(tracker.suppress_calls) == len(expected_suppress_calls)
         for call, expected_call in zip(
             tracker.suppress_calls,
-            expected["suppress_calls"],
+            expected_suppress_calls,
             strict=True,
         ):
+            expected_call_mapping = require_mapping(
+                expected_call,
+                "expected suppress call",
+            )
             assert_payload_matches(
                 call,
-                expected_call["high_res_masks"],
+                expected_call_mapping["high_res_masks"],
             )
 
-        for state, expected_state in zip(states, expected["states"], strict=True):
+        expected_states = require_list(
+            expected["states"],
+            f"fixture case {case_name}.official.states",
+        )
+        for state, expected_state_value in zip(states, expected_states, strict=True):
+            expected_state = require_mapping(expected_state_value, "expected state")
             assert state["name"] == expected_state["name"]
             assert state["obj_ids"] == expected_state["obj_ids"]
+            output_dict = require_mapping(state["output_dict"], "tracker output_dict")
             for storage_key, frame_key in [
                 ("cond_frame_outputs", "cond"),
                 ("non_cond_frame_outputs", "non_cond"),
             ]:
-                frame_out = state["output_dict"][storage_key][4]
-                expected_frame = expected_state[frame_key]
+                frame_outputs = require_object_mapping(
+                    output_dict[storage_key],
+                    f"tracker output_dict.{storage_key}",
+                )
+                frame_out = require_mapping(frame_outputs[4], "tracker frame output")
+                expected_frame = require_mapping(
+                    expected_state[frame_key],
+                    f"expected state.{frame_key}",
+                )
                 assert_payload_matches(
                     frame_out["maskmem_features"],
                     expected_frame["maskmem_features"],
                 )
+                maskmem_pos_enc = require_list(
+                    frame_out["maskmem_pos_enc"],
+                    "tracker frame output.maskmem_pos_enc",
+                )
                 assert_payload_matches(
-                    frame_out["maskmem_pos_enc"][0],
+                    maskmem_pos_enc[0],
                     expected_frame["maskmem_pos_enc_0"],
                 )
                 assert_payload_matches(
@@ -2085,14 +2392,15 @@ def test_sam3_multiplex_base_execution_updates_tracker_memories_when_available()
         detector=_DummyDetector(),
         is_multiplex=True,
     )
-    tracker_state = {
-        "name": "state-a",
-        "obj_ids": [10],
-        "output_dict": {
-            "cond_frame_outputs": {5: {"object_score_logits": mx.ones((1, 1))}},
+    cond_frame_outputs = {5: {"object_score_logits": mx.ones((1, 1))}}
+    tracker_state = _runtime_tracker_state(
+        [10],
+        name="state-a",
+        output_dict={
+            "cond_frame_outputs": cond_frame_outputs,
             "non_cond_frame_outputs": {},
         },
-    }
+    )
     tracker_metadata_new = base._initialize_metadata()
     tracker_metadata_new["num_obj_per_gpu"][0] = 1
     tracker_metadata_new["num_buc_per_gpu"][0] = 1
@@ -2103,18 +2411,15 @@ def test_sam3_multiplex_base_execution_updates_tracker_memories_when_available()
         frame_idx=5,
         num_frames=6,
         reverse=False,
-        det_out={"mask": mx.zeros((0, 2, 2), dtype=mx.float32)},
+        det_out=_detection_output(mx.zeros((0, 2, 2), dtype=mx.float32)),
         tracker_states_local=[tracker_state],
-        tracker_update_plan={
-            "new_det_fa_inds": np.array([], dtype=np.int64),
-            "new_det_obj_ids": np.array([], dtype=np.int64),
-            "new_det_gpu_ids": np.array([], dtype=np.int64),
-            "obj_ids_newly_removed": set(),
-            "tracker_low_res_masks_global": mx.array(
+        tracker_update_plan=_tracker_update_plan(
+            obj_ids_newly_removed=set(),
+            tracker_low_res_masks_global=mx.array(
                 [[[3.0, 3.0], [3.0, 3.0]]],
                 dtype=mx.float32,
             ),
-        },
+        ),
         orig_vid_height=2,
         orig_vid_width=2,
         feature_cache={},
@@ -2129,45 +2434,56 @@ def test_sam3_multiplex_base_execution_updates_tracker_memories_when_available()
     )
     assert tracker.add_output_calls[0]["storage_key"] == "cond_frame_outputs"
     np.testing.assert_array_equal(
-        np.asarray(
-            tracker_state["output_dict"]["cond_frame_outputs"][5]["maskmem_features"]
-        ),
+        np.asarray(cond_frame_outputs[5]["maskmem_features"]),
         np.ones((1, 2), dtype=np.float32),
     )
 
 
 def test_sam3_multiplex_base_execution_updates_old_memory_before_local_add():
+    class _ExecutionMemoryCall(TypedDict):
+        state: str
+        frame_idx: int
+        local_batch_size: int
+        high_res_masks: mx.array
+        score_logits: mx.array
+        is_mask_from_pts: bool
+
     class _ExecutionPhaseTracker(_DynamicAddTracker):
         input_mask_size = 2
 
-        def __init__(self):
+        def __init__(self) -> None:
             super().__init__()
-            self.events = []
+            self.events: list[str] = []
             self.maskmem_backbone = SimpleNamespace(
                 mask_downsampler=SimpleNamespace(interpol_size=(2, 2))
             )
-            self.encoder_calls = []
-            self.add_output_calls = []
-            self.suppress_calls = []
+            self.encoder_calls: list[_ExecutionMemoryCall] = []
+            self.add_output_calls: list[_OutputCall] = []
+            self.suppress_calls: list[mx.array] = []
 
-        def _suppress_object_pw_area_shrinkage(self, high_res_masks):
+        def _suppress_object_pw_area_shrinkage(
+            self, high_res_masks: mx.array
+        ) -> mx.array:
             self.events.append("suppress")
             self.suppress_calls.append(high_res_masks)
             return high_res_masks
 
         def _run_memory_encoder(
             self,
-            sam2_state,
-            frame_idx,
-            local_batch_size,
-            local_high_res_masks,
-            local_object_score_logits,
-            is_mask_from_pts,
-        ):
+            sam2_state: _TrackerState,
+            frame_idx: int,
+            local_batch_size: int,
+            local_high_res_masks: mx.array,
+            local_object_score_logits: mx.array,
+            is_mask_from_pts: bool,
+        ) -> tuple[mx.array, list[mx.array], mx.array, mx.array]:
+            state_name = sam2_state.get("name")
+            if state_name is None:
+                raise AssertionError("execution state requires a name")
             self.events.append(f"memory:{sam2_state['obj_ids']}")
             self.encoder_calls.append(
                 {
-                    "state": sam2_state["name"],
+                    "state": state_name,
                     "frame_idx": frame_idx,
                     "local_batch_size": local_batch_size,
                     "high_res_masks": local_high_res_masks,
@@ -2182,11 +2498,29 @@ def test_sam3_multiplex_base_execution_updates_old_memory_before_local_add():
                 mx.ones((local_batch_size, 4), dtype=mx.float32) * 4.0,
             )
 
-        def add_new_masks(self, **kwargs):
-            self.events.append(f"add:{list(kwargs['obj_ids'])}")
-            return super().add_new_masks(**kwargs)
+        def add_new_masks(
+            self,
+            *,
+            inference_state: _TrackerState,
+            frame_idx: int,
+            obj_ids: Sequence[int],
+            masks: mx.array,
+            add_mask_to_memory: bool = False,
+        ) -> tuple[int, list[int], None, None]:
+            self.events.append(f"add:{list(obj_ids)}")
+            return super().add_new_masks(
+                inference_state=inference_state,
+                frame_idx=frame_idx,
+                obj_ids=obj_ids,
+                masks=masks,
+                add_mask_to_memory=add_mask_to_memory,
+            )
 
-        def propagate_in_video_preflight(self, sam2_state, run_mem_encoder=True):
+        def propagate_in_video_preflight(
+            self,
+            sam2_state: _TrackerState,
+            run_mem_encoder: bool = True,
+        ) -> None:
             self.events.append("preflight")
             super().propagate_in_video_preflight(
                 sam2_state,
@@ -2196,15 +2530,18 @@ def test_sam3_multiplex_base_execution_updates_old_memory_before_local_add():
         def add_output_per_object(
             self,
             *,
-            inference_state,
-            frame_idx,
-            current_out,
-            storage_key,
-        ):
+            inference_state: _TrackerState,
+            frame_idx: int,
+            current_out: StageOutput,
+            storage_key: str,
+        ) -> None:
+            state_name = inference_state.get("name")
+            if state_name is None:
+                raise AssertionError("execution output state requires a name")
             self.events.append(f"add_output:{storage_key}")
             self.add_output_calls.append(
                 {
-                    "state": inference_state["name"],
+                    "state": state_name,
                     "frame_idx": frame_idx,
                     "current_out": current_out,
                     "storage_key": storage_key,
@@ -2222,41 +2559,41 @@ def test_sam3_multiplex_base_execution_updates_old_memory_before_local_add():
         allowed_bucket_capacity=2,
         object_ids=[20],
     )
-    tracker_state = {
-        "name": "state-a",
-        "obj_ids": [20],
-        "multiplex_state": multiplex_state,
-        "output_dict": {
+    tracker_state = _runtime_tracker_state(
+        [20],
+        name="state-a",
+        multiplex_state=multiplex_state,
+        output_dict={
             "cond_frame_outputs": {5: {"object_score_logits": mx.ones((1, 1))}},
             "non_cond_frame_outputs": {},
         },
-    }
+    )
     tracker_metadata_new = base._initialize_metadata()
 
     returned_states = base.run_tracker_update_execution_phase(
         frame_idx=5,
         num_frames=6,
         reverse=False,
-        det_out={
-            "mask": mx.array(
+        det_out=_detection_output(
+            mx.array(
                 [
                     [[1.0, -1.0], [-1.0, -1.0]],
                     [[-1.0, 2.0], [2.0, -1.0]],
                 ],
                 dtype=mx.float32,
             )
-        },
+        ),
         tracker_states_local=[tracker_state],
-        tracker_update_plan={
-            "new_det_fa_inds": np.array([0, 1], dtype=np.int64),
-            "new_det_obj_ids": np.array([30, 31], dtype=np.int64),
-            "new_det_gpu_ids": np.array([1, 0], dtype=np.int64),
-            "obj_ids_newly_removed": {20},
-            "tracker_low_res_masks_global": mx.array(
+        tracker_update_plan=_tracker_update_plan(
+            new_det_fa_inds=np.array([0, 1], dtype=np.int64),
+            new_det_obj_ids=np.array([30, 31], dtype=np.int64),
+            new_det_gpu_ids=np.array([1, 0], dtype=np.int64),
+            obj_ids_newly_removed={20},
+            tracker_low_res_masks_global=mx.array(
                 [[[5.0, 5.0], [5.0, 5.0]]],
                 dtype=mx.float32,
             ),
-        },
+        ),
         orig_vid_height=2,
         orig_vid_width=2,
         feature_cache={"cached": "features"},
@@ -2329,14 +2666,9 @@ def test_sam3_multiplex_base_execution_counts_sparse_packed_buckets_after_remova
         frame_idx=5,
         num_frames=6,
         reverse=False,
-        det_out={"mask": mx.zeros((0, 2, 2), dtype=mx.float32)},
+        det_out=_detection_output(mx.zeros((0, 2, 2), dtype=mx.float32)),
         tracker_states_local=tracker_states,
-        tracker_update_plan={
-            "new_det_fa_inds": np.array([], dtype=np.int64),
-            "new_det_obj_ids": np.array([], dtype=np.int64),
-            "new_det_gpu_ids": np.array([], dtype=np.int64),
-            "obj_ids_newly_removed": {11},
-        },
+        tracker_update_plan=_tracker_update_plan(obj_ids_newly_removed={11}),
         orig_vid_height=2,
         orig_vid_width=2,
         feature_cache={},
@@ -2357,7 +2689,7 @@ def test_sam3_multiplex_base_execution_compacts_gpu_metadata_after_removal():
         detector=_DummyDetector(),
         is_multiplex=True,
     )
-    tracker_state = {"obj_ids": [7, 9, 11]}
+    tracker_state = _runtime_tracker_state([7, 9, 11])
     tracker_metadata_new = base._initialize_metadata()
     tracker_metadata_new["num_obj_per_gpu"][0] = 3
     tracker_metadata_new["num_buc_per_gpu"][0] = 1
@@ -2384,15 +2716,9 @@ def test_sam3_multiplex_base_execution_compacts_gpu_metadata_after_removal():
         frame_idx=5,
         num_frames=6,
         reverse=False,
-        det_out={"mask": mx.zeros((0, 2, 2), dtype=mx.float32)},
+        det_out=_detection_output(mx.zeros((0, 2, 2), dtype=mx.float32)),
         tracker_states_local=[tracker_state],
-        tracker_update_plan={
-            "new_det_fa_inds": np.array([], dtype=np.int64),
-            "new_det_obj_ids": np.array([], dtype=np.int64),
-            "new_det_gpu_ids": np.array([], dtype=np.int64),
-            "obj_ids_newly_removed": {9},
-            "tracker_low_res_masks_global": None,
-        },
+        tracker_update_plan=_tracker_update_plan(obj_ids_newly_removed={9}),
         orig_vid_height=2,
         orig_vid_width=2,
         feature_cache={},
@@ -2550,14 +2876,14 @@ def test_sam3_multiplex_base_execution_suppresses_recent_overlap_before_memory_u
         suppress_overlapping_based_on_recent_occlusion_threshold=0.2,
     )
     tracker_states = [
-        {
-            "name": "state-a",
-            "obj_ids": [10, 20],
-            "output_dict": {
+        _runtime_tracker_state(
+            [10, 20],
+            name="state-a",
+            output_dict={
                 "cond_frame_outputs": {7: {"object_score_logits": mx.ones((2, 1))}},
                 "non_cond_frame_outputs": {},
             },
-        }
+        )
     ]
     tracker_metadata_new = base._initialize_metadata()
     tracker_metadata_new["num_obj_per_gpu"][0] = 2
@@ -2570,21 +2896,18 @@ def test_sam3_multiplex_base_execution_suppresses_recent_overlap_before_memory_u
         frame_idx=7,
         num_frames=8,
         reverse=False,
-        det_out={"mask": mx.zeros((0, 2, 2), dtype=mx.float32)},
+        det_out=_detection_output(mx.zeros((0, 2, 2), dtype=mx.float32)),
         tracker_states_local=tracker_states,
-        tracker_update_plan={
-            "new_det_fa_inds": np.array([], dtype=np.int64),
-            "new_det_obj_ids": np.array([], dtype=np.int64),
-            "new_det_gpu_ids": np.array([], dtype=np.int64),
-            "obj_ids_newly_removed": set(),
-            "tracker_low_res_masks_global": mx.array(
+        tracker_update_plan=_tracker_update_plan(
+            obj_ids_newly_removed=set(),
+            tracker_low_res_masks_global=mx.array(
                 [
                     [[3.0, 3.0], [-1.0, -1.0]],
                     [[3.0, 3.0], [-1.0, -1.0]],
                 ],
                 dtype=mx.float32,
             ),
-        },
+        ),
         orig_vid_height=2,
         orig_vid_width=2,
         feature_cache={},
@@ -3000,7 +3323,7 @@ def test_sam3_multiplex_base_execution_adds_detector_masks_to_packed_state():
         allowed_bucket_capacity=2,
         object_ids=[10],
     )
-    prev_output = {
+    prev_output: StageOutput = {
         "conditioning_objects": {0},
         "pred_masks": mx.ones((1, 1, 2, 2), dtype=mx.float32) * 10.0,
         "pred_masks_high_res": mx.ones((1, 1, 4, 4), dtype=mx.float32) * 11.0,
@@ -3011,22 +3334,22 @@ def test_sam3_multiplex_base_execution_adds_detector_masks_to_packed_state():
         mx.ones((1, 1, 1), dtype=mx.float32),
     ]
     propagation_vision_feats = [mx.array([[3.0]], dtype=mx.float32)]
-    tracker_state = {
-        "obj_ids": [10],
-        "multiplex_state": multiplex_state,
-        "output_dict": {
+    tracker_state = _runtime_tracker_state(
+        [10],
+        multiplex_state=multiplex_state,
+        output_dict={
             "cond_frame_outputs": {},
             "non_cond_frame_outputs": {3: prev_output},
         },
-        "backbone_out": {
-            "interactive": {
-                "vision_feats": interactive_vision_feats,
-                "feat_sizes": [(2, 2), (1, 1)],
-            },
-            "sam2_backbone_out": {
-                "vision_feats": propagation_vision_feats,
-                "feat_sizes": [(2, 2)],
-            },
+    )
+    tracker_state["backbone_out"] = {
+        "interactive": {
+            "vision_feats": interactive_vision_feats,
+            "feat_sizes": [(2, 2), (1, 1)],
+        },
+        "sam2_backbone_out": {
+            "vision_feats": propagation_vision_feats,
+            "feat_sizes": [(2, 2)],
         },
     }
 
@@ -3034,22 +3357,21 @@ def test_sam3_multiplex_base_execution_adds_detector_masks_to_packed_state():
         frame_idx=3,
         num_frames=5,
         reverse=False,
-        det_out={
-            "mask": mx.array(
+        det_out=_detection_output(
+            mx.array(
                 [
                     [[2.0, -2.0], [-2.0, 2.0]],
                 ],
                 dtype=mx.float32,
             )
-        },
+        ),
         tracker_states_local=[tracker_state],
-        tracker_update_plan={
-            "new_det_fa_inds": np.array([0], dtype=np.int64),
-            "new_det_obj_ids": np.array([20], dtype=np.int64),
-            "new_det_gpu_ids": np.array([0], dtype=np.int64),
-            "obj_ids_newly_removed": set(),
-            "tracker_low_res_masks_global": None,
-        },
+        tracker_update_plan=_tracker_update_plan(
+            new_det_fa_inds=np.array([0], dtype=np.int64),
+            new_det_obj_ids=np.array([20], dtype=np.int64),
+            new_det_gpu_ids=np.array([0], dtype=np.int64),
+            obj_ids_newly_removed=set(),
+        ),
         orig_vid_height=4,
         orig_vid_width=4,
         feature_cache={},

@@ -1,15 +1,17 @@
 # pyright: reportPrivateUsage=false
 
 from types import SimpleNamespace
-from typing import cast
+from typing import Sequence, TypedDict, cast
 
 import numpy as np
 import pytest
 
 from sam3_mlx._unsupported import Sam3MlxUnsupportedError
 from sam3_mlx.model.io_utils import load_video_frames_from_video_file
+from sam3_mlx.model.geometry_encoders import Prompt
 from sam3_mlx.model.sam3_image import Sam3Image
 from sam3_mlx.model.sam3_multiplex_base import (
+    FeatureCache,
     Sam3MultiplexBase,
     TrackerState,
     _is_bucket_state,
@@ -65,6 +67,30 @@ class _RemovalTracker:
 class _RemovalDetector:
     is_multiplex = True
     running_in_prod = False
+
+
+class _MatchingSam3Image(Sam3Image):
+    num_interactive_steps_val = 0
+
+    def __init__(self) -> None:
+        pass
+
+    @property
+    def training(self) -> bool:
+        return True
+
+    def _validate_interactive_steps_val(self) -> None:
+        pass
+
+
+class _PackedFrameOutputs(TypedDict):
+    cond_frame_outputs: dict[int, dict[str, set[object]]]
+    non_cond_frame_outputs: dict[int, dict[str, set[object]]]
+
+
+class _PackedCountState(TypedDict, total=False):
+    multiplex_state: object
+    output_dict: _PackedFrameOutputs
 
 
 def test_tracker_remove_objects_sorts_set_before_sequential_fallback():
@@ -161,11 +187,7 @@ def test_feature_cache_rejects_boolean_frame_keys():
 
 
 def test_image_matching_requires_populated_optional_target_at_transition():
-    matching_model = SimpleNamespace(
-        training=True,
-        num_interactive_steps_val=0,
-        _validate_interactive_steps_val=lambda: None,
-    )
+    matching_model = _MatchingSam3Image()
 
     with pytest.raises(ValueError, match="matching requires a populated find_target"):
         Sam3Image.forward_grounding(
@@ -173,25 +195,32 @@ def test_image_matching_requires_populated_optional_target_at_transition():
             backbone_out={},
             find_input=object(),
             find_target=None,
-            geometric_prompt=object(),
+            geometric_prompt=Prompt(),
         )
 
 
 def test_empty_packed_output_does_not_treat_boolean_as_zero_count():
-    false_count_state = {"multiplex_state": SimpleNamespace(total_valid_entries=False)}
-    empty_count_state = {"multiplex_state": SimpleNamespace(total_valid_entries=0)}
+    false_count_state = _PackedCountState(
+        multiplex_state=SimpleNamespace(total_valid_entries=False)
+    )
+    empty_count_state = _PackedCountState(
+        multiplex_state=SimpleNamespace(total_valid_entries=0)
+    )
 
     Sam3MultiplexBase._ensure_empty_packed_current_output(false_count_state, 3)
     Sam3MultiplexBase._ensure_empty_packed_current_output(empty_count_state, 3)
 
     assert "output_dict" not in false_count_state
+    assert "output_dict" in empty_count_state
     assert empty_count_state["output_dict"]["cond_frame_outputs"][3] == {
         "conditioning_objects": set()
     }
 
 
 @pytest.mark.parametrize("text_batch", ["shoe", b"shoe", ["shoe", 1]])
-def test_detector_text_batch_rejects_string_like_and_mixed_iterables(text_batch):
+def test_detector_text_batch_rejects_string_like_and_mixed_iterables(
+    text_batch: object,
+) -> None:
     with pytest.raises(TypeError, match="sequences of strings"):
         text_outputs_for_batch(object(), {}, text_batch, device="mlx")
 
@@ -201,7 +230,9 @@ def test_detector_text_batch_accepts_string_sequence_and_reuses_cache():
         def __init__(self) -> None:
             self.calls = 0
 
-        def forward_text(self, prompts, *, device):
+        def forward_text(
+            self, prompts: Sequence[object], *, device: str
+        ) -> dict[str, np.ndarray]:
             self.calls += 1
             assert prompts == ["shoe", "visual"]
             assert device == "mlx"
@@ -209,7 +240,7 @@ def test_detector_text_batch_accepts_string_sequence_and_reuses_cache():
 
     backbone = _TextBackbone()
     detector = SimpleNamespace(backbone=backbone)
-    feature_cache = {}
+    feature_cache: FeatureCache = {}
 
     first = text_outputs_for_batch(
         detector, feature_cache, ["shoe", "visual"], device="mlx"
