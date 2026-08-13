@@ -153,7 +153,7 @@
     "revision": "b72a14d8127e17e6f2a3d2e075bbbf4307ba146e",
     "sha256": "0ad4c3f42ecf706c4cda63cf58d621699491ed65012b3999284ea370984f7173"
   },
-  "generated_at": "2026-07-27T18:38:46.405852+00:00",
+  "generated_at": "2026-08-13T03:57:30.686773+00:00",
   "host": {
     "machine": "arm64",
     "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
@@ -196,51 +196,51 @@
         "repo": "https://github.com/facebookresearch/sam3",
         "revision": "2814fa619404a722d03e9a012e083e4f293a4e53"
       },
-      "oracle_runner_sha256": "da4a4d2ad6907d2a04d9a2c242e6542c088f910ee5852855f146f1214a64ce03",
+      "oracle_runner_sha256": "205435f9c38a40d39a2f845d7c136ba61392d48e61ca5640542cf46002c2b07d",
       "precision": "torch.cpu.autocast.bfloat16",
-      "release_contract_sha256": "fe339e1823ed0ccec35f06a2d754ffc98c6f15d87a66118af7639f60452bb8b5",
+      "release_contract_sha256": "a49165182044d31f7b8fdbca01888588ac3ed7f7b5f7936945e3dd335fc7bafc",
       "schema_version": 2
     },
-    "cache_key": "a0cdf059e48ada130a7380e3e7787af2f2fabe5db982870daab13e8ee8c7fd6d",
+    "cache_key": "47d6a81f9e39cc3c6feb452964e0accb90a90d42c3d27c9e39f9b522858858e7",
     "case_spec_sha256": "7366d28a0742ae822b2e037a5e074ead20a6b7fb472abc8fb2da8130712f21fa",
     "cases": [
       {
         "detection_count": 4,
-        "image_latency_s": 103.90057362499647,
+        "image_latency_s": 92.31093324999529,
         "name": "text_paper_bag_1008",
-        "prompt_latency_s": 8.586125000030734,
+        "prompt_latency_s": 9.071894208005688,
         "resolution": 1008
       },
       {
         "detection_count": 4,
-        "image_latency_s": 37.005935541004874,
+        "image_latency_s": 34.65977633399598,
         "name": "text_paper_bag_672",
-        "prompt_latency_s": 2.582220124953892,
+        "prompt_latency_s": 3.345663791995321,
         "resolution": 672
       },
       {
         "detection_count": 4,
-        "image_latency_s": 23.62121162499534,
+        "image_latency_s": 22.28924199999892,
         "name": "text_paper_bag_504",
-        "prompt_latency_s": 1.3311703750514425,
+        "prompt_latency_s": 1.39625770800194,
         "resolution": 504
       },
       {
         "detection_count": 1,
         "image_latency_s": 0.0,
         "name": "text_car_1008",
-        "prompt_latency_s": 8.839201666007284,
+        "prompt_latency_s": 8.002697167001315,
         "resolution": 1008
       },
       {
         "detection_count": 0,
         "image_latency_s": 0.0,
         "name": "text_nonsense_1008",
-        "prompt_latency_s": 10.15338408300886,
+        "prompt_latency_s": 8.517826290997618,
         "resolution": 1008
       }
     ],
-    "cold_load_s": 8.098462000023574,
+    "cold_load_s": 6.6927514580020215,
     "confidence_threshold": 0.5,
     "cpu_adapters": [
       "sam3.model.edt replaced with fail-fast unused stub",
@@ -251,10 +251,10 @@
     "environment": {
       "machine": "arm64",
       "platform": "macOS-26.5.2-arm64-arm-64bit",
-      "python": "3.12.13",
+      "python": "3.12.12",
       "torch": "2.6.0"
     },
-    "generated_at": "2026-07-27T17:46:12.180921+00:00",
+    "generated_at": "2026-08-13T03:54:15.352254+00:00",
     "image_sha256": "7073dfecb5a3ecafb6152124113163a0ea1c1c70f92999ec892b519eca63e3d3",
     "official_checkpoint": {
       "repo": "facebook/sam3",
@@ -269,60 +269,60 @@
       "image_processor": "sam3/model/sam3_image_processor.py",
       "model_builder": "sam3/model_builder.py"
     },
-    "oracle_runner_sha256": "da4a4d2ad6907d2a04d9a2c242e6542c088f910ee5852855f146f1214a64ce03",
+    "oracle_runner_sha256": "205435f9c38a40d39a2f845d7c136ba61392d48e61ca5640542cf46002c2b07d",
     "precision": "torch.cpu.autocast.bfloat16",
-    "release_contract_sha256": "fe339e1823ed0ccec35f06a2d754ffc98c6f15d87a66118af7639f60452bb8b5",
+    "release_contract_sha256": "a49165182044d31f7b8fdbca01888588ac3ed7f7b5f7936945e3dd335fc7bafc",
     "schema_version": 2
   },
   "performance": {
-    "cold_load_s": 0.40493245801189914,
+    "cold_load_s": 0.4109059589973185,
     "latency_by_resolution_s": {
       "1008": {
-        "median": 1.1481894580065273,
-        "p95": 1.1600673330249265,
+        "median": 1.121512999998231,
+        "p95": 1.1385936250007944,
         "samples": [
-          1.1330241250107065,
-          1.1481894580065273,
-          1.1326097919954918,
-          1.1513795000500977,
-          1.1600673330249265
+          1.1298118339982466,
+          1.1142018329992425,
+          1.121512999998231,
+          1.1197635420030565,
+          1.1385936250007944
         ]
       },
       "504": {
-        "median": 0.3839407920022495,
-        "p95": 0.38673916598781943,
+        "median": 0.3708371669999906,
+        "p95": 0.38393329200334847,
         "samples": [
-          0.3821909159887582,
-          0.38673916598781943,
-          0.3858664170256816,
-          0.3839407920022495,
-          0.3806619999813847
+          0.3696693339952617,
+          0.3708371669999906,
+          0.371570540999528,
+          0.38393329200334847,
+          0.3686953340002219
         ]
       },
       "672": {
-        "median": 0.4930816250271164,
-        "p95": 0.5038636670215055,
+        "median": 0.48792329199932283,
+        "p95": 0.49739704199600965,
         "samples": [
-          0.5006627080147155,
-          0.4916738749598153,
-          0.4930816250271164,
-          0.5038636670215055,
-          0.4909896249882877
+          0.49739704199600965,
+          0.4740171660014312,
+          0.4712267909999355,
+          0.49097787499340484,
+          0.48792329199932283
         ]
       }
     },
     "measurement_boundary": "MLX active allocator peak after model load; synchronized full set_image plus text-grounding latency",
-    "peak_active_memory_bytes": 8579493271,
+    "peak_active_memory_bytes": 8374479579,
     "repetitions": 5,
     "status": "passed",
     "warmup_runs": 1
   },
   "raw_evidence": {
     "path": "parity/evidence/holdout-image-parity.npz",
-    "sha256": "6d6c11009572cf176099ea4941d525bc51b5f2ce2e2481b0ab6258028e0b6ae4"
+    "sha256": "8a315fb604840ddf88229adbaf37ff3280147c52b459bc2bfce565d77c678644"
   },
   "schema_version": 2,
-  "source_commit": "9887a86553dfa074a8777465ca7b3b3af37bd5df",
+  "source_commit": "3fc49f76f84d91f54cf9e7056daccfed9e99cd76",
   "status": "passed",
   "thresholds": {
     "box_l_inf_max": 2.0,

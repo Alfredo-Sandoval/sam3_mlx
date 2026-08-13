@@ -13,16 +13,16 @@
     "shape_mismatches": [],
     "value_mismatches": []
   },
-  "converter_module_sha256": "6306e16eebb8d43831d87c08c4919c8b28e8a47561f5d1042cbc2eebdb5f9390",
-  "generated_at": "2026-07-27T18:39:00.694220+00:00",
-  "lineage_runner_sha256": "7eec10a6a92eb0856a4b9efa7d6a90ab505b076eb834c4de6f8a4cfc8cd8dfa1",
+  "converter_module_sha256": "dd9dccecd17622bf9a7b63cc89d665e01e10f96b5fa286370fb9883a87c4e15f",
+  "generated_at": "2026-08-13T03:44:36.060709+00:00",
+  "lineage_runner_sha256": "34796f2c2ce711d1a200c542b3f942dbfb3c4d2183ae882a7f6b04ddd2d034b7",
   "published_artifact": {
     "checkpoint_sha256": "0ad4c3f42ecf706c4cda63cf58d621699491ed65012b3999284ea370984f7173",
     "repo": "mlx-community/sam3-image",
     "revision": "b72a14d8127e17e6f2a3d2e075bbbf4307ba146e"
   },
   "reproduction": {
-    "checkpoint_sha256": "b5790b407da7b69029350cd7b7e8c8678dfe407d9e3d78668644d6d14fb27faa",
+    "checkpoint_sha256": "b46bdea1cb70f84f49323a13790621e1eb1064faa22bbb6b568f78ff00a941ef",
     "converter_version": "0.1.2",
     "manifest": {
       "architecture": "sam3-image",
@@ -343,13 +343,13 @@
         "tracker.transformer.encoder.norm.weight"
       ],
       "mapped_count": 1400,
-      "output_sha256": "b5790b407da7b69029350cd7b7e8c8678dfe407d9e3d78668644d6d14fb27faa",
+      "output_sha256": "b46bdea1cb70f84f49323a13790621e1eb1064faa22bbb6b568f78ff00a941ef",
       "source_checkpoint_sha256": "9999e2341ceef5e136daa386eecb55cb414446a00ac2b55eb2dfd2f7c3cf8c9e",
       "source_repo": "facebook/sam3",
       "source_revision": "3c879f39826c281e95690f02c7821c4de09afae7",
       "unmapped_keys": []
     },
-    "manifest_sha256": "7253f6235f85eab514ba106e01b39f3cfc1fdaf75ba06243db83f7b080e50ccf"
+    "manifest_sha256": "cf3732a9eee0f503a2b64067b4c7bed4ece5a4b805944efdff49c2feb452bd67"
   },
   "schema_version": 2,
   "source": {
@@ -357,6 +357,6 @@
     "repo": "facebook/sam3",
     "revision": "3c879f39826c281e95690f02c7821c4de09afae7"
   },
-  "source_commit": "9887a86553dfa074a8777465ca7b3b3af37bd5df",
+  "source_commit": "3fc49f76f84d91f54cf9e7056daccfed9e99cd76",
   "status": "passed"
 }

@@ -373,7 +373,7 @@
     "revision": "b72a14d8127e17e6f2a3d2e075bbbf4307ba146e",
     "sha256": "0ad4c3f42ecf706c4cda63cf58d621699491ed65012b3999284ea370984f7173"
   },
-  "generated_at": "2026-07-27T18:38:14.876232+00:00",
+  "generated_at": "2026-08-13T03:53:55.410799+00:00",
   "host": {
     "machine": "arm64",
     "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
@@ -416,58 +416,58 @@
         "repo": "https://github.com/facebookresearch/sam3",
         "revision": "2814fa619404a722d03e9a012e083e4f293a4e53"
       },
-      "oracle_runner_sha256": "da4a4d2ad6907d2a04d9a2c242e6542c088f910ee5852855f146f1214a64ce03",
+      "oracle_runner_sha256": "205435f9c38a40d39a2f845d7c136ba61392d48e61ca5640542cf46002c2b07d",
       "precision": "torch.cpu.autocast.bfloat16",
-      "release_contract_sha256": "fe339e1823ed0ccec35f06a2d754ffc98c6f15d87a66118af7639f60452bb8b5",
+      "release_contract_sha256": "a49165182044d31f7b8fdbca01888588ac3ed7f7b5f7936945e3dd335fc7bafc",
       "schema_version": 2
     },
-    "cache_key": "5e4a359910695503fe16d724537ffa9672ade8d61064fb3b383495a7e5df5f97",
+    "cache_key": "8a8eee8649357a65131c84a7aa335ec8aa0761806e024a1cd64bd46b1e66950c",
     "case_spec_sha256": "77341c9d178642824471a9136e2380ab3081359c5c63e28082b4f5f15586b2a3",
     "cases": [
       {
         "detection_count": 12,
-        "image_latency_s": 110.44470233295579,
+        "image_latency_s": 86.69569325000339,
         "name": "text_shoe_1008",
-        "prompt_latency_s": 8.905433125037234,
+        "prompt_latency_s": 8.057881332999386,
         "resolution": 1008
       },
       {
         "detection_count": 0,
         "image_latency_s": 0.0,
         "name": "text_nonsense_1008",
-        "prompt_latency_s": 8.971820375008974,
+        "prompt_latency_s": 7.877178124996135,
         "resolution": 1008
       },
       {
         "detection_count": 6,
         "image_latency_s": 0.0,
         "name": "positive_box_1008",
-        "prompt_latency_s": 9.186029625008814,
+        "prompt_latency_s": 7.935049500003515,
         "resolution": 1008
       },
       {
         "detection_count": 5,
         "image_latency_s": 0.0,
         "name": "positive_negative_box_1008",
-        "prompt_latency_s": 20.546598208951764,
+        "prompt_latency_s": 16.047976166999433,
         "resolution": 1008
       },
       {
         "detection_count": 13,
-        "image_latency_s": 41.97961708297953,
+        "image_latency_s": 32.53996987499704,
         "name": "text_shoe_672",
-        "prompt_latency_s": 3.7301516669685952,
+        "prompt_latency_s": 2.5620566249999683,
         "resolution": 672
       },
       {
         "detection_count": 12,
-        "image_latency_s": 29.87374320899835,
+        "image_latency_s": 20.621482124995964,
         "name": "text_shoe_504",
-        "prompt_latency_s": 1.4671929170144722,
+        "prompt_latency_s": 1.1589174589971662,
         "resolution": 504
       }
     ],
-    "cold_load_s": 8.291530458023772,
+    "cold_load_s": 7.439327750005759,
     "confidence_threshold": 0.5,
     "cpu_adapters": [
       "sam3.model.edt replaced with fail-fast unused stub",
@@ -478,10 +478,10 @@
     "environment": {
       "machine": "arm64",
       "platform": "macOS-26.5.2-arm64-arm-64bit",
-      "python": "3.12.13",
+      "python": "3.12.12",
       "torch": "2.6.0"
     },
-    "generated_at": "2026-07-27T17:41:30.472837+00:00",
+    "generated_at": "2026-08-13T03:50:35.411935+00:00",
     "image_sha256": "979f120edcb0050a12d5b4a1f1eaf6bc888b89f675524e7ffcf6ae5b77aa6bc4",
     "official_checkpoint": {
       "repo": "facebook/sam3",
@@ -496,60 +496,60 @@
       "image_processor": "sam3/model/sam3_image_processor.py",
       "model_builder": "sam3/model_builder.py"
     },
-    "oracle_runner_sha256": "da4a4d2ad6907d2a04d9a2c242e6542c088f910ee5852855f146f1214a64ce03",
+    "oracle_runner_sha256": "205435f9c38a40d39a2f845d7c136ba61392d48e61ca5640542cf46002c2b07d",
     "precision": "torch.cpu.autocast.bfloat16",
-    "release_contract_sha256": "fe339e1823ed0ccec35f06a2d754ffc98c6f15d87a66118af7639f60452bb8b5",
+    "release_contract_sha256": "a49165182044d31f7b8fdbca01888588ac3ed7f7b5f7936945e3dd335fc7bafc",
     "schema_version": 2
   },
   "performance": {
-    "cold_load_s": 0.6208139999653213,
+    "cold_load_s": 0.3899616669950774,
     "latency_by_resolution_s": {
       "1008": {
-        "median": 1.0973781250067987,
-        "p95": 1.1401994170155376,
+        "median": 1.0732745829955093,
+        "p95": 1.081827665999299,
         "samples": [
-          1.0934258330380544,
-          1.0928666249965318,
-          1.1141430420102552,
-          1.0973781250067987,
-          1.1401994170155376
+          1.0482297919952543,
+          1.081827665999299,
+          1.0815648339994368,
+          1.072654290997889,
+          1.0732745829955093
         ]
       },
       "504": {
-        "median": 0.40165120898745954,
-        "p95": 0.4094135000486858,
+        "median": 0.37633879100030754,
+        "p95": 0.3857261250013835,
         "samples": [
-          0.40582633402664214,
-          0.40165120898745954,
-          0.39640054100891575,
-          0.4094135000486858,
-          0.4003239999874495
+          0.3687223750021076,
+          0.374286166006641,
+          0.37633879100030754,
+          0.3857261250013835,
+          0.38027420900471043
         ]
       },
       "672": {
-        "median": 0.5190753749920987,
-        "p95": 0.521123125043232,
+        "median": 0.47763387500162935,
+        "p95": 0.5113408749966766,
         "samples": [
-          0.5209482089849189,
-          0.5190753749920987,
-          0.5113522919709794,
-          0.5178586659603752,
-          0.521123125043232
+          0.4753321250027511,
+          0.5113408749966766,
+          0.46944216699921526,
+          0.5032769579993328,
+          0.47763387500162935
         ]
       }
     },
     "measurement_boundary": "MLX active allocator peak after model load; synchronized full set_image plus text-grounding latency",
-    "peak_active_memory_bytes": 8888102755,
+    "peak_active_memory_bytes": 8636362418,
     "repetitions": 5,
     "status": "passed",
     "warmup_runs": 1
   },
   "raw_evidence": {
     "path": "parity/evidence/example-image-parity.npz",
-    "sha256": "0df7a96f08a64b8cdf06742660ce66fe318538416e3b3483ce61f3765cc2a4d6"
+    "sha256": "3e91f7b3641d73cdb0e564a7a664b33fa745cb3791901647d2827a632859e180"
   },
   "schema_version": 2,
-  "source_commit": "9887a86553dfa074a8777465ca7b3b3af37bd5df",
+  "source_commit": "3fc49f76f84d91f54cf9e7056daccfed9e99cd76",
   "status": "passed",
   "thresholds": {
     "box_l_inf_max": 2.0,
