@@ -373,7 +373,7 @@
     "revision": "b72a14d8127e17e6f2a3d2e075bbbf4307ba146e",
     "sha256": "0ad4c3f42ecf706c4cda63cf58d621699491ed65012b3999284ea370984f7173"
   },
-  "generated_at": "2026-08-13T04:39:57.086729+00:00",
+  "generated_at": "2026-08-13T21:00:45.082950+00:00",
   "host": {
     "machine": "arm64",
     "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
@@ -426,48 +426,48 @@
     "cases": [
       {
         "detection_count": 12,
-        "image_latency_s": 86.69569325000339,
+        "image_latency_s": 105.96148229199753,
         "name": "text_shoe_1008",
-        "prompt_latency_s": 8.057881332999386,
+        "prompt_latency_s": 9.097886166986427,
         "resolution": 1008
       },
       {
         "detection_count": 0,
         "image_latency_s": 0.0,
         "name": "text_nonsense_1008",
-        "prompt_latency_s": 7.877178124996135,
+        "prompt_latency_s": 8.584239874995546,
         "resolution": 1008
       },
       {
         "detection_count": 6,
         "image_latency_s": 0.0,
         "name": "positive_box_1008",
-        "prompt_latency_s": 7.935049500003515,
+        "prompt_latency_s": 8.747090292003122,
         "resolution": 1008
       },
       {
         "detection_count": 5,
         "image_latency_s": 0.0,
         "name": "positive_negative_box_1008",
-        "prompt_latency_s": 16.047976166999433,
+        "prompt_latency_s": 19.4609078749927,
         "resolution": 1008
       },
       {
         "detection_count": 13,
-        "image_latency_s": 32.53996987499704,
+        "image_latency_s": 35.68010491599853,
         "name": "text_shoe_672",
-        "prompt_latency_s": 2.5620566249999683,
+        "prompt_latency_s": 2.1084965409972938,
         "resolution": 672
       },
       {
         "detection_count": 12,
-        "image_latency_s": 20.621482124995964,
+        "image_latency_s": 20.402885582996532,
         "name": "text_shoe_504",
-        "prompt_latency_s": 1.1589174589971662,
+        "prompt_latency_s": 1.0006394579977496,
         "resolution": 504
       }
     ],
-    "cold_load_s": 7.439327750005759,
+    "cold_load_s": 8.188490957996692,
     "confidence_threshold": 0.5,
     "cpu_adapters": [
       "sam3.model.edt replaced with fail-fast unused stub",
@@ -481,7 +481,7 @@
       "python": "3.12.12",
       "torch": "2.6.0"
     },
-    "generated_at": "2026-08-13T03:50:35.411935+00:00",
+    "generated_at": "2026-08-13T20:53:21.472492+00:00",
     "image_sha256": "979f120edcb0050a12d5b4a1f1eaf6bc888b89f675524e7ffcf6ae5b77aa6bc4",
     "official_checkpoint": {
       "repo": "facebook/sam3",
@@ -502,54 +502,55 @@
     "schema_version": 2
   },
   "performance": {
-    "cold_load_s": 0.3431176250014687,
+    "cold_load_s": 0.4267547079944052,
     "latency_by_resolution_s": {
       "1008": {
-        "median": 1.0362874580023345,
-        "p95": 1.0491917089966591,
+        "median": 1.012428333007847,
+        "p95": 1.039690082994639,
         "samples": [
-          1.0341277920015273,
-          1.0335136670037173,
-          1.0394922079940443,
-          1.0362874580023345,
-          1.0491917089966591
+          1.0224073749996023,
+          1.0089429590007057,
+          1.0079484159941785,
+          1.012428333007847,
+          1.039690082994639
         ]
       },
       "504": {
-        "median": 0.3534397909970721,
-        "p95": 0.38317724999797065,
+        "median": 0.3300065000075847,
+        "p95": 0.3457979999948293,
         "samples": [
-          0.38317724999797065,
-          0.35068916599993827,
-          0.3587055419993703,
-          0.3522899999952642,
-          0.3534397909970721
+          0.3345937089907238,
+          0.3457979999948293,
+          0.3300065000075847,
+          0.32882170799712185,
+          0.32881629100302234
         ]
       },
       "672": {
-        "median": 0.44684350000170525,
-        "p95": 0.4776285000043572,
+        "median": 0.43570879199251067,
+        "p95": 0.4395973330101697,
         "samples": [
-          0.4462231659999816,
-          0.44684350000170525,
-          0.4464089579996653,
-          0.44763916700321715,
-          0.4776285000043572
+          0.4395973330101697,
+          0.434894499994698,
+          0.4348093750013504,
+          0.4357839169970248,
+          0.43570879199251067
         ]
       }
     },
     "measurement_boundary": "MLX active allocator peak after model load; synchronized full set_image plus text-grounding latency",
-    "peak_active_memory_bytes": 8636362574,
+    "peak_active_memory_bytes": 8636362322,
+    "precision": "fp32",
     "repetitions": 5,
     "status": "passed",
     "warmup_runs": 1
   },
   "raw_evidence": {
     "path": "parity/evidence/example-image-parity.npz",
-    "sha256": "a61c962460491505e27418b2a44759ac22533174e966b71c2f2651b9a4d9cd86"
+    "sha256": "694f00207ed47d3003effc58ae390275ca7414df5e0129ecd0be62ab9d41ce79"
   },
   "schema_version": 2,
-  "source_commit": "fe8b1e168c73b712467befab095f64cd21cb77c0",
+  "source_commit": "986b91dd2e01069bd5158ecc30b399873a2c2874",
   "status": "passed",
   "thresholds": {
     "box_l_inf_max": 2.0,

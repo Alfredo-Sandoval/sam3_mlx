@@ -153,7 +153,7 @@
     "revision": "b72a14d8127e17e6f2a3d2e075bbbf4307ba146e",
     "sha256": "0ad4c3f42ecf706c4cda63cf58d621699491ed65012b3999284ea370984f7173"
   },
-  "generated_at": "2026-08-13T04:40:18.430571+00:00",
+  "generated_at": "2026-08-13T21:01:06.956136+00:00",
   "host": {
     "machine": "arm64",
     "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
@@ -206,41 +206,41 @@
     "cases": [
       {
         "detection_count": 4,
-        "image_latency_s": 92.31093324999529,
+        "image_latency_s": 82.31959716598794,
         "name": "text_paper_bag_1008",
-        "prompt_latency_s": 9.071894208005688,
+        "prompt_latency_s": 7.3313921250082785,
         "resolution": 1008
       },
       {
         "detection_count": 4,
-        "image_latency_s": 34.65977633399598,
+        "image_latency_s": 31.827276667012484,
         "name": "text_paper_bag_672",
-        "prompt_latency_s": 3.345663791995321,
+        "prompt_latency_s": 1.9910504580038833,
         "resolution": 672
       },
       {
         "detection_count": 4,
-        "image_latency_s": 22.28924199999892,
+        "image_latency_s": 19.89878195799247,
         "name": "text_paper_bag_504",
-        "prompt_latency_s": 1.39625770800194,
+        "prompt_latency_s": 0.9168883329984965,
         "resolution": 504
       },
       {
         "detection_count": 1,
         "image_latency_s": 0.0,
         "name": "text_car_1008",
-        "prompt_latency_s": 8.002697167001315,
+        "prompt_latency_s": 7.280084957994404,
         "resolution": 1008
       },
       {
         "detection_count": 0,
         "image_latency_s": 0.0,
         "name": "text_nonsense_1008",
-        "prompt_latency_s": 8.517826290997618,
+        "prompt_latency_s": 7.4577124579955125,
         "resolution": 1008
       }
     ],
-    "cold_load_s": 6.6927514580020215,
+    "cold_load_s": 6.20003775000805,
     "confidence_threshold": 0.5,
     "cpu_adapters": [
       "sam3.model.edt replaced with fail-fast unused stub",
@@ -254,7 +254,7 @@
       "python": "3.12.12",
       "torch": "2.6.0"
     },
-    "generated_at": "2026-08-13T03:54:15.352254+00:00",
+    "generated_at": "2026-08-13T20:57:06.744040+00:00",
     "image_sha256": "7073dfecb5a3ecafb6152124113163a0ea1c1c70f92999ec892b519eca63e3d3",
     "official_checkpoint": {
       "repo": "facebook/sam3",
@@ -275,54 +275,55 @@
     "schema_version": 2
   },
   "performance": {
-    "cold_load_s": 0.34533612499944866,
+    "cold_load_s": 0.36986024999350775,
     "latency_by_resolution_s": {
       "1008": {
-        "median": 1.080687667003076,
-        "p95": 1.0876437080005417,
+        "median": 1.065408042006311,
+        "p95": 1.0847367500100518,
         "samples": [
-          1.080687667003076,
-          1.0848194589998457,
-          1.0779327080017538,
-          1.0719540830032201,
-          1.0876437080005417
+          1.0598329170024954,
+          1.065408042006311,
+          1.0847367500100518,
+          1.0719377920031548,
+          1.0618488330073887
         ]
       },
       "504": {
-        "median": 0.34544241699768463,
-        "p95": 0.35588970899698325,
+        "median": 0.32155591700575314,
+        "p95": 0.3249080420064274,
         "samples": [
-          0.34544241699768463,
-          0.3364771669948823,
-          0.33760079199419124,
-          0.35588970899698325,
-          0.34776891699584667
+          0.32281987500027753,
+          0.3203097079967847,
+          0.32003899999835994,
+          0.32155591700575314,
+          0.3249080420064274
         ]
       },
       "672": {
-        "median": 0.4582313749997411,
-        "p95": 0.47575625000172295,
+        "median": 0.4285917090019211,
+        "p95": 0.43449091700313147,
         "samples": [
-          0.4692674999969313,
-          0.43555845800437964,
-          0.43522754200239433,
-          0.4582313749997411,
-          0.47575625000172295
+          0.4340937500091968,
+          0.4285917090019211,
+          0.43449091700313147,
+          0.42360750000807457,
+          0.4243382079876028
         ]
       }
     },
     "measurement_boundary": "MLX active allocator peak after model load; synchronized full set_image plus text-grounding latency",
-    "peak_active_memory_bytes": 8374479640,
+    "peak_active_memory_bytes": 8374479612,
+    "precision": "fp32",
     "repetitions": 5,
     "status": "passed",
     "warmup_runs": 1
   },
   "raw_evidence": {
     "path": "parity/evidence/holdout-image-parity.npz",
-    "sha256": "5d0b686974e8d810184fc443bdd357b2bb55820945199eb1203c0265cd6fb84e"
+    "sha256": "0132dad7077edcfac5a8ac1a4caa2ad9dacc22876a24dbd8fac50c515e2fc664"
   },
   "schema_version": 2,
-  "source_commit": "fe8b1e168c73b712467befab095f64cd21cb77c0",
+  "source_commit": "986b91dd2e01069bd5158ecc30b399873a2c2874",
   "status": "passed",
   "thresholds": {
     "box_l_inf_max": 2.0,
