@@ -296,7 +296,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--confidence-threshold", type=float, default=0.5)
     parser.add_argument("--resolution", type=int, action="append", default=[])
     parser.add_argument("--warmup-runs", type=int, default=1)
-    parser.add_argument("--repetitions", type=int, default=5)
+    parser.add_argument("--repetitions", type=int, default=7)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--baseline", type=Path)
     parser.add_argument("--comparison-out", type=Path)

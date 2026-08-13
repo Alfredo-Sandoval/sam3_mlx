@@ -222,7 +222,8 @@ make benchmark
 
 Compare it with the reviewed Apple M1 Max baseline. The gate rejects dirty
 artifacts, different workloads or runtime environments, and any default metric
-that regresses by more than 10% after a 3% noise band:
+that regresses by more than 10% after a 3% noise band. Seven timed repetitions
+reduce sensitivity to transient host scheduling noise:
 
 ```bash
 make benchmark-regression-check
