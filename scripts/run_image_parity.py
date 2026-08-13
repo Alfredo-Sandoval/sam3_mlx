@@ -37,6 +37,12 @@ from sam3_mlx.model.sam3_image_processor import (  # noqa: E402
     ProcessorState,
     Sam3Processor,
 )
+from sam3_mlx.benchmarking import (  # noqa: E402
+    BenchmarkOperation,
+    TimingProtocol,
+    percentile,
+    synchronized_samples,
+)
 from scripts._oracle_runtime import OracleCase  # noqa: E402
 
 
@@ -200,12 +206,6 @@ def validate_official_checkout(
     return revision
 
 
-def _percentile(values: list[float], quantile: float) -> float:
-    ordered = sorted(values)
-    index = max(0, min(len(ordered) - 1, int(np.ceil(quantile * len(ordered))) - 1))
-    return ordered[index]
-
-
 def _mask_iou(left: np.ndarray, right: np.ndarray) -> float:
     intersection = np.logical_and(left, right).sum(dtype=np.int64)
     union = np.logical_or(left, right).sum(dtype=np.int64)
@@ -304,8 +304,7 @@ def mlx_outputs(
             }
         )
 
-    # Synchronized full image+prompt timing for the representative text case
-    # at every supported release resolution. One untimed warmup precedes samples.
+    protocol = TimingProtocol(warmup_runs=1, repetitions=repetitions)
     for resolution in (1008, 672, 504):
         spec = next(
             item
@@ -313,16 +312,18 @@ def mlx_outputs(
             if item["resolution"] == resolution and item["prompt"] is not None
         )
         processor = processors[resolution]
-        warmup = _run_prompt(processor, processor.set_image(image), spec)
-        mlx_eval(warmup["masks"], warmup["boxes"], warmup["scores"])
-        samples: list[float] = []
-        for _ in range(repetitions):
-            started = time.perf_counter()
-            state = _run_prompt(processor, processor.set_image(image), spec)
+
+        def run() -> ProcessorState:
+            return _run_prompt(processor, processor.set_image(image), spec)
+
+        def synchronize(state: ProcessorState) -> None:
             mlx_eval(state["masks"], state["boxes"], state["scores"])
             mx.synchronize()
-            samples.append(time.perf_counter() - started)
-        latencies[resolution] = samples
+
+        latencies[resolution] = synchronized_samples(
+            BenchmarkOperation(run=run, synchronize=synchronize),
+            protocol=protocol,
+        )
 
     return outputs, {
         "status": "passed",
@@ -333,7 +334,7 @@ def mlx_outputs(
             str(resolution): {
                 "samples": samples,
                 "median": statistics.median(samples),
-                "p95": _percentile(samples, 0.95),
+                "p95": percentile(samples, 0.95),
             }
             for resolution, samples in latencies.items()
         },

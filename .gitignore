@@ -56,6 +56,10 @@ scripts/*
 !scripts/validate_checkpoint_lineage_hardened.py
 !scripts/audit_release_evidence.py
 !scripts/audit_release_candidate.py
+!scripts/benchmark_image_runtime.py
+
+# Local benchmark outputs; reviewed baselines are explicitly retained.
+benchmarks/results/
 
 # Local scratch examples/notebooks
 examples/
