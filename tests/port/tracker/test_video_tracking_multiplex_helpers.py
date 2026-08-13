@@ -3284,3 +3284,22 @@ def test_recondition_masks_in_existing_state_requires_mask_output_mode():
             multiplex_state=MultiplexState([[0]], dtype=mx.float32),
             add_mask_to_memory=False,
         )
+
+
+def test_shared_neck_forward_does_not_relabel_internal_type_error() -> None:
+    model = _ForwardTrackingHarness()
+    calls = 0
+
+    def failing_forward_image(*args: object, **kwargs: object) -> dict[str, object]:
+        nonlocal calls
+        del args, kwargs
+        calls += 1
+        raise TypeError("backbone kernel failure")
+
+    model.share_necks = True
+    model.backbone = SimpleNamespace(forward_image=failing_forward_image)
+
+    with pytest.raises(TypeError, match="^backbone kernel failure$"):
+        model.forward_image(mx.zeros((1, 3, 8, 8)), need_propagation_out=True)
+
+    assert calls == 1

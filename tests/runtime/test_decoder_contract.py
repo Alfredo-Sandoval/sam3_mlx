@@ -6,11 +6,45 @@ from sam3_mlx.model.decoder import (
     DecoupledTransformerDecoderLayerv2,
     TransformerDecoder,
     TransformerDecoderLayer,
+    TransformerDecoderLayerv1,
     TransformerEncoderCrossAttention,
     TransformerEncoderDecoupledCrossAttention,
     nn,
 )
-from sam3_mlx.model.model_misc import TransformerWrapper
+from sam3_mlx.model.model_misc import MultiheadAttentionWrapper, TransformerWrapper
+
+
+class _FailingMultiheadAttention(MultiheadAttentionWrapper):
+    def __init__(self) -> None:
+        super().__init__(4, 1)
+        self.calls = 0
+
+    def __call__(self, *args: object, **kwargs: object) -> mx.array:
+        del args, kwargs
+        self.calls += 1
+        raise TypeError("attention kernel failure")
+
+
+def test_decoder_does_not_retry_internal_attention_type_error() -> None:
+    self_attention = _FailingMultiheadAttention()
+    layer = TransformerDecoderLayerv1(
+        activation="relu",
+        cross_attention=MultiheadAttentionWrapper(4, 1),
+        d_model=4,
+        dim_feedforward=8,
+        dropout=0.0,
+        pos_enc_at_attn=False,
+        pos_enc_at_cross_attn_keys=False,
+        pos_enc_at_cross_attn_queries=False,
+        pre_norm=False,
+        self_attention=self_attention,
+    )
+    values = mx.zeros((1, 1, 4))
+
+    with pytest.raises(TypeError, match="^attention kernel failure$"):
+        layer(values, values)
+
+    assert self_attention.calls == 1
 
 
 def test_transformer_wrapper_requires_decoder_num_queries():

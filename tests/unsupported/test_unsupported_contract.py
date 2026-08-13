@@ -386,15 +386,6 @@ def test_torch_compile_guard_raises_canonical_error():
             "explicit MLX runtime",
         ),
         (
-            lambda: import_module("sam3_mlx.model_builder").build_sam3_image_model(
-                compile=True,
-                load_from_HF=False,
-            ),
-            "torch-compile",
-            "build_sam3_image_model",
-            "torch.compile",
-        ),
-        (
             lambda: import_module("sam3_mlx.model_builder").build_sam3_video_predictor(
                 gpus_to_use=[0],
                 load_from_HF=False,
@@ -576,16 +567,6 @@ def test_video_inference_device_guard_raises_canonical_error():
             "unsupported-device",
             "device='tpu'",
             "explicit MLX runtime",
-        ),
-        (
-            lambda: import_module("sam3_mlx.model.vl_combiner").SAM3VLBackbone(
-                visual=None,
-                text=None,
-                compile_visual=True,
-            ),
-            "torch-compile",
-            "compile_visual=True",
-            "compile_visual",
         ),
         (
             lambda: import_module(

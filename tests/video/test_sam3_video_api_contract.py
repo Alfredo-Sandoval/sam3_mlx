@@ -1,7 +1,7 @@
 from pathlib import Path
 import sys
 from types import ModuleType
-from typing import Never, cast
+from typing import Never
 
 import mlx.core as mx
 import numpy as np
@@ -12,16 +12,16 @@ from PIL import Image
 from sam3_mlx._unsupported import Sam3MlxUnsupportedError
 from sam3_mlx.mlx_runtime import to_numpy
 from sam3_mlx.model.io_utils import load_resource_as_video_frames
+from sam3_mlx.model.bounded_cache import BoundedLRUCache
 
 
-def _bounded_cache_state(value: object) -> tuple[dict[object, object], int]:
+def _bounded_cache_state(
+    value: object,
+) -> tuple[BoundedLRUCache[object, object], int]:
     cache: object = getattr(value, "_cache", None)
-    cache_size: object = getattr(value, "_cache_size", None)
-    if not isinstance(cache, dict):
-        raise AssertionError("lazy frame cache must be a dictionary")
-    if isinstance(cache_size, bool) or not isinstance(cache_size, int):
-        raise AssertionError("lazy frame cache size must be an integer")
-    return cast(dict[object, object], cache), cache_size
+    if not isinstance(cache, BoundedLRUCache):
+        raise AssertionError("lazy frame cache must use BoundedLRUCache")
+    return cache, cache.maxsize
 
 
 def test_single_image_path_loads_as_one_frame_video(tmp_path: Path) -> None:
@@ -221,7 +221,7 @@ def test_selected_frame_video_file_uses_bounded_indexed_decoder(
         materialize_mlx_frames=False,
     )
     assert isinstance(frames, LazyVideoFileFrames)
-    setattr(frames, "_cache_size", 3)
+    frames._cache.maxsize = 3
     for index in range(len(frames)):
         assert np.asarray(frames[index])[0, 0, 0] == index
     cache, cache_size = _bounded_cache_state(frames)

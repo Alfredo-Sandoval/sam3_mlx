@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from functools import partial
 from importlib import import_module
-from typing import NoReturn, Protocol, TypedDict, cast
+from typing import Literal, NoReturn, Protocol, TypedDict, cast
 import mlx.core as mx
 
 from sam3_mlx._unsupported import raise_unsupported
@@ -260,23 +260,33 @@ def _with_pos_embed(array: mx.array, pos: mx.array | None) -> mx.array:
     return array if pos is None else array + pos
 
 
-def _call_short_or_mha_attention(
+_AttentionCallStyle = Literal["qkv", "mha"]
+
+
+def _select_attention_call_style(module: object) -> _AttentionCallStyle:
+    if isinstance(module, RoPEAttention):
+        return "qkv"
+    if isinstance(module, MultiHeadAttention):
+        return "mha"
+    raise TypeError(
+        "Attention modules must be RoPEAttention or MultiheadAttentionWrapper, "
+        f"got {type(module).__name__}."
+    )
+
+
+def _call_attention(
     module: object,
+    style: _AttentionCallStyle,
     q: mx.array,
     k: mx.array,
     v: mx.array,
     **kwargs: object,
 ) -> mx.array:
-    """Call either SAM q/k/v attention or the local MHA wrapper."""
     kwargs = {name: value for name, value in kwargs.items() if value is not None}
     attention = _as_attention_with_possible_weights(module)
-    try:
+    if style == "qkv":
         return _attention_output(attention(q=q, k=k, v=v, **kwargs))
-    except TypeError as short_name_error:
-        try:
-            return _attention_output(attention(query=q, key=k, value=v, **kwargs))
-        except TypeError:
-            raise short_name_error
+    return _attention_output(attention(query=q, key=k, value=v, **kwargs))
 
 
 def _dropout(array: mx.array, p: float, training: bool) -> mx.array:
@@ -1149,6 +1159,12 @@ class TransformerDecoderLayerv1(nn.Module):
         self.dropout_value = dropout
         self.self_attn = _as_attention(self_attention)
         self.cross_attn_image: _AttentionModule | None = _as_attention(cross_attention)
+        self._self_attn_call_style: _AttentionCallStyle = _select_attention_call_style(
+            self_attention
+        )
+        self._cross_attn_call_style: _AttentionCallStyle = _select_attention_call_style(
+            cross_attention
+        )
 
         self.linear1 = _as_array_module(nn.Linear(d_model, dim_feedforward))
         self.dropout = _as_array_module(nn.Dropout(dropout))
@@ -1191,8 +1207,9 @@ class TransformerDecoderLayerv1(nn.Module):
     ) -> mx.array:
         del kwargs
         q = k = _with_pos_embed(tgt, query_pos) if self.pos_enc_at_attn else tgt
-        tgt2 = _call_short_or_mha_attention(
+        tgt2 = _call_attention(
             self.self_attn,
+            self._self_attn_call_style,
             q,
             k,
             tgt,
@@ -1201,8 +1218,9 @@ class TransformerDecoderLayerv1(nn.Module):
         )
         tgt = self.norm1(tgt + self.dropout1(tgt2))
 
-        tgt2 = _call_short_or_mha_attention(
+        tgt2 = _call_attention(
             self.cross_attn_image,
+            self._cross_attn_call_style,
             _with_pos_embed(tgt, query_pos)
             if self.pos_enc_at_cross_attn_queries
             else tgt,
@@ -1245,8 +1263,9 @@ class TransformerDecoderLayerv1(nn.Module):
 
         tgt2 = self.norm1(tgt)
         q = k = _with_pos_embed(tgt2, query_pos_self) if self.pos_enc_at_attn else tgt2
-        tgt2 = _call_short_or_mha_attention(
+        tgt2 = _call_attention(
             self.self_attn,
+            self._self_attn_call_style,
             q,
             k,
             tgt2,
@@ -1260,8 +1279,9 @@ class TransformerDecoderLayerv1(nn.Module):
             tgt = mx.concat([tgt, other_tgt], axis=0)
 
         tgt2 = self.norm2(tgt)
-        tgt2 = _call_short_or_mha_attention(
+        tgt2 = _call_attention(
             self.cross_attn_image,
+            self._cross_attn_call_style,
             _with_pos_embed(tgt2, query_pos)
             if self.pos_enc_at_cross_attn_queries
             else tgt2,
@@ -1349,7 +1369,13 @@ class TransformerDecoderLayerv2(TransformerDecoderLayerv1):
     def _forward_sa(self, tgt: mx.array, query_pos: mx.array | None) -> mx.array:
         tgt2 = self.norm1(tgt)
         q = k = _with_pos_embed(tgt2, query_pos) if self.pos_enc_at_attn else tgt2
-        tgt2 = _call_short_or_mha_attention(self.self_attn, q, k, tgt2)
+        tgt2 = _call_attention(
+            self.self_attn,
+            self._self_attn_call_style,
+            q,
+            k,
+            tgt2,
+        )
         return tgt + self.dropout1(tgt2)
 
     def _forward_ca(
@@ -1369,8 +1395,9 @@ class TransformerDecoderLayerv2(TransformerDecoderLayerv1):
             kwds = {"num_k_exclude_rope": num_k_exclude_rope}
 
         tgt2 = self.norm2(tgt)
-        tgt2 = _call_short_or_mha_attention(
+        tgt2 = _call_attention(
             self.cross_attn_image,
+            self._cross_attn_call_style,
             _with_pos_embed(tgt2, query_pos)
             if self.pos_enc_at_cross_attn_queries
             else tgt2,

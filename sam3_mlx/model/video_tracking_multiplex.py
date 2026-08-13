@@ -35,6 +35,7 @@ from sam3_mlx.model.sam3_tracker_utils import (
     select_closest_cond_frames,
 )
 from sam3_mlx.model.sam3_tracker_base import SamMaskDecoderExtraArgs
+from sam3_mlx.model.temporal_memory import memory_trim_plan, previous_memory_frame_index
 from sam3_mlx.sam.common import Conv2dNCHW
 from sam3_mlx.sam.mask_decoder import MaskDecoder
 from sam3_mlx.sam.prompt_encoder import PositionEmbeddingRandom, PromptEncoder
@@ -722,16 +723,11 @@ class VideoTrackingMultiplex(nn.Module):
         if self.share_necks:
             need_propagation_out = need_interactive_out or need_propagation_out
             need_interactive_out = False
-            try:
-                backbone_out = forward_image(
-                    img_batch,
-                    need_sam3_out=need_sam3_out,
-                    need_sam2_out=need_propagation_out,
-                )
-            except TypeError:
-                raise_unsupported_multiplex_runtime(
-                    "VideoTrackingMultiplex.forward_image(share_necks)"
-                )
+            backbone_out = forward_image(
+                img_batch,
+                need_sam3_out=need_sam3_out,
+                need_sam2_out=need_propagation_out,
+            )
             backbone_out["interactive"] = backbone_out["sam2_backbone_out"]
         else:
             backbone_out = forward_image(
@@ -1336,20 +1332,15 @@ class VideoTrackingMultiplex(nn.Module):
 
         for t_pos in range(1, self.num_maskmem):
             t_rel = self.num_maskmem - t_pos
-            if self.use_memory_selection:
-                if t_rel > len(valid_indices):
-                    continue
-                prev_frame_idx = valid_indices[-t_rel]
-            elif t_rel == 1:
-                prev_frame_idx = (
-                    frame_idx + t_rel if track_in_reverse else frame_idx - t_rel
-                )
-            elif not track_in_reverse:
-                prev_frame_idx = ((frame_idx - 2) // r) * r
-                prev_frame_idx = prev_frame_idx - (t_rel - 2) * r
-            else:
-                prev_frame_idx = -(-(frame_idx + 2) // r) * r
-                prev_frame_idx = prev_frame_idx + (t_rel - 2) * r
+            prev_frame_idx = previous_memory_frame_index(
+                frame_idx=frame_idx,
+                temporal_distance=t_rel,
+                stride=r,
+                track_in_reverse=track_in_reverse,
+                selected_indices=valid_indices if self.use_memory_selection else None,
+            )
+            if prev_frame_idx is None:
+                continue
 
             out = output_dict["non_cond_frame_outputs"].get(prev_frame_idx)
             if out is None:
@@ -2575,8 +2566,14 @@ class VideoTrackingMultiplex(nn.Module):
         if self.trim_past_non_cond_mem_for_eval and not getattr(
             self, "training", False
         ):
-            r = self.memory_temporal_stride_for_eval
-            past_frame_idx = frame_idx - r * self.num_maskmem
+            trim_plan = memory_trim_plan(
+                frame_idx=frame_idx,
+                stride=self.memory_temporal_stride_for_eval,
+                num_maskmem=self.num_maskmem,
+                use_memory_selection=self.use_memory_selection,
+                max_object_pointers=self.max_obj_ptrs_in_encoder,
+            )
+            past_frame_idx = trim_plan.expired_frame_idx
             past_out = output_dict["non_cond_frame_outputs"].get(past_frame_idx)
             if past_out is not None:
                 if (
@@ -2587,8 +2584,8 @@ class VideoTrackingMultiplex(nn.Module):
                         _trim_past_out(past_out)
                     )
 
-            if self.use_memory_selection:
-                far_old_frame_idx = frame_idx - 20 * self.max_obj_ptrs_in_encoder
+            far_old_frame_idx = trim_plan.far_history_frame_idx
+            if far_old_frame_idx is not None:
                 past_out = output_dict["non_cond_frame_outputs"].get(far_old_frame_idx)
                 if past_out is not None:
                     output_dict["non_cond_frame_outputs"][far_old_frame_idx] = (

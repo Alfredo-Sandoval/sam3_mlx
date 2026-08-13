@@ -204,7 +204,15 @@ The standalone benchmark reuses the synchronized release timing contract while
 also measuring preprocessing, `set_image`, full image-plus-text inference, and
 the same workflow with cached text features. Artifacts record raw samples,
 p50/p95, peak active MLX memory, runtime policy, host identity, checkpoint hash,
-and source commit.
+and source commit. The benchmark enables the opt-in `compile=True` image path;
+`--no-compile` records the eager path as a distinct runtime policy so unlike
+artifacts cannot be compared.
+
+Synchronized profiling on the Apple M1 Max showed that the visual backbone,
+not preprocessing, dominates 504-pixel image setup. MLX compilation was
+bit-exact and reduced median `set_image` latency from 317 ms to 296 ms (6.8%)
+and full image-plus-text latency from 369 ms to 344 ms (6.9%) over seven timed
+runs. This is a host-specific result, not a cross-device performance claim.
 
 Run the fixed synthetic workload on the local pinned checkpoint:
 
@@ -231,5 +239,4 @@ baseline rather than bypassing the like-for-like check.
 - shared text-feature caching for the general image API;
 - sequential OpenCV decode optimization;
 - atomic multi-process conversion output;
-- decomposition of `model_builder.py`;
 - external task-diverse validation beyond the pinned calibration and holdout.

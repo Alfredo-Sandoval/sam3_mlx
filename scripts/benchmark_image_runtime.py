@@ -228,6 +228,7 @@ def generate_benchmark(args: argparse.Namespace) -> JsonObject:
         checkpoint_path=str(checkpoint),
         load_from_HF=False,
         enable_segmentation=True,
+        compile=args.compile,
     )
     _mlx_eval(cast(_Parameters, model).parameters())
     mx.synchronize()
@@ -262,7 +263,7 @@ def generate_benchmark(args: argparse.Namespace) -> JsonObject:
         "runtime": {
             "backend": "mlx-metal",
             "dtype_policy": "checkpoint-defined",
-            "compile_policy": "eager",
+            "compile_policy": "mlx-compiled-visual" if args.compile else "eager",
             "synchronization_boundary": "mx.eval outputs followed by mx.synchronize",
         },
         "workload": {
@@ -303,6 +304,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--noise-pct", type=float, default=3.0)
     parser.add_argument("--max-regression-pct", type=float, default=10.0)
     parser.add_argument("--allow-dirty", action="store_true")
+    parser.add_argument(
+        "--compile",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use the compiled MLX visual backbone (default: enabled).",
+    )
     args = parser.parse_args()
     if not args.resolution:
         args.resolution = [504, 672, 1008]

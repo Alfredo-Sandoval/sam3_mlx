@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import queue
-from collections import OrderedDict
 from importlib import import_module
 from dataclasses import dataclass
 import os
@@ -17,6 +16,7 @@ from PIL import Image
 import mlx.core as mx
 
 from sam3_mlx._unsupported import raise_unsupported
+from sam3_mlx.model.bounded_cache import BoundedLRUCache
 
 # Host RGB frames retained for selected-frame random access. Bound this so long
 # image-folder sessions do not keep every decoded frame resident.
@@ -187,8 +187,7 @@ class LazyImageFolderFrames:
         if cache_size < 1:
             raise ValueError("cache_size must be >= 1")
         self.frame_paths = tuple(frame_paths)
-        self._cache_size = int(cache_size)
-        self._cache: OrderedDict[int, Image.Image] = OrderedDict()
+        self._cache = BoundedLRUCache[int, Image.Image](cache_size)
         self._lock = Lock()
         self._closed = False
         first = _load_rgb_image(self.frame_paths[0])
@@ -210,7 +209,6 @@ class LazyImageFolderFrames:
                 raise RuntimeError("LazyImageFolderFrames is closed")
             cached = self._cache.get(index)
             if cached is not None:
-                self._cache.move_to_end(index)
                 return cached
             frame = _load_rgb_image(self.frame_paths[index])
             if (frame.height, frame.width) != (self.orig_height, self.orig_width):
@@ -220,8 +218,6 @@ class LazyImageFolderFrames:
                     f"expected {self.orig_width}x{self.orig_height}."
                 )
             self._cache[index] = frame
-            while len(self._cache) > self._cache_size:
-                self._cache.popitem(last=False)
             return frame
 
     @property
@@ -262,8 +258,7 @@ class LazyVideoFileFrames:
         if self._length <= 0:
             self._capture.release()
             raise RuntimeError(f"No frames could be decoded from video: {self.path}")
-        self._cache_size = int(cache_size)
-        self._cache: OrderedDict[int, Image.Image] = OrderedDict()
+        self._cache = BoundedLRUCache[int, Image.Image](cache_size)
         self._lock = Lock()
         self._closed = False
         self.images = None
@@ -282,7 +277,6 @@ class LazyVideoFileFrames:
                 raise RuntimeError("LazyVideoFileFrames is closed")
             cached = self._cache.get(index)
             if cached is not None:
-                self._cache.move_to_end(index)
                 return cached
             self._capture.set(self._cv2.CAP_PROP_POS_FRAMES, index)
             ok, frame_bgr = self._capture.read()
@@ -293,8 +287,6 @@ class LazyVideoFileFrames:
             frame_rgb = self._cv2.cvtColor(frame_bgr, self._cv2.COLOR_BGR2RGB)
             frame = Image.fromarray(frame_rgb).copy()
             self._cache[index] = frame
-            while len(self._cache) > self._cache_size:
-                self._cache.popitem(last=False)
             return frame
 
     @property

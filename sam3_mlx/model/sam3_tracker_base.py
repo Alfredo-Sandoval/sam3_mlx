@@ -37,6 +37,7 @@ from sam3_mlx._unsupported import raise_unsupported
 import sam3_mlx.model.data_misc as _data_misc
 import sam3_mlx.model.sam3_tracker_utils as _tracker_utils
 from sam3_mlx.model.memory import MemoryEncoderOutput
+from sam3_mlx.model.temporal_memory import memory_trim_plan, previous_memory_frame_index
 from sam3_mlx.sam.mask_decoder import MaskDecoder, MLP
 from sam3_mlx.sam.prompt_encoder import PromptEncoder
 from sam3_mlx.sam.transformer import TwoWayTransformer
@@ -866,21 +867,17 @@ class Sam3TrackerBase(nn.Module):
 
             for t_pos in range(1, self.num_maskmem):
                 t_rel = self.num_maskmem - t_pos
-                if self.use_memory_selection:
-                    if t_rel > len(valid_indices):
-                        continue
-                    prev_frame_idx = valid_indices[-t_rel]
-                else:
-                    if t_rel == 1:
-                        prev_frame_idx = (
-                            frame_idx + t_rel if track_in_reverse else frame_idx - t_rel
-                        )
-                    elif not track_in_reverse:
-                        prev_frame_idx = ((frame_idx - 2) // r) * r
-                        prev_frame_idx = prev_frame_idx - (t_rel - 2) * r
-                    else:
-                        prev_frame_idx = -(-(frame_idx + 2) // r) * r
-                        prev_frame_idx = prev_frame_idx + (t_rel - 2) * r
+                prev_frame_idx = previous_memory_frame_index(
+                    frame_idx=frame_idx,
+                    temporal_distance=t_rel,
+                    stride=r,
+                    track_in_reverse=track_in_reverse,
+                    selected_indices=(
+                        valid_indices if self.use_memory_selection else None
+                    ),
+                )
+                if prev_frame_idx is None:
+                    continue
 
                 out = output_dict["non_cond_frame_outputs"].get(prev_frame_idx)
                 if out is None:
@@ -1262,8 +1259,14 @@ class Sam3TrackerBase(nn.Module):
         if self.trim_past_non_cond_mem_for_eval and not getattr(
             self, "training", False
         ):
-            r = self.memory_temporal_stride_for_eval
-            past_frame_idx = frame_idx - r * self.num_maskmem
+            trim_plan = memory_trim_plan(
+                frame_idx=frame_idx,
+                stride=self.memory_temporal_stride_for_eval,
+                num_maskmem=self.num_maskmem,
+                use_memory_selection=self.use_memory_selection,
+                max_object_pointers=self.max_obj_ptrs_in_encoder,
+            )
+            past_frame_idx = trim_plan.expired_frame_idx
             past_out = output_dict["non_cond_frame_outputs"].get(past_frame_idx)
             if past_out is not None:
                 eff_iou = past_out.get("eff_iou_score", 0)
@@ -1275,8 +1278,8 @@ class Sam3TrackerBase(nn.Module):
                         _trim_past_out(past_out)
                     )
 
-            if self.use_memory_selection:
-                far_old_frame_idx = frame_idx - 20 * self.max_obj_ptrs_in_encoder
+            far_old_frame_idx = trim_plan.far_history_frame_idx
+            if far_old_frame_idx is not None:
                 past_out = output_dict["non_cond_frame_outputs"].get(far_old_frame_idx)
                 if past_out is not None:
                     output_dict["non_cond_frame_outputs"][far_old_frame_idx] = (

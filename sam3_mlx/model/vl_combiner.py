@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from copy import copy
 from typing import NoReturn, Protocol, cast
 
@@ -60,6 +60,18 @@ class _TriVisionBackbone(Protocol):
 
 class _VisionBackbone(Protocol):
     def forward(self, samples: mx.array) -> tuple[list[object], list[mx.array]]: ...
+
+
+class _MlxCompile(Protocol):
+    def __call__(
+        self,
+        function: Callable[[mx.array], dict[str, object]],
+        *,
+        inputs: object,
+    ) -> Callable[[mx.array], dict[str, object]]: ...
+
+
+_mlx_compile = cast(_MlxCompile, getattr(mx, "compile"))
 
 
 def _forward_tri_vision(
@@ -137,18 +149,15 @@ class SAM3VLBackbone(nn.Module):
         scalp: int = 0,
     ) -> None:
         super().__init__()
-        if compile_visual:
-            _raise_vl_unsupported(
-                "sam3_mlx.model.vl_combiner.SAM3VLBackbone(compile_visual=True)",
-                detail="compile_visual is not implemented in MLX.",
-                alternative="compile_visual=False",
-            )
-
         self.vision_backbone: Sam3DualViTDetNeck = visual
         self.language_backbone = text
         self.scalp = scalp
         self.act_ckpt_whole_vision_backbone = act_ckpt_whole_vision_backbone
         self.act_ckpt_whole_language_backbone = act_ckpt_whole_language_backbone
+        self._compile_visual = compile_visual
+        self._compiled_forward_image: Callable[[mx.array], dict[str, object]] | None = (
+            None
+        )
 
     def __call__(
         self,
@@ -171,6 +180,15 @@ class SAM3VLBackbone(nn.Module):
         return output
 
     def forward_image(self, samples: mx.array) -> dict[str, object]:
+        if self._compile_visual and not self.act_ckpt_whole_vision_backbone:
+            compiled = self._compiled_forward_image
+            if compiled is None:
+                compiled = _mlx_compile(
+                    self._forward_image_no_act_ckpt,
+                    inputs=self.state,
+                )
+                self._compiled_forward_image = compiled
+            return compiled(samples)
         return activation_ckpt_wrapper(self._forward_image_no_act_ckpt)(
             samples=samples,
             act_ckpt_enable=(
