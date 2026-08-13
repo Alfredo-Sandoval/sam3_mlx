@@ -26,6 +26,7 @@ include scripts/validate_checkpoint_lineage_hardened.py
 recursive-include parity/receipts *.json
 recursive-include parity/manifests *.json
 recursive-include parity/evidence *.npz
+recursive-include benchmarks/baselines *.json
 
 global-exclude .DS_Store
 global-exclude __pycache__

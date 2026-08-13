@@ -198,6 +198,32 @@ across the example and holdout profiles were:
 These measurements describe one Apple-Silicon host and the source commit named
 by the receipt. They are not performance guarantees for later commits.
 
+## Performance regression benchmark
+
+The standalone benchmark reuses the synchronized release timing contract while
+also measuring preprocessing, `set_image`, full image-plus-text inference, and
+the same workflow with cached text features. Artifacts record raw samples,
+p50/p95, peak active MLX memory, runtime policy, host identity, checkpoint hash,
+and source commit.
+
+Run the fixed synthetic workload on the local pinned checkpoint:
+
+```bash
+make benchmark
+```
+
+Compare it with the reviewed Apple M1 Max baseline. The gate rejects dirty
+artifacts, different workloads or runtime environments, and any default metric
+that regresses by more than 10% after a 3% noise band:
+
+```bash
+make benchmark-regression-check
+```
+
+The committed baseline is host-specific. A different chip, MLX version, Python
+version, workload, or synchronization policy requires a separately reviewed
+baseline rather than bypassing the like-for-like check.
+
 ## Intentionally deferred
 
 - full SAM 3.1 multiplex and temporal parity;

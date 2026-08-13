@@ -56,6 +56,12 @@ DEFAULT_METRICS = (
     "resolutions.504.full_image_text.median_s",
     "resolutions.504.full_cached_text.median_s",
     "resolutions.504.set_image.median_s",
+    "resolutions.672.full_image_text.median_s",
+    "resolutions.672.full_cached_text.median_s",
+    "resolutions.672.set_image.median_s",
+    "resolutions.1008.full_image_text.median_s",
+    "resolutions.1008.full_cached_text.median_s",
+    "resolutions.1008.set_image.median_s",
     "peak_active_memory_bytes",
 )
 
