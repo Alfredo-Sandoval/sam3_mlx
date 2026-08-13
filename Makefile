@@ -1,7 +1,7 @@
 .PHONY: benchmark benchmark-regression-check preprocess-parity-check artifact-check release-evidence-audit release-check runtime-release-check
 
 BENCHMARK_CHECKPOINT ?= checkpoints/mlx-community/sam3-image/model.safetensors
-BENCHMARK_BASELINE ?= benchmarks/baselines/apple-silicon-88cd6eb.json
+BENCHMARK_BASELINE ?= benchmarks/baselines/apple-silicon-0eb0711.json
 
 benchmark:
 	uv run python scripts/benchmark_image_runtime.py \
