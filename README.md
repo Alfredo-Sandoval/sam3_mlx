@@ -110,7 +110,10 @@ scores = state["scores"]
 
 `Sam3Processor.resolution` is the square image size fed into the ViT backbone. It
 must be a positive multiple of the patch size (`14`). Lower resolutions are
-faster but lose detail.
+faster but lose detail. Exact local-attention window grids are multiples of
+`336` (`14 × 24`): `336`, `672`, and `1008`. `336` is an optional fast tier, not
+an accuracy-equivalent default. `504` is still in the frozen release matrix even
+though it pads to the same `48×48` window topology as `672`.
 
 The runtime accepts other multiples of 14, but the frozen official-vs-MLX release
 matrix covers only `1008`, `672`, and `504`.
@@ -171,8 +174,12 @@ for the complete system and risk map.
 
 > [!IMPORTANT]
 > The checked-in schema-v2 parity bundles, checkpoint lineage, and runtime
-> receipt satisfy the local release gate for their recorded source commit.
-> Run `make release-check` from a clean worktree before tagging or publishing.
+> receipt satisfy the local release gate for commit
+> `fe8b1e168c73b712467befab095f64cd21cb77c0` only. They do not attest later
+> source, including `58a50c9` or an uncommitted worktree. This repository is
+> not accuracy-attested at HEAD and does not claim to be the fastest SAM 3
+> MLX implementation. Run `make release-check` from a clean worktree after
+> regenerating a receipt bound to the final SHA before tagging or publishing.
 
 ## Limitations
 

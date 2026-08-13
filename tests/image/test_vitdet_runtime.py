@@ -105,6 +105,39 @@ def test_rel_pos_blocks_false_disables_all_blocks():
     assert feat.shape == (1, 8, 2, 2)
 
 
+def test_exact_window_persist_matches_per_block_partition() -> None:
+    shared = dict(
+        img_size=8,
+        patch_size=2,
+        embed_dim=8,
+        depth=4,
+        num_heads=2,
+        mlp_ratio=1.0,
+        rel_pos_blocks=(),
+        global_att_blocks=(1, 3),
+        window_size=2,
+        retain_cls_token=False,
+        pretrain_use_cls_token=False,
+        use_abs_pos=False,
+        tile_abs_pos=False,
+        use_rope=False,
+        drop_path_rate=0.0,
+    )
+    per_block = ViT(**shared, persist_exact_windows=False)
+    persisted = ViT(**shared, persist_exact_windows=True)
+    persisted.update(per_block.parameters())
+    samples = mx.reshape(mx.arange(1 * 3 * 8 * 8, dtype=mx.float32), (1, 3, 8, 8))
+
+    per_block_out = per_block(samples)[0]
+    persisted_out = persisted(samples)[0]
+    assert isinstance(per_block_out, mx.array)
+    assert isinstance(persisted_out, mx.array)
+    _eval(per_block_out, persisted_out)
+
+    assert per_block_out.shape == (1, 8, 4, 4)
+    assert bool(mx.allclose(per_block_out, persisted_out).item())
+
+
 def test_window_partition_unpartition_roundtrip_with_padding():
     x = mx.reshape(mx.arange(2 * 5 * 5 * 3, dtype=mx.float32), (2, 5, 5, 3))
     windows, pad_hw = window_partition(x, window_size=2)

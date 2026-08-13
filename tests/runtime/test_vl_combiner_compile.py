@@ -38,14 +38,18 @@ def test_compiled_visual_backbone_matches_eager_and_reuses_compilation() -> None
 
     eager_output = eager.forward_image(samples)
     first_output = compiled.forward_image(samples)
-    compiled_function = compiled._compiled_forward_image
+    cache_key = compiled.visual_compile_key(samples)
+    compiled_function = compiled._compiled_forward_image[cache_key]
     second_output = compiled.forward_image(samples + 1)
+    fp16_samples = samples.astype(mx.float16)
+    compiled.forward_image(fp16_samples)
 
     mx.eval(eager_output, first_output, second_output)
     assert mx.array_equal(
         first_output["vision_features"], eager_output["vision_features"]
     ).item()
     assert mx.array_equal(second_output["vision_features"], (samples + 1) * 2).item()
-    assert compiled_function is not None
-    assert compiled._compiled_forward_image is compiled_function
-    assert compiled_visual.calls == 1
+    assert compiled._compiled_forward_image[cache_key] is compiled_function
+    assert compiled.visual_compile_key(fp16_samples) in compiled._compiled_forward_image
+    assert len(compiled._compiled_forward_image) == 2
+    assert compiled_visual.calls == 2

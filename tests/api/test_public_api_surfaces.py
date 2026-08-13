@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tomllib
 
+import mlx.core as mx
 import numpy as np
 import pytest
 
@@ -168,6 +169,9 @@ def test_image_builder_threads_checkpoint_free_architecture_toggles():
 
     assert isinstance(model, Sam3Image)
     assert model.device == "mlx"
+    assert model.precision == "fp32"
+    assert model.compute_dtype == mx.float32
+    assert model.compile_grounding is False
     assert model.training is False
     assert model.segmentation_head is None
     assert model.num_feature_levels == 1

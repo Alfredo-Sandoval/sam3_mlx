@@ -178,11 +178,24 @@ source/attestation commit relationship, including raw evidence paths.
 ## Current repository state
 
 The checked-in schema-v2 reports, raw NPZ bundles, checkpoint-lineage manifest,
-and runtime receipt are source-bound to the commit recorded in
-`parity/receipts/latest.json`. The independent replay audit covers 11 cases
-across the example and holdout profiles, and the recorded release suite contains
-701 passing tests with zero failures, skips, or deselections. `make
-release-check` passes from the clean receipt-only attestation commit.
+and runtime receipt are source-bound to
+`fe8b1e168c73b712467befab095f64cd21cb77c0`, the commit named by
+`parity/receipts/latest.json`. That receipt does **not** attest later source,
+including `58a50c9` or this worktree. The recorded example-profile shoe case at
+1008 px remains historically strong (12/12 detections, mean mask IoU
+`0.997869`, min mask IoU `0.995624`), but those numbers bind only to
+`fe8b1e1`. Re-run official parity after the runtime changes land, then write a
+new receipt on the final SHA.
+
+The independent replay audit covers 11 cases across the example and holdout
+profiles, and the recorded release suite contains 701 passing tests with zero
+failures, skips, or deselections. `make release-check` passes from the clean
+receipt-only attestation commit that records `fe8b1e1`.
+
+This worktree is **not** accuracy-attested and is **not** the fastest SAM 3
+MLX implementation. Official release resolutions remain `1008`, `672`, and
+`504`. `336` is an optional exact-window staging tier; it is not
+accuracy-equivalent to `1008` until a representative corpus shows otherwise.
 
 ## Current performance evidence
 
@@ -196,7 +209,8 @@ across the example and holdout profiles were:
 - peak active MLX allocation: about `8.89 GB`.
 
 These measurements describe one Apple-Silicon host and the source commit named
-by the receipt. They are not performance guarantees for later commits.
+by the receipt (`fe8b1e1`). They are not performance guarantees for later
+commits, and they do not support a “fastest SAM 3 MLX” claim.
 
 ## Performance regression benchmark
 
@@ -236,8 +250,8 @@ baseline rather than bypassing the like-for-like check.
 ## Intentionally deferred
 
 - full SAM 3.1 multiplex and temporal parity;
-- device-native preprocessing;
-- shared text-feature caching for the general image API;
+- device-native PIL replacement (caller-supplied preprocessed tensors are supported);
+- official parity re-attestation of this worktree;
 - sequential OpenCV decode optimization;
 - atomic multi-process conversion output;
 - external task-diverse validation beyond the pinned calibration and holdout.

@@ -260,6 +260,7 @@ def mlx_outputs(
     specs: list[OracleCase],
     confidence_threshold: float,
     repetitions: int,
+    precision: str = "fp32",
 ) -> tuple[list[dict[str, np.ndarray]], dict[str, Any]]:
     import mlx.core as mx
     import sam3_mlx
@@ -272,6 +273,7 @@ def mlx_outputs(
         checkpoint_path=str(checkpoint),
         load_from_HF=False,
         enable_segmentation=True,
+        precision=precision,
     )
     mlx_eval(cast(object, model.parameters()))
     cold_load_s = time.perf_counter() - load_started
@@ -343,6 +345,7 @@ def mlx_outputs(
             "MLX active allocator peak after model load; synchronized full "
             "set_image plus text-grounding latency"
         ),
+        "precision": precision,
     }
 
 
@@ -431,6 +434,12 @@ def main() -> None:
     )
     parser.add_argument("--confidence-threshold", type=float, default=0.5)
     parser.add_argument("--repetitions", type=int, default=5)
+    parser.add_argument(
+        "--precision",
+        choices=("fp32", "fp16", "bf16", "mixed"),
+        default="fp32",
+        help="Image-runtime precision policy (default: fp32).",
+    )
     args = parser.parse_args()
 
     try:
@@ -516,6 +525,7 @@ def main() -> None:
         specs=specs,
         confidence_threshold=args.confidence_threshold,
         repetitions=args.repetitions,
+        precision=args.precision,
     )
     cases = [
         _compare_case(spec, official, mlx)
@@ -550,6 +560,7 @@ def main() -> None:
             "size": list(image.size),
         },
         "confidence_threshold": args.confidence_threshold,
+        "precision": args.precision,
         "case_profile": args.profile,
         "thresholds": {
             "mask_iou_min": MASK_IOU_MIN,

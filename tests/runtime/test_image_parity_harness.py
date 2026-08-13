@@ -1,4 +1,5 @@
 import importlib.util
+import inspect
 from pathlib import Path
 import subprocess
 
@@ -31,6 +32,12 @@ def test_release_threshold_contract_is_precision_aware_and_fixed():
     assert _parity.MASK_IOU_MEAN_MIN == 0.99
     assert _parity.BOX_L_INF_MAX == 2.0
     assert _parity.SCORE_ABS_MAX == 0.025
+
+
+def test_mlx_outputs_default_precision_is_fp32_reference_policy() -> None:
+    signature = inspect.signature(_parity.mlx_outputs)
+    parameter = signature.parameters["precision"]
+    assert parameter.default == "fp32"
 
 
 def test_compare_case_requires_count_and_numeric_contract():

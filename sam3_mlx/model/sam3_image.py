@@ -353,6 +353,76 @@ class Output(dict[str, object]):
         return super().__getitem__(key)
 
 
+class RawPrediction(TypedDict):
+    pred_logits: mx.array
+    pred_boxes: mx.array
+    pred_masks: mx.array
+    presence_logit_dec: mx.array
+    pred_boxes_xyxy: NotRequired[mx.array]
+    semantic_seg: NotRequired[mx.array]
+
+
+class _MlxCompile(Protocol):
+    def __call__(
+        self,
+        function: Callable[..., tuple[mx.array, mx.array, mx.array, mx.array, mx.array]],
+        *,
+        inputs: object,
+    ) -> Callable[
+        ..., tuple[mx.array, mx.array, mx.array, mx.array, mx.array]
+    ]: ...
+
+
+_mlx_compile = cast(_MlxCompile, getattr(mx, "compile"))
+
+
+def raw_prediction_from_output(out: Mapping[str, object]) -> RawPrediction:
+    required = ("pred_logits", "pred_boxes", "pred_masks", "presence_logit_dec")
+    missing = [key for key in required if key not in out]
+    if missing:
+        raise KeyError(
+            "predict_raw requires pred_logits, pred_boxes, pred_masks, and "
+            f"presence_logit_dec; missing {missing}. Build with "
+            "enable_segmentation=True."
+        )
+    raw: RawPrediction = {
+        "pred_logits": cast(mx.array, out["pred_logits"]),
+        "pred_boxes": cast(mx.array, out["pred_boxes"]),
+        "pred_masks": cast(mx.array, out["pred_masks"]),
+        "presence_logit_dec": cast(mx.array, out["presence_logit_dec"]),
+    }
+    boxes_xyxy = out.get("pred_boxes_xyxy")
+    if isinstance(boxes_xyxy, mx.array):
+        raw["pred_boxes_xyxy"] = boxes_xyxy
+    semantic_seg = out.get("semantic_seg")
+    if isinstance(semantic_seg, mx.array):
+        raw["semantic_seg"] = semantic_seg
+    return raw
+
+
+def grounding_compile_key(
+    *,
+    dtype: mx.Dtype,
+    feat_shape: tuple[int, ...],
+    prompt_shape: tuple[int, ...],
+    prompt_mask_shape: tuple[int, ...],
+    vis_feat_sizes: Sequence[tuple[int, int]],
+    fpn_shapes: Sequence[tuple[int, ...]],
+    batch_size: int,
+) -> tuple[object, ...]:
+    from sam3_mlx.precision import dtype_name
+
+    return (
+        dtype_name(dtype),
+        tuple(int(dim) for dim in feat_shape),
+        tuple(int(dim) for dim in prompt_shape),
+        tuple(int(dim) for dim in prompt_mask_shape),
+        tuple((int(height), int(width)) for height, width in vis_feat_sizes),
+        tuple(tuple(int(dim) for dim in shape) for shape in fpn_shapes),
+        int(batch_size),
+    )
+
+
 ArrayInput = (
     mx.array | np.ndarray | int | float | bool | list[object] | tuple[object, ...]
 )
@@ -434,6 +504,7 @@ class Sam3Image(nn.Module):
         separate_scorer_for_instance: bool = False,
         num_interactive_steps_val: int = 0,
         inst_interactive_predictor: object | None = None,
+        compile_grounding: bool = False,
         **kwargs: object,
     ) -> None:
         super().__init__()
@@ -500,6 +571,11 @@ class Sam3Image(nn.Module):
             if inst_interactive_predictor is None
             else cast(_InteractivePredictor, inst_interactive_predictor)
         )
+        self.compile_grounding = bool(compile_grounding)
+        self._compiled_predict_raw: dict[
+            tuple[object, ...],
+            Callable[..., tuple[mx.array, mx.array, mx.array, mx.array, mx.array]],
+        ] = {}
 
     @property
     def device(self):
@@ -582,7 +658,9 @@ class Sam3Image(nn.Module):
                 axis=0,
             )
             batch_len = len(image_batch_items)
-        image = image.astype(mx.float32)
+        from sam3_mlx.precision import compute_dtype_for_policy, model_precision
+
+        image = image.astype(compute_dtype_for_policy(model_precision(self)))
 
         id_mapping_np = np.full((batch_len,), -1, dtype=np.int64)
         for local_index, source_index in enumerate(unique_ids):
@@ -674,34 +752,48 @@ class Sam3Image(nn.Module):
         feat_tuple = self._get_img_feats(backbone_out, img_ids)
         backbone_out, img_feats, img_pos_embeds, vis_feat_sizes = feat_tuple
 
-        # Run the encoder
+        encoder_out = self._encode_image_memory(
+            img_feats,
+            img_pos_embeds,
+            prompt,
+            prompt_mask,
+            vis_feat_sizes,
+            encoder_extra_kwargs=encoder_extra_kwargs,
+        )
+        return backbone_out, encoder_out, feat_tuple
+
+    def _encode_image_memory(
+        self,
+        img_feats: Sequence[mx.array],
+        img_pos_embeds: Sequence[mx.array],
+        prompt: mx.array,
+        prompt_mask: mx.array,
+        vis_feat_sizes: Sequence[tuple[int, int]],
+        encoder_extra_kwargs: Mapping[str, object] | None = None,
+    ) -> _EncoderOutput:
         prompt_pos_embed = mx.zeros_like(prompt)
         memory = self.transformer.encoder(
-            src=img_feats.copy(),
+            src=list(img_feats),
             src_key_padding_mask=None,
-            src_pos=img_pos_embeds.copy(),
+            src_pos=list(img_pos_embeds),
             prompt=prompt,
             prompt_pos=prompt_pos_embed,
             prompt_key_padding_mask=prompt_mask,
-            feat_sizes=vis_feat_sizes,
+            feat_sizes=list(vis_feat_sizes),
             encoder_extra_kwargs=encoder_extra_kwargs,
         )
-        encoder_out: _EncoderOutput = {
-            # encoded image features
+        return {
             "encoder_hidden_states": memory["memory"],
             "pos_embed": memory["pos_embed"],
             "padding_mask": memory["padding_mask"],
             "level_start_index": memory["level_start_index"],
             "spatial_shapes": memory["spatial_shapes"],
             "valid_ratios": memory["valid_ratios"],
-            "vis_feat_sizes": vis_feat_sizes,
-            # encoded text features (or other prompts)
+            "vis_feat_sizes": list(vis_feat_sizes),
             "prompt_before_enc": prompt,
             "prompt_after_enc": memory.get("memory_text", prompt),
             "prompt_mask": prompt_mask,
         }
-
-        return backbone_out, encoder_out, feat_tuple
 
     def _run_decoder(
         self,
@@ -903,6 +995,220 @@ class Sam3Image(nn.Module):
         )
         return _array_transforms(prev_mask_pred.flatten(-2)).transpose(2, 0, 1)
 
+    def clear_compiled_grounding(self) -> None:
+        self._compiled_predict_raw.clear()
+
+    def _segmentation_image_ids(
+        self, backbone_out: _BackboneOutput, find_input: _FindInput
+    ) -> mx.array:
+        img_ids = find_input.img_ids
+        if (
+            "id_mapping" in backbone_out
+            and backbone_out["id_mapping"] is not None
+        ):
+            return backbone_out["id_mapping"][img_ids]
+        return img_ids
+
+    def _run_encoded_core(
+        self,
+        backbone_out: _BackboneOutput,
+        find_input: _FindInput,
+        prompt: mx.array,
+        prompt_mask: mx.array,
+    ) -> Output:
+        backbone_out, encoder_out, _ = self._run_encoder(
+            backbone_out, find_input, prompt, prompt_mask
+        )
+        out = Output(
+            {
+                "encoder_hidden_states": encoder_out["encoder_hidden_states"],
+                "prev_encoder_out": {
+                    "encoder_out": encoder_out,
+                    "backbone_out": backbone_out,
+                },
+            },
+        )
+        out, hs = self._run_decoder(
+            memory=cast(mx.array, out["encoder_hidden_states"]),
+            pos_embed=encoder_out["pos_embed"],
+            src_mask=(
+                None
+                if encoder_out["padding_mask"] is None
+                else encoder_out["padding_mask"]
+            ),
+            out=out,
+            prompt=prompt,
+            prompt_mask=prompt_mask,
+            encoder_out=encoder_out,
+        )
+        self._run_segmentation_heads(
+            out=out,
+            backbone_out=backbone_out,
+            img_ids=self._segmentation_image_ids(backbone_out, find_input),
+            vis_feat_sizes=encoder_out["vis_feat_sizes"],
+            encoder_hidden_states=cast(mx.array, out["encoder_hidden_states"]),
+            prompt=prompt,
+            prompt_mask=prompt_mask,
+            hs=hs,
+        )
+        return out
+
+    def _encoded_core_arrays(
+        self,
+        img_feat: mx.array,
+        img_pos: mx.array,
+        prompt: mx.array,
+        prompt_mask: mx.array,
+        img_ids: mx.array,
+        fpn: Sequence[mx.array],
+        vis_feat_sizes: Sequence[tuple[int, int]],
+    ) -> tuple[mx.array, mx.array, mx.array, mx.array, mx.array]:
+        encoder_out = self._encode_image_memory(
+            [img_feat],
+            [img_pos],
+            prompt,
+            prompt_mask,
+            vis_feat_sizes,
+        )
+        backbone_out = cast(
+            _BackboneOutput,
+            {"backbone_fpn": list(fpn)},
+        )
+        out = Output(
+            {
+                "encoder_hidden_states": encoder_out["encoder_hidden_states"],
+                "prev_encoder_out": {
+                    "encoder_out": encoder_out,
+                    "backbone_out": backbone_out,
+                },
+            },
+        )
+        out, hs = self._run_decoder(
+            memory=cast(mx.array, out["encoder_hidden_states"]),
+            pos_embed=encoder_out["pos_embed"],
+            src_mask=(
+                None
+                if encoder_out["padding_mask"] is None
+                else encoder_out["padding_mask"]
+            ),
+            out=out,
+            prompt=prompt,
+            prompt_mask=prompt_mask,
+            encoder_out=encoder_out,
+        )
+        self._run_segmentation_heads(
+            out=out,
+            backbone_out=backbone_out,
+            img_ids=img_ids,
+            vis_feat_sizes=list(vis_feat_sizes),
+            encoder_hidden_states=cast(mx.array, out["encoder_hidden_states"]),
+            prompt=prompt,
+            prompt_mask=prompt_mask,
+            hs=hs,
+        )
+        boxes_xyxy = out.get("pred_boxes_xyxy")
+        if not isinstance(boxes_xyxy, mx.array):
+            boxes_xyxy = cast(mx.array, out["pred_boxes"])
+        return (
+            cast(mx.array, out["pred_logits"]),
+            cast(mx.array, out["pred_boxes"]),
+            boxes_xyxy,
+            cast(mx.array, out["pred_masks"]),
+            cast(mx.array, out["presence_logit_dec"]),
+        )
+
+    def _compiled_or_eager_encoded_core(
+        self,
+        backbone_out: _BackboneOutput,
+        find_input: _FindInput,
+        prompt: mx.array,
+        prompt_mask: mx.array,
+    ) -> Output:
+        if not self.compile_grounding or self.training:
+            return self._run_encoded_core(
+                backbone_out, find_input, prompt, prompt_mask
+            )
+        feat_tuple = self._get_img_feats(backbone_out, find_input.img_ids)
+        backbone_out, img_feats, img_pos_embeds, vis_feat_sizes = feat_tuple
+        if self.num_feature_levels != 1 or len(img_feats) != 1:
+            return self._run_encoded_core(
+                backbone_out, find_input, prompt, prompt_mask
+            )
+        fpn = [
+            _feature_tensor(feature)
+            for feature in backbone_out.get("backbone_fpn", [])
+        ]
+        key = grounding_compile_key(
+            dtype=img_feats[0].dtype,
+            feat_shape=tuple(int(dim) for dim in img_feats[0].shape),
+            prompt_shape=tuple(int(dim) for dim in prompt.shape),
+            prompt_mask_shape=tuple(int(dim) for dim in prompt_mask.shape),
+            vis_feat_sizes=vis_feat_sizes,
+            fpn_shapes=tuple(tuple(int(dim) for dim in feature.shape) for feature in fpn),
+            batch_size=int(img_feats[0].shape[1]) if img_feats[0].ndim > 1 else 1,
+        )
+        compiled = self._compiled_predict_raw.get(key)
+        vis_sizes = tuple(vis_feat_sizes)
+        if compiled is None:
+            def core(
+                img_feat: mx.array,
+                img_pos: mx.array,
+                prompt_arr: mx.array,
+                prompt_mask_arr: mx.array,
+                img_ids: mx.array,
+                *fpn_arrs: mx.array,
+            ) -> tuple[mx.array, mx.array, mx.array, mx.array, mx.array]:
+                return self._encoded_core_arrays(
+                    img_feat,
+                    img_pos,
+                    prompt_arr,
+                    prompt_mask_arr,
+                    img_ids,
+                    fpn_arrs,
+                    vis_sizes,
+                )
+
+            compiled = _mlx_compile(core, inputs=self.state)
+            self._compiled_predict_raw[key] = compiled
+        logits, boxes, boxes_xyxy, masks, presence = compiled(
+            img_feats[0],
+            img_pos_embeds[0],
+            prompt,
+            prompt_mask,
+            self._segmentation_image_ids(backbone_out, find_input),
+            *fpn,
+        )
+        return Output(
+            {
+                "pred_logits": logits,
+                "pred_boxes": boxes,
+                "pred_boxes_xyxy": boxes_xyxy,
+                "pred_masks": masks,
+                "presence_logit_dec": presence,
+            }
+        )
+
+    def predict_raw(
+        self,
+        backbone_out: Mapping[str, object],
+        find_input: object,
+        find_target: object | None,
+        geometric_prompt: Prompt,
+    ) -> RawPrediction:
+        """Fixed-shape device arrays before score filtering or mask upsample."""
+
+        self._validate_interactive_steps_val()
+        typed_backbone_out = cast(_BackboneOutput, backbone_out)
+        typed_find_input = cast(_FindInput, find_input)
+        prompt, prompt_mask, typed_backbone_out = self._encode_prompt(
+            typed_backbone_out, typed_find_input, geometric_prompt
+        )
+        out = self._compiled_or_eager_encoded_core(
+            typed_backbone_out, typed_find_input, prompt, prompt_mask
+        )
+        del find_target
+        return raw_prediction_from_output(out)
+
     def forward_grounding(
         self,
         backbone_out: Mapping[str, object],
@@ -917,59 +1223,12 @@ class Sam3Image(nn.Module):
             raise ValueError("matching requires a populated find_target")
         typed_backbone_out = cast(_BackboneOutput, backbone_out)
         typed_find_input = cast(_FindInput, find_input)
-        # profile geometry encoder
         prompt, prompt_mask, typed_backbone_out = self._encode_prompt(
             typed_backbone_out, typed_find_input, geometric_prompt
         )
-
-        # profile encoder
-        typed_backbone_out, encoder_out, _ = self._run_encoder(
+        out = self._run_encoded_core(
             typed_backbone_out, typed_find_input, prompt, prompt_mask
         )
-
-        out = Output(
-            {
-                "encoder_hidden_states": encoder_out["encoder_hidden_states"],
-                "prev_encoder_out": {
-                    "encoder_out": encoder_out,
-                    "backbone_out": typed_backbone_out,
-                },
-            },
-        )
-
-        # profile decoder
-        out, hs = self._run_decoder(
-            memory=cast(mx.array, out["encoder_hidden_states"]),
-            pos_embed=encoder_out["pos_embed"],
-            src_mask=(
-                None
-                if encoder_out["padding_mask"] is None
-                else encoder_out["padding_mask"]
-            ),
-            out=out,
-            prompt=prompt,
-            prompt_mask=prompt_mask,
-            encoder_out=encoder_out,
-        )
-
-        # profile segmentation heads
-        seg_img_ids = typed_find_input.img_ids
-        if (
-            "id_mapping" in typed_backbone_out
-            and typed_backbone_out["id_mapping"] is not None
-        ):
-            seg_img_ids = typed_backbone_out["id_mapping"][seg_img_ids]
-        self._run_segmentation_heads(
-            out=out,
-            backbone_out=typed_backbone_out,
-            img_ids=seg_img_ids,
-            vis_feat_sizes=encoder_out["vis_feat_sizes"],
-            encoder_hidden_states=cast(mx.array, out["encoder_hidden_states"]),
-            prompt=prompt,
-            prompt_mask=prompt_mask,
-            hs=hs,
-        )
-
         if self.training or self.num_interactive_steps_val > 0:
             self._compute_matching(
                 out, self.back_convert(cast(_FindTarget, find_target))

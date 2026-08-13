@@ -385,6 +385,20 @@ def test_forward_grounding_rejects_unsupported_validation_interactivity() -> Non
     assert exc_info.value.alternative == "num_interactive_steps_val=0"
 
 
+def test_predict_raw_rejects_unsupported_validation_interactivity() -> None:
+    model = _empty_model()
+    model.eval()
+    model.num_interactive_steps_val = 1
+
+    with pytest.raises(
+        Sam3MlxUnsupportedError,
+        match="Validation interactive prompt sampling is not implemented",
+    ) as exc_info:
+        model.predict_raw({}, _FakeFindInput(), _FakeFindTarget(), Prompt())
+
+    assert exc_info.value.reason == "image-interactivity"
+
+
 def test_visual_prompt_embedding_and_mask_must_be_provided_together() -> None:
     model = _empty_model()
     backbone_out: dict[str, object] = {

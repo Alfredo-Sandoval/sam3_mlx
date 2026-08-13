@@ -16,8 +16,10 @@ from sam3_mlx.model.geometry_encoders import Prompt
 import sam3_mlx.model.sam3_image_processor as image_processor
 from sam3_mlx.model.sam3_image_processor import (
     OriginalSizes,
+    PREPROCESSED_VALUE_CONTRACT,
     ProcessorState,
     Sam3Processor,
+    coerce_preprocessed_image,
     normalize_text_prompt_key,
     transform,
 )
@@ -45,6 +47,18 @@ _resize_uint8_bilinear_like_torchvision = cast(
 _single_image_keep_indices = cast(
     Callable[[mx.array, float], mx.array],
     _private_callable("_single_image_keep_indices"),
+)
+_presence_weighted_scores = cast(
+    Callable[[Mapping[str, object]], mx.array],
+    _private_callable("_presence_weighted_scores"),
+)
+_filter_and_convert_single_image = cast(
+    Callable[..., tuple[mx.array, mx.array, mx.array]],
+    _private_callable("_filter_and_convert_single_image"),
+)
+_upsample_and_activate_masks = cast(
+    Callable[[mx.array, int, int], mx.array],
+    _private_callable("_upsample_and_activate_masks"),
 )
 _batch_original_sizes = cast(
     Callable[[ProcessorState], OriginalSizes | None],
@@ -173,6 +187,48 @@ def test_single_image_keep_indices_handles_empty_result():
     assert indices.tolist() == []
     assert indices.shape == (0,)
     assert indices.dtype == mx.int64
+
+
+def test_filter_and_upsample_helpers_split_grounding_postprocess() -> None:
+    outputs = {
+        "pred_logits": mx.array(_logit([[[0.2], [0.8], [0.9]]]), dtype=mx.float32),
+        "presence_logit_dec": mx.array([[10.0]], dtype=mx.float32),
+        "pred_boxes": mx.array(
+            [[[0.5, 0.5, 0.5, 0.5], [0.5, 0.5, 0.2, 0.2], [0.25, 0.25, 0.5, 0.5]]],
+            dtype=mx.float32,
+        ),
+        "pred_masks": mx.array([[[[-4.0]], [[2.0]], [[4.0]]]], dtype=mx.float32),
+    }
+
+    scores = _presence_weighted_scores(outputs)
+    presence = 1.0 / (1.0 + np.exp(-10.0))
+    np.testing.assert_allclose(
+        to_numpy(scores),
+        np.array([[0.2 * presence, 0.8 * presence, 0.9 * presence]], dtype=np.float32),
+        rtol=0.0,
+        atol=1e-5,
+    )
+
+    filtered_scores, low_res_masks, boxes = _filter_and_convert_single_image(
+        outputs, threshold=0.5, img_h=4, img_w=8
+    )
+    np.testing.assert_allclose(
+        to_numpy(filtered_scores),
+        np.array([0.8 * presence, 0.9 * presence], dtype=np.float32),
+        rtol=0.0,
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(
+        to_numpy(boxes),
+        np.array([[3.2, 1.6, 4.8, 2.4], [0.0, 0.0, 4.0, 2.0]], dtype=np.float32),
+        rtol=0.0,
+        atol=1e-5,
+    )
+    assert low_res_masks.shape == (2, 1, 1)
+    upsampled = _upsample_and_activate_masks(low_res_masks, 4, 8)
+    assert upsampled.shape == (2, 1, 4, 8)
+    assert to_numpy(upsampled[0]).min() > 0.5
+    assert to_numpy(upsampled[1]).min() > 0.5
 
 
 def test_single_image_keep_indices_does_not_export_full_keep_mask(
@@ -900,3 +956,158 @@ def test_text_cache_size_must_be_non_negative_integer() -> None:
         Sam3Processor(_FakeModel(), resolution=14, text_cache_size=-1)
     with pytest.raises(ValueError, match="non-negative integer"):
         Sam3Processor(_FakeModel(), resolution=14, text_cache_size=True)
+
+
+def test_coerce_preprocessed_image_accepts_nchw_and_nhwc() -> None:
+    nchw = mx.zeros((3, 14, 14), dtype=mx.float32)
+    nhwc = mx.zeros((14, 14, 3), dtype=mx.float32)
+
+    coerced_nchw = coerce_preprocessed_image(nchw, resolution=14, layout="nchw")
+    coerced_nhwc = coerce_preprocessed_image(nhwc, resolution=14, layout="nhwc")
+
+    assert coerced_nchw.shape == (1, 3, 14, 14)
+    assert coerced_nhwc.shape == (1, 3, 14, 14)
+    assert coerced_nchw.dtype == mx.float32
+    assert coerced_nhwc.dtype == mx.float32
+
+
+def test_coerce_preprocessed_image_rejects_contract_violations() -> None:
+    valid = mx.zeros((3, 14, 14), dtype=mx.float32)
+    with pytest.raises(ValueError, match="layout must be one of"):
+        coerce_preprocessed_image(valid, resolution=14, layout="chw")
+    with pytest.raises(ValueError, match="value_contract must be"):
+        coerce_preprocessed_image(
+            valid,
+            resolution=14,
+            value_contract="unit-interval",
+        )
+    with pytest.raises(ValueError, match="must be float32"):
+        coerce_preprocessed_image(
+            mx.zeros((3, 14, 14), dtype=mx.float16),
+            resolution=14,
+        )
+    with pytest.raises(ValueError, match="only finite values"):
+        nan_image = np.zeros((3, 14, 14), dtype=np.float32)
+        nan_image[0, 0, 0] = np.nan
+        coerce_preprocessed_image(nan_image, resolution=14)
+    with pytest.raises(ValueError, match=PREPROCESSED_VALUE_CONTRACT):
+        coerce_preprocessed_image(
+            mx.full((3, 14, 14), 2.0, dtype=mx.float32),
+            resolution=14,
+        )
+    with pytest.raises(ValueError, match="spatial size must match"):
+        coerce_preprocessed_image(
+            mx.zeros((3, 28, 28), dtype=mx.float32),
+            resolution=14,
+        )
+    with pytest.raises(ValueError, match="accepts a single image"):
+        coerce_preprocessed_image(
+            mx.zeros((2, 3, 14, 14), dtype=mx.float32),
+            resolution=14,
+        )
+    with pytest.raises(TypeError, match="MLX or NumPy array"):
+        coerce_preprocessed_image(object(), resolution=14)
+
+
+def test_set_preprocessed_image_matches_set_image_for_same_tensor() -> None:
+    model = _FakeModel()
+    processor = Sam3Processor(model, resolution=14)
+    image = Image.new("RGB", (4, 2), color=(255, 0, 0))
+    transformed = processor.transform(image)
+
+    via_image = processor.set_image(image)
+    via_preprocessed = processor.set_preprocessed_image(
+        transformed,
+        original_size=(2, 4),
+        layout="nchw",
+        value_contract=PREPROCESSED_VALUE_CONTRACT,
+    )
+
+    first = model.backbone.forward_image_inputs[-2]
+    second = model.backbone.forward_image_inputs[-1]
+    np.testing.assert_array_equal(to_numpy(first), to_numpy(second))
+    assert first.dtype == mx.float32
+    assert via_image["original_height"] == via_preprocessed["original_height"] == 2
+    assert via_image["original_width"] == via_preprocessed["original_width"] == 4
+
+
+def test_set_preprocessed_image_accepts_nhwc_and_casts_at_visual_boundary() -> None:
+    model = _FakeModel()
+    model.precision = "fp16"
+    processor = Sam3Processor(model, resolution=14)
+    image = Image.new("RGB", (4, 4), color=(12, 34, 56))
+    transformed = processor.transform(image)
+    nhwc = to_numpy(transformed).transpose(1, 2, 0)
+
+    state = processor.set_preprocessed_image(
+        nhwc,
+        original_size=(4, 4),
+        layout="nhwc",
+    )
+
+    forwarded = model.backbone.forward_image_inputs[-1]
+    assert transformed.dtype == mx.float32
+    assert forwarded.dtype == mx.float16
+    assert forwarded.shape == (1, 3, 14, 14)
+    assert state["original_height"] == 4
+    assert state["original_width"] == 4
+
+
+class _RawPredictModel(_FakeModel):
+    def __init__(self, outputs: Mapping[str, object]) -> None:
+        super().__init__(outputs=outputs)
+        self.predict_raw_calls = 0
+
+    def predict_raw(
+        self,
+        backbone_out: Mapping[str, object],
+        find_input: object,
+        find_target: object | None,
+        geometric_prompt: Prompt,
+    ) -> Mapping[str, object]:
+        del backbone_out, find_input, find_target, geometric_prompt
+        self.predict_raw_calls += 1
+        if self.outputs is None:
+            raise RuntimeError("scripted raw outputs were not configured")
+        return self.outputs
+
+
+def test_processor_predict_raw_is_unfiltered_and_predict_materializes() -> None:
+    presence_logit = 10.0
+    outputs = {
+        "pred_logits": mx.array(_logit([[[0.2], [0.8], [0.9]]]), dtype=mx.float32),
+        "pred_boxes": mx.array(
+            [[[0.5, 0.5, 0.5, 0.5], [0.5, 0.5, 0.2, 0.2], [0.25, 0.25, 0.5, 0.5]]],
+            dtype=mx.float32,
+        ),
+        "pred_masks": mx.array([[[[-4.0]], [[2.0]], [[4.0]]]], dtype=mx.float32),
+        "presence_logit_dec": mx.array([[presence_logit]], dtype=mx.float32),
+    }
+    model = _RawPredictModel(outputs)
+    processor = Sam3Processor(model, resolution=14, confidence_threshold=0.5)
+    state = processor.set_text_prompt(
+        "shoe",
+        processor.set_image(Image.new("RGB", (8, 4), color=(0, 0, 0))),
+        run_grounding=False,
+    )
+
+    raw = processor.predict_raw(state)
+
+    assert model.predict_raw_calls == 1
+    assert model.forward_grounding_calls == []
+    assert "boxes" not in state
+    assert "masks" not in state
+    assert raw["pred_logits"].shape == (1, 3, 1)
+    assert raw["pred_masks"].shape == (1, 3, 1, 1)
+
+    result = processor.predict(state)
+    presence = 1.0 / (1.0 + np.exp(-presence_logit))
+    np.testing.assert_allclose(
+        to_numpy(result["scores"]),
+        np.array([0.8 * presence, 0.9 * presence], dtype=np.float32),
+        rtol=0.0,
+        atol=1e-5,
+    )
+    assert to_numpy(result["masks"]).shape[0] == 2
+    assert model.predict_raw_calls == 2
+    assert model.forward_grounding_calls == []

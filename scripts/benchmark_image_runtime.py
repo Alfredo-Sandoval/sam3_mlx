@@ -26,13 +26,13 @@ import sam3_mlx  # noqa: E402
 from sam3_mlx.benchmarking import (  # noqa: E402
     BenchmarkOperation,
     IMAGE_BENCHMARK_SCHEMA,
-    IMAGE_BENCHMARK_SUBSTAGE_SCHEMA,
+    InterleavedTimingProtocol,
     RegressionThreshold,
     TimingProtocol,
-    aggregate_stage_group,
+    build_substage_artifact,
     compare_benchmark_artifacts,
-    eager_isolated_substage_fields,
     profile_operations,
+    profile_operations_interleaved,
     summarize_samples,
     synchronized_samples,
 )
@@ -42,10 +42,17 @@ from sam3_mlx.model.sam3_image import Sam3Image  # noqa: E402
 from sam3_mlx.model.sam3_image_processor import (  # noqa: E402
     ProcessorState,
     Sam3Processor,
+    _filter_and_convert_single_image,
+    _upsample_and_activate_masks,
 )
 from sam3_mlx.model.vitdet import Block, ViT  # noqa: E402
 from sam3_mlx.model.vl_combiner import SAM3VLBackbone  # noqa: E402
 from sam3_mlx.release_contract import JsonObject  # noqa: E402
+from sam3_mlx.resolutions import (  # noqa: E402
+    ALIGNED_WINDOW_STRIDE,
+    CANONICAL_ALIGNED_RESOLUTIONS,
+    FAST_TIER_RESOLUTION,
+)
 from sam3_mlx.source_binding import git_commit  # noqa: E402
 
 
@@ -54,9 +61,9 @@ class _Parameters(Protocol):
 
 
 DEFAULT_METRICS = (
-    "resolutions.504.full_image_text.median_s",
-    "resolutions.504.full_cached_text.median_s",
-    "resolutions.504.set_image.median_s",
+    "resolutions.336.full_image_text.median_s",
+    "resolutions.336.full_cached_text.median_s",
+    "resolutions.336.set_image.median_s",
     "resolutions.672.full_image_text.median_s",
     "resolutions.672.full_cached_text.median_s",
     "resolutions.672.set_image.median_s",
@@ -127,6 +134,9 @@ def _sync_state(state: ProcessorState) -> None:
 
 
 def _sync_value(value: object) -> None:
+    if isinstance(value, tuple):
+        synchronize_completed(*value)
+        return
     synchronize_completed(value)
 
 
@@ -149,6 +159,14 @@ def _block_category(block: Block) -> str:
     return "global" if block.window_size == 0 else "window"
 
 
+def _sync_grounding_output(value: object) -> None:
+    if isinstance(value, dict):
+        arrays = [item for item in value.values() if isinstance(item, mx.array)]
+        synchronize_completed(*arrays)
+        return
+    synchronize_completed(value)
+
+
 def _profile_vision_substages(
     model: Sam3Image,
     image: Image.Image,
@@ -156,11 +174,14 @@ def _profile_vision_substages(
     resolution: int,
     prompt: str,
     confidence_threshold: float,
-    protocol: TimingProtocol,
+    protocol: InterleavedTimingProtocol,
     compile_policy: str,
 ) -> JsonObject:
     backbone, neck, trunk = _require_dual_neck(model)
     processor = Sam3Processor(
+        model, resolution=resolution, confidence_threshold=confidence_threshold
+    )
+    complete_processor = Sam3Processor(
         model, resolution=resolution, confidence_threshold=confidence_threshold
     )
     image_tensor = processor.transform(image)[None]
@@ -184,13 +205,27 @@ def _profile_vision_substages(
     synchronize_completed(neck_input)
     kept_levels = output_levels_for_scalp(len(neck.convs), scalp=backbone.scalp)
     retained = len(neck.convs) if kept_levels is None else kept_levels
+    neck_shapes: list[tuple[int, int, int, int]] = []
+    neck_dtypes: list[mx.Dtype] = []
+    for conv in neck.convs:
+        head_out = conv(neck_input)
+        synchronize_completed(head_out)
+        neck_shapes.append(
+            (
+                int(head_out.shape[0]),
+                int(head_out.shape[3]),
+                int(head_out.shape[1]),
+                int(head_out.shape[2]),
+            )
+        )
+        neck_dtypes.append(head_out.dtype)
 
-    operations: dict[str, BenchmarkOperation[object]] = {
+    isolated: dict[str, BenchmarkOperation[object]] = {
         "preprocessing": BenchmarkOperation(
             run=lambda: processor.transform(image)[None],
             synchronize=_sync_value,
         ),
-        "patch_embedding": BenchmarkOperation(
+        "token_preparation": BenchmarkOperation(
             run=lambda: trunk._prepare_tokens(image_tensor)[0],
             synchronize=_sync_value,
         ),
@@ -203,7 +238,7 @@ def _profile_vision_substages(
             raise TypeError("ViT.blocks must contain Block modules")
         name = f"vit_block_{index}"
         block_input = block_inputs[index]
-        operations[name] = BenchmarkOperation(
+        isolated[name] = BenchmarkOperation(
             run=lambda module=block, tokens=block_input: module(tokens),
             synchronize=_sync_value,
         )
@@ -213,38 +248,99 @@ def _profile_vision_substages(
         else:
             global_names.append(name)
 
-    neck_names: list[str] = []
+    neck_head_names: list[str] = []
+    neck_pos_names: list[str] = []
     for index, conv in enumerate(neck.convs):
-        name = f"neck_head_{index}"
-        operations[name] = BenchmarkOperation(
+        head_name = f"neck_head_{index}"
+        pos_name = f"neck_position_encoding_{index}"
+        isolated[head_name] = BenchmarkOperation(
             run=lambda head=conv: head(neck_input),
             synchronize=_sync_value,
         )
-        neck_names.append(name)
+        isolated[pos_name] = BenchmarkOperation(
+            run=lambda shape=neck_shapes[index], dtype=neck_dtypes[index]: (
+                neck.position_encoding(shape).astype(dtype)
+            ),
+            synchronize=_sync_value,
+        )
+        neck_head_names.append(head_name)
+        neck_pos_names.append(pos_name)
 
     text_state = processor.set_image(image)
+    img_h = int(text_state["original_height"])
+    img_w = int(text_state["original_width"])
+    processor.set_text_prompt(prompt, text_state, run_grounding=False)
+
+    def run_grounding_core() -> object:
+        return model.predict_raw(
+            text_state["backbone_out"],
+            processor._find_stage_for_state(text_state),
+            None,
+            text_state["geometric_prompt"],
+        )
+
+    seed_outputs = run_grounding_core()
+    _sync_grounding_output(seed_outputs)
+    _scores, seed_masks, _boxes = _filter_and_convert_single_image(
+        seed_outputs,
+        threshold=confidence_threshold,
+        img_h=img_h,
+        img_w=img_w,
+    )
+    synchronize_completed(seed_masks)
+
+    isolated["model_grounding_core"] = BenchmarkOperation(
+        run=run_grounding_core,
+        synchronize=_sync_grounding_output,
+    )
+    isolated["filtering_and_postprocess"] = BenchmarkOperation(
+        run=lambda: _filter_and_convert_single_image(
+            seed_outputs,
+            threshold=confidence_threshold,
+            img_h=img_h,
+            img_w=img_w,
+        ),
+        synchronize=_sync_value,
+    )
+    isolated["mask_upsample"] = BenchmarkOperation(
+        run=lambda: _upsample_and_activate_masks(seed_masks, img_h, img_w),
+        synchronize=_sync_value,
+    )
 
     def encode_text() -> ProcessorState:
         processor.clear_text_cache()
         return processor.set_text_prompt(prompt, text_state, run_grounding=False)
 
-    processor.set_text_prompt(prompt, text_state, run_grounding=False)
-    operations["text_encoding"] = BenchmarkOperation(
-        run=encode_text,
-        synchronize=_sync_value,
-    )
-    operations["text_encoding_repeated"] = BenchmarkOperation(
-        run=lambda: processor.set_text_prompt(prompt, text_state, run_grounding=False),
-        synchronize=_sync_value,
-    )
-    operations["grounding"] = BenchmarkOperation(
-        run=lambda: processor.run_grounding(text_state),
-        synchronize=_sync_state,
-    )
+    def complete_path() -> ProcessorState:
+        state = complete_processor.set_image(image)
+        return complete_processor.set_text_prompt(prompt, state)
 
     mx.reset_peak_memory()
     active_before = int(mx.get_active_memory())
-    timed = profile_operations(operations, protocol=protocol)
+    timed = profile_operations_interleaved(isolated, protocol=protocol)
+    timed.update(
+        profile_operations(
+            {
+                "text_encoding": BenchmarkOperation(
+                    run=encode_text,
+                    synchronize=_sync_value,
+                ),
+                "text_encoding_repeated": BenchmarkOperation(
+                    run=lambda: processor.set_text_prompt(
+                        prompt, text_state, run_grounding=False
+                    ),
+                    synchronize=_sync_value,
+                ),
+            },
+            protocol=protocol.sequential(),
+        )
+    )
+    timed["complete_path"] = summarize_samples(
+        synchronized_samples(
+            BenchmarkOperation(run=complete_path, synchronize=_sync_state),
+            protocol=protocol.sequential(),
+        )
+    )
     blocks: list[JsonObject] = []
     for index, name in enumerate(block_names):
         block = trunk.blocks[index]
@@ -255,37 +351,44 @@ def _profile_vision_substages(
         summary["category"] = _block_category(block)
         blocks.append(summary)
     neck_heads: list[JsonObject] = []
-    for index, name in enumerate(neck_names):
+    neck_position_encodings: list[JsonObject] = []
+    for index, name in enumerate(neck_head_names):
         summary = dict(timed[name])
         summary["index"] = index
         summary["scale"] = float(neck.scale_factors[index])
         summary["retained"] = index < retained
         neck_heads.append(summary)
+        pos_summary = dict(timed[neck_pos_names[index]])
+        pos_summary["index"] = index
+        pos_summary["scale"] = float(neck.scale_factors[index])
+        pos_summary["retained"] = index < retained
+        neck_position_encodings.append(pos_summary)
 
-    return {
-        "schema_version": IMAGE_BENCHMARK_SUBSTAGE_SCHEMA,
-        "resolution": resolution,
-        **eager_isolated_substage_fields(model_compile_policy=compile_policy),
-        "warmup_runs": protocol.warmup_runs,
-        "repetitions": protocol.repetitions,
-        "preprocessing": timed["preprocessing"],
-        "patch_embedding": timed["patch_embedding"],
-        "vit_blocks": blocks,
-        "vit_block_groups": {
-            "window": aggregate_stage_group(
-                timed, category="window", member_names=window_names
-            ),
-            "global": aggregate_stage_group(
-                timed, category="global", member_names=global_names
-            ),
-        },
-        "neck_heads": neck_heads,
-        "text_encoding": timed["text_encoding"],
-        "text_encoding_repeated": timed["text_encoding_repeated"],
-        "grounding": timed["grounding"],
-        "active_memory_bytes": active_before,
-        "peak_active_memory_bytes": int(mx.get_peak_memory()),
-    }
+    model_path_names = (
+        ["token_preparation"]
+        + block_names
+        + neck_head_names
+        + neck_pos_names
+        + [
+            "model_grounding_core",
+            "filtering_and_postprocess",
+            "mask_upsample",
+        ]
+    )
+    return build_substage_artifact(
+        resolution=resolution,
+        model_compile_policy=compile_policy,
+        protocol=protocol,
+        timed=timed,
+        vit_blocks=blocks,
+        neck_heads=neck_heads,
+        neck_position_encodings=neck_position_encodings,
+        window_names=window_names,
+        global_names=global_names,
+        model_path_names=model_path_names,
+        active_memory_bytes=active_before,
+        peak_active_memory_bytes=int(mx.get_peak_memory()),
+    )
 
 
 def _text_outputs(state: ProcessorState) -> dict[str, mx.array]:
@@ -329,6 +432,9 @@ def _benchmark_resolution(
     seed_state = processor.set_text_prompt(prompt, seed_state, run_grounding=False)
     cached_text = _text_outputs(seed_state)
     synchronize_completed(cached_text)
+    preprocessed = processor.transform(image)
+    original_size = (image.height, image.width)
+    synchronize_completed(preprocessed)
 
     def full_first_text() -> ProcessorState:
         processor.clear_text_cache()
@@ -343,12 +449,32 @@ def _benchmark_resolution(
         state = processor.set_image(image)
         return processor.set_text_prompt(prompt, state, text_outputs=cached_text)
 
+    def set_preprocessed() -> ProcessorState:
+        return processor.set_preprocessed_image(
+            preprocessed,
+            original_size=original_size,
+            layout="nchw",
+        )
+
+    def preprocessed_core() -> ProcessorState:
+        state = set_preprocessed()
+        return processor.set_text_prompt(prompt, state)
+
     return {
         "preprocess": summarize_samples(
             synchronized_samples(preprocess, protocol=protocol)
         ),
         "set_image": summarize_samples(
             synchronized_samples(set_image, protocol=protocol)
+        ),
+        "set_preprocessed_image": summarize_samples(
+            synchronized_samples(
+                BenchmarkOperation(
+                    run=set_preprocessed,
+                    synchronize=lambda _state: mx.synchronize(),
+                ),
+                protocol=protocol,
+            )
         ),
         "full_image_text": summarize_samples(
             synchronized_samples(
@@ -365,6 +491,12 @@ def _benchmark_resolution(
         "full_first_text": summarize_samples(
             synchronized_samples(
                 BenchmarkOperation(run=full_first_text, synchronize=_sync_state),
+                protocol=protocol,
+            )
+        ),
+        "preprocessed_core": summarize_samples(
+            synchronized_samples(
+                BenchmarkOperation(run=preprocessed_core, synchronize=_sync_state),
                 protocol=protocol,
             )
         ),
@@ -397,6 +529,7 @@ def generate_benchmark(args: argparse.Namespace) -> JsonObject:
         load_from_HF=False,
         enable_segmentation=True,
         compile=args.compile,
+        precision=args.precision,
     )
     synchronize_completed(cast(_Parameters, model).parameters())
     cold_load_s = time.perf_counter() - load_started
@@ -404,6 +537,11 @@ def generate_benchmark(args: argparse.Namespace) -> JsonObject:
     protocol = TimingProtocol(
         warmup_runs=args.warmup_runs,
         repetitions=args.repetitions,
+    )
+    substage_protocol = InterleavedTimingProtocol(
+        warmup_runs=args.substage_warmup_runs,
+        measurements_per_round=args.substage_measurements_per_round,
+        rounds=args.substage_rounds,
     )
     compile_policy = "mlx-compiled-visual" if args.compile else "eager"
     first_resolution = args.resolution[0]
@@ -436,7 +574,7 @@ def generate_benchmark(args: argparse.Namespace) -> JsonObject:
                 resolution=resolution,
                 prompt=args.prompt,
                 confidence_threshold=args.confidence_threshold,
-                protocol=protocol,
+                protocol=substage_protocol,
                 compile_policy=compile_policy,
             )
         resolutions[str(resolution)] = measured
@@ -452,7 +590,7 @@ def generate_benchmark(args: argparse.Namespace) -> JsonObject:
         "environment": _environment(),
         "runtime": {
             "backend": "mlx-metal",
-            "dtype_policy": "checkpoint-defined",
+            "dtype_policy": args.precision,
             "compile_policy": compile_policy,
             "synchronization_boundary": "mx.eval outputs followed by mx.synchronize",
         },
@@ -463,6 +601,13 @@ def generate_benchmark(args: argparse.Namespace) -> JsonObject:
             "resolutions": args.resolution,
             "warmup_runs": protocol.warmup_runs,
             "repetitions": protocol.repetitions,
+        },
+        "resolution_policy": {
+            "aligned_window_stride": ALIGNED_WINDOW_STRIDE,
+            "canonical_aligned": list(CANONICAL_ALIGNED_RESOLUTIONS),
+            "fast_tier_resolution": FAST_TIER_RESOLUTION,
+            "fast_tier_is_accuracy_equivalent": False,
+            "preprocessed_core_excludes": "PIL resize and normalize",
         },
         "cold_load_s": cold_load_s,
         "cold_compile_s": cold_compile_s,
@@ -486,9 +631,22 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--synthetic-seed", type=int, default=20260812)
     parser.add_argument("--prompt", default="shoe")
     parser.add_argument("--confidence-threshold", type=float, default=0.5)
-    parser.add_argument("--resolution", type=int, action="append", default=[])
+    parser.add_argument(
+        "--resolution",
+        type=int,
+        action="append",
+        default=[],
+        help=(
+            "Processor resolution to measure. Repeat to add more. Default: "
+            "336, 672, 1008. 336 is an optional exact-window fast tier, not an "
+            "accuracy-equivalent substitute for 1008."
+        ),
+    )
     parser.add_argument("--warmup-runs", type=int, default=1)
     parser.add_argument("--repetitions", type=int, default=7)
+    parser.add_argument("--substage-warmup-runs", type=int, default=5)
+    parser.add_argument("--substage-measurements-per-round", type=int, default=10)
+    parser.add_argument("--substage-rounds", type=int, default=3)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--baseline", type=Path)
     parser.add_argument("--comparison-out", type=Path)
@@ -501,7 +659,8 @@ def _parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=False,
         help=(
-            "Measure synchronized eager-isolated vision substages "
+            "Measure v2 eager-isolated vision substages with 5/30/3 interleaved "
+            "rounds and a separately timed complete path "
             "(default: disabled; not a compiled-graph breakdown)."
         ),
     )
@@ -511,9 +670,15 @@ def _parse_args() -> argparse.Namespace:
         default=True,
         help="Use the compiled MLX visual backbone (default: enabled).",
     )
+    parser.add_argument(
+        "--precision",
+        choices=("fp32", "fp16", "bf16", "mixed"),
+        default="fp32",
+        help="Image-runtime precision policy (default: fp32).",
+    )
     args = parser.parse_args()
     if not args.resolution:
-        args.resolution = [504, 672, 1008]
+        args.resolution = [336, 672, 1008]
     if any(value <= 0 or value % 14 != 0 for value in args.resolution):
         parser.error("--resolution values must be positive multiples of 14")
     if args.synthetic_height <= 0 or args.synthetic_width <= 0:

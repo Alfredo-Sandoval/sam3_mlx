@@ -9,6 +9,7 @@ import mlx.core as mx
 from mlx import nn
 
 from sam3_mlx._unsupported import raise_unsupported
+from sam3_mlx.resolutions import window_layout_is_exact
 from sam3_mlx.model import data_misc as data_misc_module
 from sam3_mlx.model.bounded_cache import BoundedLRUCache
 from sam3_mlx.model.data_misc import NestedTensor
@@ -753,11 +754,11 @@ class Block(nn.Module):
         )
         self.window_size = window_size
 
-    def forward(self, x: mx.array) -> mx.array:
+    def forward(self, x: mx.array, *, windowed: bool = False) -> mx.array:
         shortcut = x
         x = self.norm1(x)
 
-        if self.window_size > 0:
+        if self.window_size > 0 and not windowed:
             height = int(x.shape[1])
             width = int(x.shape[2])
             x, pad_hw = window_partition(x, self.window_size)
@@ -771,8 +772,8 @@ class Block(nn.Module):
 
         return x
 
-    def __call__(self, x: mx.array) -> mx.array:
-        return self.forward(x)
+    def __call__(self, x: mx.array, *, windowed: bool = False) -> mx.array:
+        return self.forward(x, windowed=windowed)
 
 
 class ViT(nn.Module):
@@ -809,6 +810,7 @@ class ViT(nn.Module):
         bias_patch_embed: bool = True,
         compile_mode: str | bool | None = None,
         use_act_checkpoint: bool = True,
+        persist_exact_windows: bool = True,
     ) -> None:
         super().__init__()
         if compile_mode not in (None, False):
@@ -906,6 +908,7 @@ class ViT(nn.Module):
             self.blocks.append(block)
 
         self.use_act_checkpoint = use_act_checkpoint
+        self.persist_exact_windows = persist_exact_windows
 
         self.window_block_indexes = window_block_indexes
         self.return_interm_layers = return_interm_layers
@@ -1022,12 +1025,46 @@ class ViT(nn.Module):
         nested_outputs: list[FeatureMap] = []
         array_outputs: list[FeatureMap] = []
         masks: mx.array | None = None
-        for i, blk in enumerate(self.blocks):
-            tokens = blk(tokens)
-            if (i == self.full_attn_ids[-1]) or (
-                self.return_interm_layers and i in self.full_attn_ids
+        index = 0
+        block_count = len(self.blocks)
+        while index < block_count:
+            block = self.blocks[index]
+            persist = (
+                self.persist_exact_windows
+                and tokens.ndim == 4
+                and block.window_size > 0
+                and window_layout_is_exact(
+                    int(tokens.shape[1]),
+                    int(tokens.shape[2]),
+                    block.window_size,
+                )
+            )
+            if persist:
+                window_size = block.window_size
+                height = int(tokens.shape[1])
+                width = int(tokens.shape[2])
+                stop = index
+                while (
+                    stop < block_count
+                    and self.blocks[stop].window_size == window_size
+                ):
+                    stop += 1
+                windowed, pad_hw = window_partition(tokens, window_size)
+                for group_index in range(index, stop):
+                    windowed = self.blocks[group_index].forward(
+                        windowed, windowed=True
+                    )
+                tokens = window_unpartition(
+                    windowed, window_size, pad_hw, (height, width)
+                )
+                index = stop
+                continue
+
+            tokens = block(tokens)
+            if (index == self.full_attn_ids[-1]) or (
+                self.return_interm_layers and index in self.full_attn_ids
             ):
-                if i == self.full_attn_ids[-1]:
+                if index == self.full_attn_ids[-1]:
                     tokens = self.ln_post(tokens)
                 feats = self._spatial_feats(tokens, s)
                 if is_nested:
@@ -1039,6 +1076,7 @@ class ViT(nn.Module):
                     nested_outputs.append(NestedTensor(feats, masks))
                 else:
                     array_outputs.append(feats)
+            index += 1
         return nested_outputs if is_nested else array_outputs
 
     def __call__(self, x: mx.array | NestedTensor) -> list[FeatureMap]:

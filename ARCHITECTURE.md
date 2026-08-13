@@ -11,8 +11,11 @@ covered by the image-runtime parity claim.
 
 The previous schema-v1 release receipt was superseded by schema-v2 reports, raw
 replayable NPZ evidence, hardened checkpoint lineage, one source commit across
-every artifact, and a receipt-only attestation commit. Those artifacts are now
-checked in and pass the local release gate.
+every artifact, and a receipt-only attestation commit. Those artifacts are
+checked in and pass the local release gate for
+`fe8b1e168c73b712467befab095f64cd21cb77c0` only. They do not attest later
+source. This worktree is not accuracy-attested and is not claimed as the
+fastest SAM 3 MLX implementation.
 
 ## Package map
 
@@ -40,9 +43,15 @@ these paths do not enter the wheel.
 ```text
 PIL / NumPy image
   -> RGB conversion
-  -> TorchVision-matched resize and normalization
+  -> TorchVision-matched FP32 resize and normalization
+  -> one visual-boundary cast (`fp32` / `fp16` / `bf16` / `mixed`)
   -> MLX vision backbone
   -> image feature state
+
+Caller-normalized NCHW/NHWC tensor
+  -> `set_preprocessed_image` (skips PIL)
+  -> same visual-boundary cast
+  -> MLX vision backbone
 
 text prompt
   -> tokenizer and language backbone
@@ -53,15 +62,16 @@ box / point prompt
   -> geometry encoder
 
 image + language + geometry
-  -> grounding transformer
-  -> boxes, logits, masks, presence score
+  -> `predict_raw` (fixed-shape logits, boxes, low-res masks, presence)
+  -> `predict` convenience wrapper
   -> confidence filtering
   -> interpolation to original image size
 ```
 
 `Sam3Processor` owns mutable per-image state. Processor resolutions may be any
-positive multiple of 14, but release parity is measured only at 1008, 672, and
-504.
+positive multiple of 14. Exact window-aligned staging sizes are 336, 672, and
+1008. Release parity is measured only at 1008, 672, and 504. 336 is an optional
+fast tier, not an accuracy-equivalent default.
 
 ### Checkpoint path
 
@@ -239,17 +249,22 @@ receipt/attestation validator.
 
 ## Release gate status
 
-The local `0.1.2` release gate is complete:
+The local `0.1.2` release gate is complete **for the receipt-bound commit
+`fe8b1e1`**:
 
 1. Both schema-v2 raw parity bundles and reports are checked in.
 2. Checkpoint lineage passes for all 1,400 tensors.
 3. The receipt records 701 passing tests with zero failures, skips, or
    deselections.
-4. Every evidence artifact names the same source commit.
+4. Every evidence artifact names `fe8b1e168c73b712467befab095f64cd21cb77c0`.
 5. The evidence-only attestation commit has that source commit as its sole
    parent.
-6. `make release-check` passes from a clean worktree, including wheel and source
-   distribution inspection and clean-install validation.
+6. `make release-check` passes from a clean worktree of that attested SHA,
+   including wheel and source distribution inspection and clean-install
+   validation.
+
+Later source, including `58a50c9` and this worktree, must be re-attested
+before any accuracy or “fastest” claim.
 
 Creating a version tag or publishing an artifact is a separate distribution
 action and is not implied by the checked-in evidence.

@@ -80,10 +80,41 @@ def test_conversion_manifest_records_pinned_source_and_content_hashes(
         == hashlib.sha256(output_checkpoint.read_bytes()).hexdigest()
     )
     assert manifest["mapped_count"] == 2
+    assert manifest["tensor_count"] == 2
     assert manifest["unmapped_keys"] == []
     assert manifest["ignored_keys"] == ["tracker.memory.weight"]
+    assert manifest["dtype_policy"] == "float32"
     assert manifest["dtype_counts"] == {"float16": 1, "float32": 1}
     assert manifest["converter_version"]
+
+
+def test_conversion_manifest_records_requested_reduced_precision(
+    tmp_path: Path,
+) -> None:
+    source_checkpoint = tmp_path / "sam3.pt"
+    source_checkpoint.write_bytes(b"official-checkpoint")
+    output_checkpoint = tmp_path / "model.safetensors"
+    weights = {
+        "head.weight": mx.ones((2, 3), dtype=mx.float16),
+        "rope.freqs": mx.ones((2,), dtype=mx.complex64),
+    }
+    save_safetensors(output_checkpoint, weights)
+
+    manifest_path = _write_conversion_manifest(
+        tmp_path,
+        source_repo="facebook/sam3",
+        source_revision="a" * 40,
+        source_checkpoint=source_checkpoint,
+        output_checkpoint=output_checkpoint,
+        weights=weights,
+        ignored_keys=(),
+        dtype_policy="float16",
+    )
+
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["dtype_policy"] == "float16"
+    assert manifest["tensor_count"] == 2
+    assert manifest["dtype_counts"] == {"complex64": 1, "float16": 1}
 
 
 def test_cached_conversion_rejects_revision_or_content_drift(tmp_path: Path) -> None:
@@ -122,6 +153,38 @@ def test_cached_conversion_rejects_revision_or_content_drift(tmp_path: Path) -> 
             manifest_file,
             source_repo="facebook/sam3",
             source_revision="a" * 40,
+        )
+
+
+def test_cached_conversion_rejects_dtype_policy_drift(tmp_path: Path) -> None:
+    weights_file = tmp_path / "model.safetensors"
+    weights_file.write_bytes(b"converted")
+    manifest_file = tmp_path / "conversion-manifest.json"
+    manifest_file.write_text(
+        json.dumps(
+            {
+                "source_repo": "facebook/sam3",
+                "source_revision": "a" * 40,
+                "output_sha256": hashlib.sha256(b"converted").hexdigest(),
+                "dtype_policy": "float32",
+            }
+        )
+    )
+
+    _validate_cached_conversion(
+        weights_file,
+        manifest_file,
+        source_repo="facebook/sam3",
+        source_revision="a" * 40,
+        dtype_policy="float32",
+    )
+    with pytest.raises(ValueError, match="dtype_policy"):
+        _validate_cached_conversion(
+            weights_file,
+            manifest_file,
+            source_repo="facebook/sam3",
+            source_revision="a" * 40,
+            dtype_policy="float16",
         )
 
 

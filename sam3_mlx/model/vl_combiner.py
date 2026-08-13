@@ -156,9 +156,10 @@ class SAM3VLBackbone(nn.Module):
         self.act_ckpt_whole_vision_backbone = act_ckpt_whole_vision_backbone
         self.act_ckpt_whole_language_backbone = act_ckpt_whole_language_backbone
         self._compile_visual = compile_visual
-        self._compiled_forward_image: Callable[[mx.array], dict[str, object]] | None = (
-            None
-        )
+        self._compiled_forward_image: dict[
+            tuple[str, tuple[int, ...]],
+            Callable[[mx.array], dict[str, object]],
+        ] = {}
 
     def __call__(
         self,
@@ -180,15 +181,24 @@ class SAM3VLBackbone(nn.Module):
         output.update(self.forward_text(captions, input_boxes, additional_text))
         return output
 
+    def visual_compile_key(self, samples: mx.array) -> tuple[str, tuple[int, ...]]:
+        from sam3_mlx.precision import dtype_name
+
+        return (dtype_name(samples.dtype), tuple(int(dim) for dim in samples.shape))
+
+    def clear_compiled_visual(self) -> None:
+        self._compiled_forward_image.clear()
+
     def forward_image(self, samples: mx.array) -> dict[str, object]:
         if self._compile_visual and not self.act_ckpt_whole_vision_backbone:
-            compiled = self._compiled_forward_image
+            key = self.visual_compile_key(samples)
+            compiled = self._compiled_forward_image.get(key)
             if compiled is None:
                 compiled = _mlx_compile(
                     self._forward_image_no_act_ckpt,
                     inputs=self.state,
                 )
-                self._compiled_forward_image = compiled
+                self._compiled_forward_image[key] = compiled
             return compiled(samples)
         return activation_ckpt_wrapper(self._forward_image_no_act_ckpt)(
             samples=samples,

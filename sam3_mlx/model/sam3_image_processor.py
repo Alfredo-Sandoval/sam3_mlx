@@ -21,9 +21,17 @@ from sam3_mlx.model.data_misc import (
     transpose_array,
 )
 from sam3_mlx.model.geometry_encoders import Prompt
-from sam3_mlx.model.sam3_image import Output
+from sam3_mlx.model.sam3_image import (
+    Output,
+    RawPrediction,
+    raw_prediction_from_output,
+)
+from sam3_mlx.precision import cast_visual_input, model_precision, parse_precision
+from sam3_mlx.resolutions import DEFAULT_IMAGE_RESOLUTION, PATCH_SIZE
 
-SAM3_IMAGE_PATCH_SIZE = 14
+SAM3_IMAGE_PATCH_SIZE = PATCH_SIZE
+PREPROCESSED_LAYOUTS = ("nchw", "nhwc")
+PREPROCESSED_VALUE_CONTRACT = "normalized-minus1-plus1"
 DEFAULT_TEXT_CACHE_SIZE = 8
 
 
@@ -58,6 +66,72 @@ def _single_image_keep_indices(out_probs: mx.array, threshold: float) -> mx.arra
     return _score_keep_indices(out_probs[0], threshold)
 
 
+def _presence_weighted_scores(outputs: Mapping[str, object]) -> mx.array:
+    out_logits = cast(mx.array, outputs["pred_logits"]).astype(mx.float32)
+    presence_logit = cast(mx.array, outputs["presence_logit_dec"]).astype(mx.float32)
+    out_probs = mx.sigmoid(out_logits)
+    presence_score = mx.sigmoid(presence_logit)[:, None]
+    return (out_probs * presence_score).squeeze(-1)
+
+
+def _filter_single_image_detections(
+    out_probs: mx.array,
+    out_masks: mx.array,
+    out_bbox: mx.array,
+    *,
+    threshold: float,
+) -> tuple[mx.array, mx.array, mx.array]:
+    keep_indices = _single_image_keep_indices(out_probs, threshold)
+    return (
+        out_probs[0][keep_indices],
+        out_masks[0][keep_indices],
+        out_bbox[0][keep_indices],
+    )
+
+
+def _boxes_to_original_xyxy(
+    out_bbox: mx.array, img_h: int, img_w: int
+) -> mx.array:
+    boxes = box_ops.box_cxcywh_to_xyxy(out_bbox.astype(mx.float32))
+    scale_fct = mx.array([img_w, img_h, img_w, img_h], dtype=mx.float32)
+    return boxes * scale_fct[None, :]
+
+
+def _upsample_spatial(array: mx.array, img_h: int, img_w: int) -> mx.array:
+    return interpolate(
+        array,
+        size=(img_h, img_w),
+        mode="bilinear",
+        align_corners=False,
+    )
+
+
+def _upsample_and_activate_masks(
+    out_masks: mx.array, img_h: int, img_w: int
+) -> mx.array:
+    return mx.sigmoid(
+        _upsample_spatial(out_masks.astype(mx.float32)[:, None], img_h, img_w)
+    )
+
+
+def _filter_and_convert_single_image(
+    outputs: Mapping[str, object],
+    *,
+    threshold: float,
+    img_h: int,
+    img_w: int,
+) -> tuple[mx.array, mx.array, mx.array]:
+    """Score-filter and convert boxes; does not upsample masks."""
+
+    out_probs, out_masks, out_bbox = _filter_single_image_detections(
+        _presence_weighted_scores(outputs),
+        cast(mx.array, outputs["pred_masks"]),
+        cast(mx.array, outputs["pred_boxes"]),
+        threshold=threshold,
+    )
+    return out_probs, out_masks, _boxes_to_original_xyxy(out_bbox, img_h, img_w)
+
+
 def _validate_processor_resolution(resolution: object) -> int:
     if isinstance(resolution, bool) or not isinstance(resolution, Integral):
         raise ValueError(
@@ -71,6 +145,104 @@ def _validate_processor_resolution(resolution: object) -> int:
             f"{SAM3_IMAGE_PATCH_SIZE}, got {resolution}."
         )
     return resolution
+
+
+def coerce_preprocessed_image(
+    tensor: object,
+    *,
+    resolution: int,
+    layout: str = "nchw",
+    value_contract: str = PREPROCESSED_VALUE_CONTRACT,
+) -> mx.array:
+    """Accept a caller-normalized FP32 image and return batched NCHW."""
+
+    if layout not in PREPROCESSED_LAYOUTS:
+        raise ValueError(
+            "layout must be one of "
+            f"{PREPROCESSED_LAYOUTS}; got {layout!r}."
+        )
+    if value_contract != PREPROCESSED_VALUE_CONTRACT:
+        raise ValueError(
+            "value_contract must be "
+            f"{PREPROCESSED_VALUE_CONTRACT!r}; got {value_contract!r}."
+        )
+    if isinstance(tensor, mx.array):
+        array = tensor
+    elif isinstance(tensor, np.ndarray):
+        array = mx.array(tensor)
+    else:
+        raise TypeError("Preprocessed image must be an MLX or NumPy array.")
+    if array.dtype != mx.float32:
+        raise ValueError(
+            "Preprocessed image must be float32; normalize in FP32, then cast "
+            "once at the visual-model boundary."
+        )
+    if not bool(mx.all(mx.isfinite(array)).item()):
+        raise ValueError("Preprocessed image must contain only finite values.")
+    if array.size and (
+        float(mx.min(array).item()) < -1.5 or float(mx.max(array).item()) > 1.5
+    ):
+        raise ValueError(
+            "Preprocessed image must follow the "
+            f"{PREPROCESSED_VALUE_CONTRACT} contract."
+        )
+    if layout == "nchw":
+        if array.ndim == 3:
+            array = array[None]
+        if array.ndim != 4 or int(array.shape[1]) != 3:
+            raise ValueError(
+                "nchw preprocessed images must have shape (3, H, W) or "
+                f"(N, 3, H, W); got {tuple(int(dim) for dim in array.shape)}."
+            )
+    else:
+        if array.ndim == 3:
+            array = array[None]
+        if array.ndim != 4 or int(array.shape[-1]) != 3:
+            raise ValueError(
+                "nhwc preprocessed images must have shape (H, W, 3) or "
+                f"(N, H, W, 3); got {tuple(int(dim) for dim in array.shape)}."
+            )
+        array = transpose_array(array, 0, 3, 1, 2)
+    if int(array.shape[0]) != 1:
+        raise ValueError(
+            "set_preprocessed_image accepts a single image; got batch "
+            f"{int(array.shape[0])}."
+        )
+    if int(array.shape[2]) != resolution or int(array.shape[3]) != resolution:
+        raise ValueError(
+            "Preprocessed spatial size must match processor resolution "
+            f"{resolution}; got {int(array.shape[2])}x{int(array.shape[3])}."
+        )
+    return array
+
+
+def _model_raw_prediction(
+    model: object,
+    *,
+    backbone_out: Mapping[str, object],
+    find_input: object,
+    find_target: object | None,
+    geometric_prompt: Prompt,
+) -> RawPrediction:
+    predict_raw = getattr(model, "predict_raw", None)
+    if callable(predict_raw):
+        return cast(RawPrediction, predict_raw(
+            backbone_out,
+            find_input,
+            find_target,
+            geometric_prompt,
+        ))
+    forward = getattr(model, "forward_grounding", None)
+    if not callable(forward):
+        raise TypeError("Processor model must define predict_raw or forward_grounding.")
+    return raw_prediction_from_output(
+        forward(
+            backbone_out,
+            find_input,
+            find_target,
+            geometric_prompt,
+        )
+    )
 
 
 def _readonly_array(value: npt.NDArray[Any]) -> npt.NDArray[Any]:
@@ -409,12 +581,17 @@ class _ProcessorModel(Protocol):
     ) -> Output: ...
 
 
-def _forward_backbone_image(backbone: object, image: mx.array) -> dict[str, object]:
+def _forward_backbone_image(
+    backbone: object,
+    image: mx.array,
+    *,
+    precision: object = "fp32",
+) -> dict[str, object]:
     forward_value = getattr(backbone, "forward_image", None)
     if not callable(forward_value):
         raise TypeError("Processor model backbone must define forward_image.")
     forward = cast(_ForwardImage, forward_value)
-    output = forward(image)
+    output = forward(cast_visual_input(image, parse_precision(precision)))
     if not isinstance(output, Mapping):
         raise TypeError("Processor backbone forward_image must return a mapping.")
     string_output: dict[str, object] = {}
@@ -486,7 +663,7 @@ class Sam3Processor:
     def __init__(
         self,
         model: _ProcessorModel,
-        resolution: object = 1008,
+        resolution: object = DEFAULT_IMAGE_RESOLUTION,
         device: object = "mlx",
         confidence_threshold: float = 0.5,
         text_cache_size: object = DEFAULT_TEXT_CACHE_SIZE,
@@ -568,28 +745,69 @@ class Sam3Processor:
         backbone_fpn[0] = predictor.model.sam_mask_decoder.conv_s0(backbone_fpn[0])
         backbone_fpn[1] = predictor.model.sam_mask_decoder.conv_s1(backbone_fpn[1])
 
-    def set_image(
+    def _apply_visual_tensor(
         self,
-        image: Image.Image | npt.NDArray[Any],
-        state: ProcessorState | None = None,
+        image_tensor: mx.array,
+        *,
+        original_height: int,
+        original_width: int,
+        state: ProcessorState | None,
     ) -> ProcessorState:
         if state is None:
             state = {}
         else:
             _clear_image_dependent_state(state)
-
-        pil_image = _as_pil_rgb_image(image)
-        width, height = pil_image.size
-
-        image_tensor = self.transform(pil_image)[None]
-
-        state["original_height"] = height
-        state["original_width"] = width
-        backbone_out = _forward_backbone_image(self.model.backbone, image_tensor)
+        state["original_height"] = original_height
+        state["original_width"] = original_width
+        backbone_out = _forward_backbone_image(
+            self.model.backbone,
+            image_tensor,
+            precision=model_precision(self.model),
+        )
         state["backbone_out"] = backbone_out
         _evaluate_processor_state(state)
         self._patch_interactive_backbone_features(backbone_out)
         return state
+
+    def set_image(
+        self,
+        image: Image.Image | npt.NDArray[Any],
+        state: ProcessorState | None = None,
+    ) -> ProcessorState:
+        pil_image = _as_pil_rgb_image(image)
+        width, height = pil_image.size
+        return self._apply_visual_tensor(
+            self.transform(pil_image)[None],
+            original_height=height,
+            original_width=width,
+            state=state,
+        )
+
+    def set_preprocessed_image(
+        self,
+        tensor: object,
+        *,
+        original_size: tuple[int, int] | list[int],
+        layout: str = "nchw",
+        value_contract: str = PREPROCESSED_VALUE_CONTRACT,
+        state: ProcessorState | None = None,
+    ) -> ProcessorState:
+        if not isinstance(original_size, (tuple, list)) or len(original_size) != 2:
+            raise ValueError("original_size must be (height, width).")
+        height = _validate_original_dimension(original_size[0], "height")
+        width = _validate_original_dimension(original_size[1], "width")
+        image_tensor = coerce_preprocessed_image(
+            tensor,
+            resolution=self.resolution,
+            layout=layout,
+            value_contract=value_contract,
+        )
+        return self._apply_visual_tensor(
+            image_tensor,
+            original_height=height,
+            original_width=width,
+            state=state,
+        )
 
     def set_image_batch(
         self,
@@ -612,7 +830,11 @@ class Sam3Processor:
         state["original_widths"] = [image.width for image in pil_images]
 
         image_batch = mx.stack([self.transform(image) for image in pil_images], axis=0)
-        backbone_out = _forward_backbone_image(self.model.backbone, image_batch)
+        backbone_out = _forward_backbone_image(
+            self.model.backbone,
+            image_batch,
+            precision=model_precision(self.model),
+        )
         state["backbone_out"] = backbone_out
         _evaluate_processor_state(state)
         self._patch_interactive_backbone_features(backbone_out)
@@ -734,7 +956,23 @@ class Sam3Processor:
 
     def run_grounding(self, state: ProcessorState) -> ProcessorState:
         """Execute one grounding pass after prompt mutation is complete."""
-        return self._forward_grounding(state)
+        return self.predict(state)
+
+    def predict_raw(self, state: ProcessorState) -> RawPrediction:
+        """Fixed-shape device arrays before filtering or original-res upsample."""
+
+        return _model_raw_prediction(
+            self.model,
+            backbone_out=_require_backbone_out(state),
+            find_input=self._find_stage_for_state(state),
+            find_target=None,
+            geometric_prompt=_require_geometric_prompt(state),
+        )
+
+    def predict(self, state: ProcessorState) -> ProcessorState:
+        """Filter, upsample, and write host-facing boxes/masks/scores into state."""
+
+        return self._materialize_prediction(state, self.predict_raw(state))
 
     def reset_all_prompts(self, state: ProcessorState) -> None:
         """Removes all the prompts and results"""
@@ -751,22 +989,16 @@ class Sam3Processor:
         return state
 
     def _forward_grounding(self, state: ProcessorState) -> ProcessorState:
+        return self.predict(state)
+
+    def _materialize_prediction(
+        self, state: ProcessorState, outputs: Mapping[str, object]
+    ) -> ProcessorState:
         batch_sizes = _batch_original_sizes(state)
 
-        outputs: Output = self.model.forward_grounding(
-            backbone_out=_require_backbone_out(state),
-            find_input=self._find_stage_for_state(state),
-            geometric_prompt=_require_geometric_prompt(state),
-            find_target=None,
-        )
-
         out_bbox = cast(mx.array, outputs["pred_boxes"])
-        out_logits = cast(mx.array, outputs["pred_logits"])
         out_masks = cast(mx.array, outputs["pred_masks"])
-        out_probs = mx.sigmoid(out_logits)
-        presence_logit = cast(mx.array, outputs["presence_logit_dec"])
-        presence_score = mx.sigmoid(presence_logit)[:, None]
-        out_probs = (out_probs * presence_score).squeeze(-1)
+        out_probs = _presence_weighted_scores(outputs)
 
         if batch_sizes is not None:
             return self._forward_grounding_batch_outputs(
@@ -789,31 +1021,19 @@ class Sam3Processor:
                 alternative="set_image for a single image",
             )
 
-        keep_indices = _single_image_keep_indices(out_probs, self.confidence_threshold)
-        out_probs = out_probs[0][keep_indices]
-        out_masks = out_masks[0][keep_indices]
-        out_bbox = out_bbox[0][keep_indices]
-        seg_mask = cast(mx.array | None, outputs.get("semantic_seg"))
-
-        # convert box to [x0, y0, x1, y1] format
-        boxes = box_ops.box_cxcywh_to_xyxy(out_bbox)
-
+        out_probs, out_masks, out_bbox = _filter_single_image_detections(
+            out_probs,
+            out_masks,
+            out_bbox,
+            threshold=self.confidence_threshold,
+        )
         img_h = _validate_original_dimension(state.get("original_height"), "height")
         img_w = _validate_original_dimension(state.get("original_width"), "width")
-        scale_fct = mx.array([img_w, img_h, img_w, img_h])
-        boxes = boxes * scale_fct[None, :]
-
-        interpolator = partial(
-            interpolate,
-            size=(img_h, img_w),
-            mode="bilinear",
-            align_corners=False,
-        )
-        out_masks = interpolator(out_masks[:, None])
-        out_masks = mx.sigmoid(out_masks)
-
+        boxes = _boxes_to_original_xyxy(out_bbox, img_h, img_w)
+        out_masks = _upsample_and_activate_masks(out_masks, img_h, img_w)
+        seg_mask = cast(mx.array | None, outputs.get("semantic_seg"))
         if seg_mask is not None:
-            state["semantic_seg"] = interpolator(seg_mask)
+            state["semantic_seg"] = _upsample_spatial(seg_mask, img_h, img_w)
         state["masks_logits"] = out_masks
         state["masks"] = out_masks > 0.5
         state["boxes"] = boxes
@@ -853,19 +1073,8 @@ class Sam3Processor:
             image_scores = out_probs[batch_idx][keep_indices]
             image_masks = out_masks[batch_idx][keep_indices]
             image_boxes = out_bbox[batch_idx][keep_indices]
-
-            boxes = box_ops.box_cxcywh_to_xyxy(image_boxes)
-            scale_fct = mx.array([img_w, img_h, img_w, img_h])
-            boxes = boxes * scale_fct[None, :]
-
-            interpolator = partial(
-                interpolate,
-                size=(img_h, img_w),
-                mode="bilinear",
-                align_corners=False,
-            )
-            image_masks = interpolator(image_masks[:, None])
-            image_masks = mx.sigmoid(image_masks)
+            boxes = _boxes_to_original_xyxy(image_boxes, img_h, img_w)
+            image_masks = _upsample_and_activate_masks(image_masks, img_h, img_w)
 
             boxes_by_image.append(boxes)
             masks_logits_by_image.append(image_masks)
@@ -875,7 +1084,9 @@ class Sam3Processor:
             if semantic_seg_by_image is not None:
                 assert semantic_seg is not None
                 semantic_seg_by_image.append(
-                    interpolator(semantic_seg[batch_idx : batch_idx + 1])
+                    _upsample_spatial(
+                        semantic_seg[batch_idx : batch_idx + 1], img_h, img_w
+                    )
                 )
 
         if semantic_seg_by_image is not None:

@@ -546,6 +546,7 @@ def _create_sam3_model(
     segmentation_head: UniversalSegmentationHead | None,
     dot_prod_scoring: DotProductScoring,
     inst_interactive_predictor: SAM3InteractiveImagePredictor | None = None,
+    compile_grounding: bool = False,
 ) -> Sam3Image:
     return Sam3Image(
         backbone=backbone,
@@ -558,6 +559,7 @@ def _create_sam3_model(
         use_instance_query=False,
         multimask_output=True,
         inst_interactive_predictor=inst_interactive_predictor,
+        compile_grounding=compile_grounding,
     )
 
 
@@ -1141,6 +1143,7 @@ def build_sam3_image_model(
     enable_segmentation: bool = True,
     enable_inst_interactivity: bool = False,
     compile: bool = False,
+    precision: str = "fp32",
     hf_repo: str = sam3_convert.DEFAULT_MLX_CHECKPOINT.repo,
     hf_revision: str = sam3_convert.DEFAULT_MLX_CHECKPOINT.revision,
     local_weights_dir: str | None = None,
@@ -1151,7 +1154,14 @@ def build_sam3_image_model(
     expected_output_sha256: str | None = None,
     verify_hub_provenance: bool = True,
 ) -> Sam3Image:
+    from sam3_mlx.precision import (
+        apply_precision_policy,
+        checkpoint_dtype_for_policy,
+        parse_precision,
+    )
+
     _validate_mlx_device(device)
+    policy = parse_precision(precision)
     if checkpoint_path is None and convert_from_pytorch and not load_from_HF:
         raise ValueError("convert_from_pytorch=True requires load_from_HF=True.")
     if convert_from_pytorch and not conversion_source_revision:
@@ -1194,6 +1204,7 @@ def build_sam3_image_model(
         segmentation_head,
         dot_prod_scoring=dot_product_scoring,
         inst_interactive_predictor=inst_interactive_predictor,
+        compile_grounding=compile,
     )
 
     provenance: _CheckpointProvenance = {
@@ -1211,10 +1222,17 @@ def build_sam3_image_model(
                     "convert_from_pytorch=True requires conversion_source_revision to be "
                     "an immutable Hugging Face commit."
                 )
+            checkpoint_dtype = checkpoint_dtype_for_policy(policy)
+            default_converted_dir = (
+                "sam3-mod-weights"
+                if checkpoint_dtype == "float32"
+                else f"sam3-mod-weights-{checkpoint_dtype}"
+            )
             checkpoint_path = sam3_convert.download_and_convert(
                 hf_repo="facebook/sam3",
-                mlx_path=local_weights_dir or "sam3-mod-weights",
+                mlx_path=local_weights_dir or default_converted_dir,
                 source_revision=source_revision,
+                dtype=checkpoint_dtype,
             )
             provenance = {
                 "status": "converted-from-pytorch",
@@ -1264,6 +1282,7 @@ def build_sam3_image_model(
             strict=strict_checkpoint_loading,
         )
 
+    apply_precision_policy(model, policy)
     model.checkpoint_provenance = provenance
     return _setup_device_and_mode(model, device, eval_mode)
 

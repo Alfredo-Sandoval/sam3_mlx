@@ -65,6 +65,7 @@ class _CliArgs(Protocol):
     pytorch_repo: str
     mlx_path: str | None
     convert: bool
+    dtype: str
 
 
 class ConversionProvenance(TypedDict):
@@ -517,13 +518,22 @@ def _convert_checkpoint_weights(
     return mlx_weights, tuple(sorted(ignored_keys))
 
 
-def convert(model_path: Path) -> tuple[dict[str, mx.array], tuple[str, ...]]:
+def convert(
+    model_path: Path,
+    *,
+    dtype: str = "float32",
+) -> tuple[dict[str, mx.array], tuple[str, ...]]:
+    from sam3_mlx.precision import cast_checkpoint_weights, parse_checkpoint_dtype
+
     torch = cast(_TorchModule, import_module("torch"))
     weight_file = str(model_path / "sam3.pt")
     weights = torch.load(weight_file, map_location="cpu", weights_only=True)
     weights = _unwrap_checkpoint_payload(weights)
     weights = _remap_official_checkpoint_keys(_torch_weights(weights))
-    return _convert_checkpoint_weights(weights, source_label=weight_file)
+    mlx_weights, ignored = _convert_checkpoint_weights(
+        weights, source_label=weight_file
+    )
+    return cast_checkpoint_weights(mlx_weights, parse_checkpoint_dtype(dtype)), ignored
 
 
 def _sha256(path: Path) -> str:
@@ -543,11 +553,15 @@ def _write_conversion_manifest(
     output_checkpoint: Path,
     weights: Mapping[str, mx.array],
     ignored_keys: tuple[str, ...],
+    dtype_policy: str = "float32",
 ) -> Path:
+    from sam3_mlx.precision import dtype_name, parse_checkpoint_dtype
+
+    dtype_policy = parse_checkpoint_dtype(dtype_policy)
     dtype_counts: dict[str, int] = {}
     for value in weights.values():
-        dtype_name = str(value.dtype).rsplit(".", 1)[-1]
-        dtype_counts[dtype_name] = dtype_counts.get(dtype_name, 0) + 1
+        name = dtype_name(value.dtype)
+        dtype_counts[name] = dtype_counts.get(name, 0) + 1
     manifest = {
         "architecture": "sam3-image",
         "source_repo": source_repo,
@@ -556,8 +570,10 @@ def _write_conversion_manifest(
         "converter_version": version("sam3-mlx"),
         "output_sha256": _sha256(output_checkpoint),
         "mapped_count": len(weights),
+        "tensor_count": len(weights),
         "unmapped_keys": [],
         "ignored_keys": list(ignored_keys),
+        "dtype_policy": dtype_policy,
         "dtype_counts": dict(sorted(dtype_counts.items())),
     }
     manifest_path = output_dir / CONVERSION_MANIFEST
@@ -571,17 +587,28 @@ def _validate_cached_conversion(
     *,
     source_repo: str,
     source_revision: str,
+    dtype_policy: str = "float32",
 ) -> None:
+    from sam3_mlx.precision import parse_checkpoint_dtype
+
     manifest = _json_object(manifest_file.read_text(), "conversion-manifest.json")
+    cached_dtype = manifest.get("dtype_policy", "float32")
     expected = {
         "source_repo": source_repo,
         "source_revision": source_revision,
         "output_sha256": _sha256(weights_file),
+        "dtype_policy": parse_checkpoint_dtype(dtype_policy),
+    }
+    observed = {
+        "source_repo": manifest.get("source_repo"),
+        "source_revision": manifest.get("source_revision"),
+        "output_sha256": manifest.get("output_sha256"),
+        "dtype_policy": parse_checkpoint_dtype(cached_dtype),
     }
     mismatches = {
-        key: (manifest.get(key), value)
+        key: (observed[key], value)
         for key, value in expected.items()
-        if manifest.get(key) != value
+        if observed[key] != value
     }
     if mismatches:
         details = ", ".join(
@@ -610,8 +637,12 @@ def download_and_convert(
     force: bool = False,
     *,
     source_revision: str,
+    dtype: str = "float32",
 ) -> Path:
+    from sam3_mlx.precision import parse_checkpoint_dtype
+
     source_revision = _validate_source_revision(source_revision)
+    dtype = parse_checkpoint_dtype(dtype)
     mlx_path = Path(mlx_path)
     weights_file = mlx_path / "model.safetensors"
     index_file = mlx_path / "model.safetensors.index.json"
@@ -628,6 +659,7 @@ def download_and_convert(
             manifest_file,
             source_repo=hf_repo,
             source_revision=source_revision,
+            dtype_policy=dtype,
         )
         return weights_file
     if not force and any(
@@ -644,7 +676,7 @@ def download_and_convert(
 
     mlx_path.mkdir(parents=True, exist_ok=True)
 
-    mlx_weights, ignored_keys = convert(model_path)
+    mlx_weights, ignored_keys = convert(model_path, dtype=dtype)
     output_checkpoint = save_weights(mlx_path, mlx_weights)
     _write_conversion_manifest(
         mlx_path,
@@ -654,6 +686,7 @@ def download_and_convert(
         output_checkpoint=output_checkpoint,
         weights=mlx_weights,
         ignored_keys=ignored_keys,
+        dtype_policy=dtype,
     )
 
     return weights_file
@@ -692,6 +725,12 @@ if __name__ == "__main__":
         action="store_true",
         help="Convert from PyTorch weights instead of loading pre-converted MLX weights",
     )
+    parser.add_argument(
+        "--dtype",
+        choices=("float32", "float16", "bfloat16"),
+        default="float32",
+        help="Storage dtype for converted floating-point tensors (default: float32).",
+    )
     args = cast(_CliArgs, parser.parse_args())
 
     if args.convert:
@@ -701,7 +740,11 @@ if __name__ == "__main__":
             args.source_revision = _validate_source_revision(args.source_revision)
         except ValueError as exc:
             parser.error(str(exc))
-        mlx_path = args.mlx_path or "sam3-mod-weights"
+        mlx_path = args.mlx_path or (
+            "sam3-mod-weights"
+            if args.dtype == "float32"
+            else f"sam3-mod-weights-{args.dtype}"
+        )
         print(f"Converting PyTorch weights from {args.pytorch_repo}...")
         model_path = download(
             args.pytorch_repo,
@@ -712,7 +755,7 @@ if __name__ == "__main__":
         mlx_path.mkdir(parents=True, exist_ok=True)
 
         source_checkpoint = model_path / "sam3.pt"
-        mlx_weights, ignored_keys = convert(model_path)
+        mlx_weights, ignored_keys = convert(model_path, dtype=args.dtype)
         output_checkpoint = save_weights(mlx_path, mlx_weights)
         _write_conversion_manifest(
             mlx_path,
@@ -722,6 +765,7 @@ if __name__ == "__main__":
             output_checkpoint=output_checkpoint,
             weights=mlx_weights,
             ignored_keys=ignored_keys,
+            dtype_policy=args.dtype,
         )
         print(f"Converted weights saved to {mlx_path}")
     else:
