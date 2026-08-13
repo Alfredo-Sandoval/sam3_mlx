@@ -229,6 +229,7 @@ def test_multiplex_demo_preserves_legacy_positional_parameter_order():
         "add_mask_to_memory",
         "reconditioning",
     ]
+    assert mask_parameters["add_mask_to_memory"].default is True
     assert mask_parameters["are_masks_from_pts"].kind is inspect.Parameter.KEYWORD_ONLY
 
     multiplex_mask_parameters = inspect.signature(

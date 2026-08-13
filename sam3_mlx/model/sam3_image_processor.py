@@ -396,6 +396,8 @@ class _ProcessorModel(Protocol):
     @property
     def inst_interactive_predictor(self) -> object | None: ...
 
+    def _get_dummy_prompt(self, num_prompts: int = 1) -> Prompt: ...
+
     def forward_grounding(
         self,
         backbone_out: Mapping[str, object],
@@ -421,6 +423,17 @@ def _forward_backbone_image(backbone: object, image: mx.array) -> dict[str, obje
     return string_output
 
 
+def _validate_text_outputs(value: object) -> dict[str, mx.array]:
+    if not isinstance(value, Mapping):
+        raise TypeError("Processor text output must be a mapping.")
+    text_output: dict[str, mx.array] = {}
+    for key, item in cast(Mapping[object, object], value).items():
+        if not isinstance(key, str) or not isinstance(item, mx.array):
+            raise TypeError("Processor text output must map string keys to MLX arrays.")
+        text_output[key] = item
+    return text_output
+
+
 def _forward_backbone_text(
     backbone: object, prompts: list[str], *, device: str
 ) -> dict[str, mx.array]:
@@ -428,15 +441,7 @@ def _forward_backbone_text(
     if not callable(forward_value):
         raise TypeError("Processor model backbone must define forward_text.")
     forward = cast(_ForwardText, forward_value)
-    output = forward(prompts, device=device)
-    if not isinstance(output, Mapping):
-        raise TypeError("Processor backbone forward_text must return a mapping.")
-    text_output: dict[str, mx.array] = {}
-    for key, value in cast(Mapping[object, object], output).items():
-        if not isinstance(key, str) or not isinstance(value, mx.array):
-            raise TypeError("Processor text output must map string keys to MLX arrays.")
-        text_output[key] = value
-    return text_output
+    return _validate_text_outputs(forward(prompts, device=device))
 
 
 def _evaluate_processor_state(state: ProcessorState) -> None:
@@ -444,8 +449,12 @@ def _evaluate_processor_state(state: ProcessorState) -> None:
     evaluate(state)
 
 
-def _dummy_prompt(model: object, *, num_prompts: int = 1) -> Prompt:
-    factory = cast(Callable[..., Prompt], getattr(model, "_get_dummy_prompt"))
+def _model_dummy_prompt(
+    model: _ProcessorModel,
+    *,
+    num_prompts: int = 1,
+) -> Prompt:
+    factory = getattr(model, "_get_dummy_prompt")
     return factory(num_prompts=num_prompts)
 
 
@@ -559,25 +568,29 @@ class Sam3Processor:
         state: ProcessorState,
         *,
         run_grounding: bool = True,
-        text_outputs: dict[str, mx.array] | None = None,
+        text_outputs: object | None = None,
     ) -> ProcessorState:
         if "backbone_out" not in state:
             raise ValueError("You must call set_image before set_text_prompt")
 
-        if text_outputs is None:
-            text_outputs = _forward_backbone_text(
+        validated_text_outputs = (
+            _forward_backbone_text(
                 self.model.backbone,
                 [prompt],
                 device=self.device,
             )
+            if text_outputs is None
+            else _validate_text_outputs(text_outputs)
+        )
         # will erase the previous text prompt if any
         backbone_out = _require_backbone_out(state)
-        backbone_out.update(text_outputs)
+        backbone_out.update(validated_text_outputs)
         if "geometric_prompt" not in state:
             sizes = _batch_original_sizes(state)
             num_prompts = len(sizes) if sizes is not None else 1
-            state["geometric_prompt"] = _dummy_prompt(
-                self.model, num_prompts=num_prompts
+            state["geometric_prompt"] = _model_dummy_prompt(
+                self.model,
+                num_prompts=num_prompts,
             )
         return self._forward_grounding(state) if run_grounding else state
 
@@ -621,7 +634,7 @@ class Sam3Processor:
             backbone_out.update(dummy_text_outputs)
 
         if "geometric_prompt" not in state:
-            state["geometric_prompt"] = _dummy_prompt(self.model)
+            state["geometric_prompt"] = _model_dummy_prompt(self.model)
 
         # adding a batch and sequence dimension
         boxes = reshape_array(mx.array(box, dtype=mx.float32), 1, 1, 4)
@@ -669,7 +682,7 @@ class Sam3Processor:
             backbone_out.update(dummy_text_outputs)
 
         if "geometric_prompt" not in state:
-            state["geometric_prompt"] = _dummy_prompt(self.model)
+            state["geometric_prompt"] = _model_dummy_prompt(self.model)
 
         points = reshape_array(mx.array(point, dtype=mx.float32), 1, 1, 2)
         labels = reshape_array(mx.array([label], dtype=mx.bool_), 1, 1)

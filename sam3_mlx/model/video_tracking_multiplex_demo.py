@@ -944,7 +944,7 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
         frame_idx: int,
         obj_ids: Any,
         masks: Any,
-        add_mask_to_memory: bool = False,
+        add_mask_to_memory: bool = True,
         reconditioning: bool = False,
         *,
         are_masks_from_pts: bool = False,
@@ -956,12 +956,11 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
         frame_idx: int,
         obj_ids: Any,
         masks: Any,
-        add_mask_to_memory: bool = False,
+        add_mask_to_memory: bool = True,
         reconditioning: bool = False,
         *,
         are_masks_from_pts: bool = False,
     ) -> tuple[int, list[Any], None, Any]:
-        del add_mask_to_memory, are_masks_from_pts
         obj_ids = _coerce_obj_id_list(obj_ids)
         if len(obj_ids) == 0:
             raise ValueError("obj_ids must contain at least one object id.")
@@ -1053,11 +1052,12 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
             point_inputs=None,
             mask_inputs=mask_inputs,
             reverse=reverse,
-            run_mem_encoder=False,
+            run_mem_encoder=add_mask_to_memory,
             add_to_existing_state=not is_new_state and not reconditioning,
             new_object_masks=(None if is_new_state else mask_inputs),
             new_object_idxs=(None if is_new_state else obj_idxs),
             new_object_ids=(None if is_new_state else obj_ids),
+            are_new_masks_from_pts=are_masks_from_pts,
             allow_new_buckets=allow_new_buckets,
             reconditioning=reconditioning,
         )

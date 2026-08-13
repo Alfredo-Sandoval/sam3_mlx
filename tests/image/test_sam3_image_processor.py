@@ -521,6 +521,24 @@ def test_batch_text_prompt_returns_per_image_outputs_with_sizes_and_thresholding
     assert not to_numpy(masks[1][1]).any()
 
 
+def test_set_text_prompt_validates_caller_supplied_text_outputs() -> None:
+    model = _FakeModel()
+    processor = Sam3Processor(model, resolution=14)
+    state = processor.set_image(Image.new("RGB", (4, 4), color=(0, 0, 0)))
+
+    with pytest.raises(TypeError, match="map string keys to MLX arrays"):
+        processor.set_text_prompt(
+            "truck",
+            state,
+            run_grounding=False,
+            text_outputs={"language_features": object()},
+        )
+
+    backbone_out = _state_mapping(state, "backbone_out")
+    assert "language_features" not in backbone_out
+    assert model.backbone.forward_text_calls == []
+
+
 def test_batch_geometric_prompt_fails_fast_until_interactive_batch_contract_exists():
     processor = Sam3Processor(_FakeModel())
     state: ProcessorState = {

@@ -271,10 +271,11 @@ def test_demo_add_new_masks_initializes_state_and_committed_outputs():
     model._run_single_frame_inference = fake_run_single_frame
 
     frame_idx, obj_ids, low_res_masks, video_res_masks = model.add_new_masks(
-        state,
+        inference_state=state,
         frame_idx=0,
         obj_ids=[10, 20],
         masks=masks,
+        are_masks_from_pts=True,
     )
 
     assert frame_idx == 0
@@ -286,6 +287,8 @@ def test_demo_add_new_masks_initializes_state_and_committed_outputs():
     assert state["consolidated_frame_inds"]["cond_frame_outputs"] == {0}
     assert 0 in state["output_dict"]["cond_frame_outputs"]
     assert calls[0]["is_init_cond_frame"] is True
+    assert calls[0]["run_mem_encoder"] is True
+    assert calls[0]["are_new_masks_from_pts"] is True
     assert calls[0]["new_object_masks"] is None
     assert tuple(calls[0]["mask_inputs"].shape) == (2, 1, 8, 8)
     np.testing.assert_array_equal(
