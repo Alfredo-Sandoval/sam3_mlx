@@ -8,6 +8,7 @@ from sam3_mlx.mlx_runtime import (
     finite_all,
     runtime_info,
     shape_dtype,
+    synchronize_completed,
     to_numpy,
 )
 
@@ -50,6 +51,14 @@ def test_evaluate_boundary_accepts_multiple_arrays():
 
     np.testing.assert_array_equal(np.asarray(left), np.array([2.0], dtype=np.float32))
     np.testing.assert_array_equal(np.asarray(right), np.array([3.0], dtype=np.float32))
+
+
+def test_synchronize_completed_evaluates_then_waits_for_device():
+    value = mx.array([1.0], dtype=mx.float32) + 2.0
+
+    synchronize_completed(value)
+
+    np.testing.assert_array_equal(np.asarray(value), np.array([3.0], dtype=np.float32))
 
 
 def test_runtime_info_contains_artifact_metadata():

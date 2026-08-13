@@ -24,7 +24,7 @@ class MlxRuntimeInfo:
 
 
 class _MlxEval(Protocol):
-    def __call__(self, *values: mx.array) -> None: ...
+    def __call__(self, *values: object) -> None: ...
 
 
 _mlx_eval = cast(_MlxEval, getattr(mx, "eval"))
@@ -66,6 +66,14 @@ def evaluate_boundary(*values: mx.array) -> None:
 
     if values:
         _mlx_eval(*values)
+
+
+def synchronize_completed(*values: object) -> None:
+    """Evaluate completed MLX work, then wait for the device."""
+
+    if values:
+        _mlx_eval(*values)
+    mx.synchronize()
 
 
 def to_numpy(

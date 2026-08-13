@@ -950,7 +950,9 @@ class ViT(nn.Module):
             norm.weight = mx.ones_like(norm.weight)
             norm.bias = mx.zeros_like(norm.bias)
 
-    def forward(self, x: mx.array | NestedTensor) -> list[FeatureMap]:
+    def _prepare_tokens(
+        self, x: mx.array | NestedTensor
+    ) -> tuple[mx.array, int, bool, mx.array | None]:
         mask: mx.array | None = None
         if isinstance(x, NestedTensor):
             is_nested = True
@@ -987,7 +989,10 @@ class ViT(nn.Module):
                 tiling=self.tile_abs_pos,
             )
 
-        tokens = self.ln_pre(tokens)
+        return self.ln_pre(tokens), s, is_nested, mask
+
+    def forward(self, x: mx.array | NestedTensor) -> list[FeatureMap]:
+        tokens, s, is_nested, mask = self._prepare_tokens(x)
         return self._forward_blocks(tokens, s=s, is_nested=is_nested, mask=mask)
 
     def _spatial_feats(self, tokens: mx.array, s: int) -> mx.array:

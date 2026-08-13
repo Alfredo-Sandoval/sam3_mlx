@@ -7,8 +7,11 @@ from sam3_mlx.benchmarking import (
     IMAGE_BENCHMARK_SCHEMA,
     RegressionThreshold,
     TimingProtocol,
+    aggregate_stage_group,
     compare_benchmark_artifacts,
     percentile,
+    profile_operations,
+    should_escalate_resolution,
     summarize_samples,
     synchronized_samples,
 )
@@ -100,6 +103,56 @@ def test_comparison_classifies_lower_is_better_regressions(
             "status": metric_status,
         }
     ]
+
+
+def test_should_escalate_resolution_uses_empty_or_margin_criterion() -> None:
+    assert should_escalate_resolution(
+        [],
+        confidence_threshold=0.5,
+        min_score_margin=0.1,
+    )
+    assert should_escalate_resolution(
+        [0.55],
+        confidence_threshold=0.5,
+        min_score_margin=0.1,
+    )
+    assert not should_escalate_resolution(
+        [0.61, 0.4],
+        confidence_threshold=0.5,
+        min_score_margin=0.1,
+    )
+    with pytest.raises(ValueError, match="min_score_margin"):
+        should_escalate_resolution(
+            [0.9], confidence_threshold=0.5, min_score_margin=-0.1
+        )
+
+
+def test_profile_operations_and_group_aggregates_reuse_timing_protocol() -> None:
+    values = iter([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+
+    def run_a() -> int:
+        return next(values)
+
+    def run_b() -> int:
+        return next(values)
+
+    profiled = profile_operations(
+        {
+            "a": BenchmarkOperation(run=run_a, synchronize=lambda _value: None),
+            "b": BenchmarkOperation(run=run_b, synchronize=lambda _value: None),
+        },
+        protocol=TimingProtocol(warmup_runs=1, repetitions=5),
+    )
+    assert profiled["a"]["samples_s"]
+    assert profiled["b"]["samples_s"]
+    grouped = aggregate_stage_group(
+        profiled,
+        category="window",
+        member_names=("a", "b"),
+    )
+    assert grouped["category"] == "window"
+    assert grouped["members"] == ["a", "b"]
+    assert grouped["p50_sum_s"] == profiled["a"]["p50_s"] + profiled["b"]["p50_s"]
 
 
 def test_comparison_rejects_different_runtime_or_workload_contracts() -> None:

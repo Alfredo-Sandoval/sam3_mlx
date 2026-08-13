@@ -15,6 +15,7 @@ T = TypeVar("T")
 
 IMAGE_BENCHMARK_SCHEMA = "sam3_mlx.image_runtime_benchmark.v1"
 IMAGE_BENCHMARK_COMPARISON_SCHEMA = "sam3_mlx.image_runtime_comparison.v1"
+IMAGE_BENCHMARK_SUBSTAGE_SCHEMA = "sam3_mlx.image_runtime_substages.v1"
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,73 @@ def summarize_samples(samples: Sequence[float]) -> JsonObject:
         "p95_s": percentile(values, 0.95),
         "min_s": min(values),
         "max_s": max(values),
+    }
+
+
+def should_escalate_resolution(
+    scores: Sequence[object],
+    *,
+    confidence_threshold: float,
+    min_score_margin: float,
+) -> bool:
+    """Return whether a 504-first result should retry at a higher resolution."""
+
+    if not 0.0 <= confidence_threshold <= 1.0:
+        raise ValueError("confidence_threshold must be between 0.0 and 1.0")
+    if not math.isfinite(min_score_margin) or min_score_margin < 0.0:
+        raise ValueError("min_score_margin must be finite and non-negative")
+    values: list[float] = []
+    for score in scores:
+        if isinstance(score, bool) or not isinstance(score, int | float):
+            raise ValueError("scores must be finite numbers")
+        number = float(score)
+        if not math.isfinite(number):
+            raise ValueError("scores must be finite numbers")
+        values.append(number)
+    if not values:
+        return True
+    return max(values) < (confidence_threshold + min_score_margin)
+
+
+def profile_operations(
+    operations: Mapping[str, BenchmarkOperation[object]],
+    *,
+    protocol: TimingProtocol,
+) -> dict[str, JsonObject]:
+    """Time named operations with the same synchronized protocol as the image bench."""
+
+    if not operations:
+        raise ValueError("operations must not be empty")
+    return {
+        name: summarize_samples(synchronized_samples(operation, protocol=protocol))
+        for name, operation in operations.items()
+    }
+
+
+def aggregate_stage_group(
+    stages: Mapping[str, Mapping[str, object]],
+    *,
+    category: str,
+    member_names: Sequence[str],
+) -> JsonObject:
+    """Group already-measured stage summaries without re-running work."""
+
+    if not member_names:
+        raise ValueError("member_names must not be empty")
+    summaries = [_require_object(stages[name], field=name) for name in member_names]
+    return {
+        "category": category,
+        "members": list(member_names),
+        "p50_sum_s": sum(
+            _require_finite_number(item["p50_s"], field="p50_s") for item in summaries
+        ),
+        "p95_sum_s": sum(
+            _require_finite_number(item["p95_s"], field="p95_s") for item in summaries
+        ),
+        "median_sum_s": sum(
+            _require_finite_number(item["median_s"], field="median_s")
+            for item in summaries
+        ),
     }
 
 
