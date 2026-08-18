@@ -67,11 +67,6 @@ pip install "sam3-mlx[viz]"     # matplotlib plotting helpers
 pip install "sam3-mlx[video]"   # OpenCV video-file decoding
 ```
 
-Agent-facing image segmentation is registered and invoked through FIESTA,
-which owns the prompt workflow and selects this package with
-`backend = "sam3-mlx"`. This repository intentionally publishes no separate
-tool adapter.
-
 Default image weights download from a pinned `mlx-community/sam3-image`
 revision and are verified against a package-embedded SHA-256 before model
 mutation.
